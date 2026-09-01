@@ -1,0 +1,1 @@
+globalThis.RN$SecondaryBundleLoaded = true;

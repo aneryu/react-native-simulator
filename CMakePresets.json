@@ -1,0 +1,65 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "15.0",
+        "RNS_ENABLE_IMGUI": "ON",
+        "RNS_ENABLE_SKIA": "ON",
+        "RNS_ENABLE_SOURCE_DEVTOOLS_FRONTEND": "OFF"
+      }
+    },
+    {
+      "name": "sanitized",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/sanitized",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RNS_ENABLE_SANITIZERS": "ON"
+      }
+    },
+    {
+      "name": "imgui",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/imgui",
+      "cacheVariables": {
+        "RNS_ENABLE_IMGUI": "ON",
+        "BUILD_TESTING": "OFF"
+      }
+    },
+    {
+      "name": "skia",
+      "inherits": "imgui",
+      "binaryDir": "${sourceDir}/build/skia",
+      "cacheVariables": {
+        "RNS_ENABLE_SKIA": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {"name": "release", "configurePreset": "release"},
+    {"name": "sanitized", "configurePreset": "sanitized"},
+    {"name": "imgui", "configurePreset": "imgui"},
+    {"name": "skia", "configurePreset": "skia"}
+  ],
+  "testPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "sanitized",
+      "configurePreset": "sanitized",
+      "output": {"outputOnFailure": true},
+      "environment": {
+        "ASAN_OPTIONS": "halt_on_error=1:detect_container_overflow=1",
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+      }
+    }
+  ]
+}

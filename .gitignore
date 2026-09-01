@@ -1,0 +1,8 @@
+build/
+dist/
+.DS_Store
+CMakeUserPresets.json
+*.hbc
+*.jsbundle
+*.jsbundle.map
+*.log

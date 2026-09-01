@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Install a self-contained RN Tester APK (JS bundle in assets).
+# Debug APKs skip Metro bundling and need a running packager; release does not.
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+rn_root="third_party/react-native"
+if [[ ! -x "$rn_root/gradlew" ]]; then
+  echo "RN gradle wrapper missing: $rn_root/gradlew" >&2
+  exit 1
+fi
+sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+if [[ ! -x "$sdk/cmake/3.30.5/bin/cmake" ]]; then
+  echo "RN 0.87 release native build needs Android SDK CMake 3.30.5." >&2
+  echo "Install with: \"\$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager\" --install \"cmake;3.30.5\"" >&2
+  exit 1
+fi
+architectures="${REACT_NATIVE_ARCHITECTURES:-arm64-v8a}"
+exec "$rn_root/gradlew" \
+  -p "$rn_root" \
+  :packages:rn-tester:android:app:installRelease \
+  "-PreactNativeArchitectures=${architectures}" \
+  "$@"

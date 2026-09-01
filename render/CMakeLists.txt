@@ -1,0 +1,91 @@
+# Skia retained renderer.
+#
+# Defines the prepared-paragraph text engine shared by Yoga measurement and
+# paint, plus the mounted-tree painter and PNG exporter consumed by direct
+# screenshots, interactive frames, and diagnostics. Added by
+# runtime/CMakeLists.txt when RNS_ENABLE_SKIA is set; wiring into the engine
+# and the rnsim executable stays with those targets.
+
+set(RNS_SKIA_ARCHIVES
+  "${RNS_SKIA_OUT_DIR}/libskparagraph.a"
+  "${RNS_SKIA_OUT_DIR}/libskshaper.a")
+# Release builds require the compact archive from bootstrap-skia-macos.sh.
+# Keep the full upstream archive as an explicit development fallback so an old
+# local Skia tree can still configure, but never let release packaging silently
+# regain the ~9 MiB data payload.
+if(EXISTS "${RNS_SKIA_OUT_DIR}/libskunicode_icu_rnsim.a")
+  list(APPEND RNS_SKIA_ARCHIVES "${RNS_SKIA_OUT_DIR}/libskunicode_icu_rnsim.a")
+elseif(EXISTS "${RNS_SKIA_OUT_DIR}/libskunicode_icu.a")
+  if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    message(FATAL_ERROR
+      "Release requires filtered Skia ICU data. Run cmake/bootstrap-skia-macos.sh")
+  endif()
+  message(WARNING
+    "Using Skia's full ICU data; run cmake/bootstrap-skia-macos.sh for compact output")
+  list(APPEND RNS_SKIA_ARCHIVES "${RNS_SKIA_OUT_DIR}/libskunicode_icu.a")
+else()
+  message(FATAL_ERROR
+    "Missing Skia unicode ICU archive in ${RNS_SKIA_OUT_DIR}")
+endif()
+list(APPEND RNS_SKIA_ARCHIVES
+  "${RNS_SKIA_OUT_DIR}/libskunicode_core.a"
+  "${RNS_SKIA_OUT_DIR}/libharfbuzz.a"
+  "${RNS_SKIA_OUT_DIR}/libicu.a"
+  "${RNS_SKIA_OUT_DIR}/libskia.a"
+  "${RNS_SKIA_OUT_DIR}/libfreetype2.a"
+  "${RNS_SKIA_OUT_DIR}/libskcms.a"
+  "${RNS_SKIA_OUT_DIR}/libraw_ptr.a"
+  "${RNS_SKIA_OUT_DIR}/liballocator_shim.a"
+  "${RNS_SKIA_OUT_DIR}/liballocator_core.a"
+  "${RNS_SKIA_OUT_DIR}/liballocator_base.a"
+  "${RNS_SKIA_OUT_DIR}/libzlib.a"
+  "${RNS_SKIA_OUT_DIR}/libpng.a")
+foreach(skia_archive IN LISTS RNS_SKIA_ARCHIVES)
+  if(NOT EXISTS "${skia_archive}")
+    message(FATAL_ERROR "Missing Skia archive: ${skia_archive}")
+  endif()
+endforeach()
+
+add_library(react-native-simulator-skia-text STATIC
+  "${CMAKE_CURRENT_LIST_DIR}/SkiaTextLayoutEngine.cpp")
+target_include_directories(react-native-simulator-skia-text
+  PUBLIC
+    "${CMAKE_CURRENT_LIST_DIR}"
+    "${RNS_SKIA_DIR}"
+    "${RNS_SKIA_DIR}/third_party/externals/icu/source/common")
+target_link_libraries(react-native-simulator-skia-text
+  PUBLIC
+    ${RNS_SKIA_ARCHIVES}
+    "-framework CoreText"
+    "-framework CoreGraphics"
+    "-framework Foundation")
+target_compile_options(react-native-simulator-skia-text PRIVATE
+  -Wall -Wextra -Wpedantic)
+target_compile_definitions(react-native-simulator-skia-text PRIVATE
+  U_DISABLE_RENAMING=1
+  U_STATIC_IMPLEMENTATION=1)
+set_target_properties(react-native-simulator-skia-text PROPERTIES
+  POSITION_INDEPENDENT_CODE ON)
+rns_enable_sanitizers(react-native-simulator-skia-text)
+
+add_library(react-native-simulator-skia-renderer STATIC
+  "${CMAKE_CURRENT_LIST_DIR}/SkiaMountedTreeRenderer.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/SkiaPngExporter.cpp")
+target_include_directories(react-native-simulator-skia-renderer
+  PUBLIC
+    "${CMAKE_CURRENT_LIST_DIR}"
+    "${PROJECT_ROOT}/runtime/include"
+  PRIVATE
+    "${RNS_SKIA_DIR}"
+    "${FOLLY_INCLUDE_DIR}")
+target_link_libraries(react-native-simulator-skia-renderer
+  PUBLIC react-native-simulator-skia-text
+  PRIVATE
+    rns_folly
+    "${DOUBLE_CONVERSION_LIBRARY}"
+    "-framework Foundation"
+    "-framework ImageIO"
+    "-framework CoreGraphics")
+target_compile_options(react-native-simulator-skia-renderer PRIVATE
+  -Wall -Wextra -Wpedantic)
+rns_enable_sanitizers(react-native-simulator-skia-renderer)

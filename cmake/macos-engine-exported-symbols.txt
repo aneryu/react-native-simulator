@@ -1,0 +1,19 @@
+# React Native Simulator's public C++ embedding and scene API.
+__Z*20ReactNativeSimulator*
+
+# SimulatorAddon.h deliberately exposes JSI, TurboModule and CallInvoker
+# types. Keep that declared SDK surface available to independently built
+# addons without promoting all of React Native's renderer internals to ABI.
+__Z*8facebook3jsi*
+__Z*8facebook5react*TurboModule*
+__Z*8facebook5react*CallInvoker*
+__Z*8facebook5react*Promise*
+__Z*8facebook5react*createPromiseAsJSIValue*
+
+# The in-tree CLI shell is a separate executable but these host services are
+# implementation details rather than part of the installed embedding headers.
+__Z15fetchHttpBundle*
+__Z14isMetroRunning*
+__Z11metroOrigin*
+__Z6hostUiv
+__Z*16HostUiController*

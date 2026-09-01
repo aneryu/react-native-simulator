@@ -1,0 +1,9 @@
+#pragma once
+
+#include <ReactCommon/CallInvoker.h>
+#include <ReactCommon/TurboModule.h>
+
+#include <memory>
+
+std::shared_ptr<facebook::react::TurboModule> createHeadlessNativeDOM(
+    std::shared_ptr<facebook::react::CallInvoker> jsInvoker);

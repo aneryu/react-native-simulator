@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "reactNative": "0.87.0",
+  "platform": "android",
+  "appKey": "FixtureApp",
+  "bundle": "./runtime-smoke.js",
+  "viewport": {
+    "width": 320,
+    "height": 640,
+    "pointScaleFactor": 2
+  },
+  "addons": []
+}

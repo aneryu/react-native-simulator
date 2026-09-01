@@ -1,0 +1,39 @@
+name: Support question
+description: Ask about installation, configuration, or expected behavior
+title: "[Question]: "
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not disclose security vulnerabilities here. Follow SECURITY.md and
+        contact the repository owner privately.
+  - type: input
+    id: version
+    attributes:
+      label: Simulator version
+      description: Paste the first line of `rnsim --version`.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: Paste `rnsim doctor --json` after removing sensitive paths.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Explain what you are trying to do and where you are blocked.
+    validations:
+      required: true
+  - type: textarea
+    id: attempts
+    attributes:
+      label: What have you tried?
+      description: Include exact commands and relevant output.
+    validations:
+      required: true

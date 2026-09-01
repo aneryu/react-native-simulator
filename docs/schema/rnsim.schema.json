@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://react-native-simulator.invalid/schema/rnsim-v1.json",
+  "title": "React Native Simulator local configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "reactNative"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "reactNative": {"const": "0.87.0"},
+    "platform": {"enum": ["android", "ios"], "default": "android"},
+    "appKey": {"type": "string", "minLength": 1},
+    "initialProps": {"type": "object"},
+    "bundle": {"type": "string", "minLength": 1},
+    "viewport": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "width": {"type": "number", "exclusiveMinimum": 0, "maximum": 10000},
+        "height": {"type": "number", "exclusiveMinimum": 0, "maximum": 10000},
+        "pointScaleFactor": {"type": "number", "exclusiveMinimum": 0, "maximum": 10}
+      }
+    },
+    "fonts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "directory": {"type": "string", "minLength": 1}
+      }
+    },
+    "addons": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "colorScheme": {"enum": ["light", "dark"]},
+        "appState": {"enum": ["active", "background", "inactive"]},
+        "orientation": {"enum": ["portrait-primary", "portrait-secondary", "landscape-primary", "landscape-secondary"]},
+        "reduceMotion": {"type": "boolean"},
+        "invertColors": {"type": "boolean"},
+        "highTextContrast": {"type": "boolean"},
+        "screenReader": {"type": "boolean"},
+        "accessibilityService": {"type": "boolean"},
+        "grayscale": {"type": "boolean"},
+        "boldText": {"type": "boolean"},
+        "reduceTransparency": {"type": "boolean"},
+        "darkerSystemColors": {"type": "boolean"}
+      }
+    }
+  }
+}

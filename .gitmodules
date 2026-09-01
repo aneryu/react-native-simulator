@@ -1,0 +1,18 @@
+[submodule "third_party/hermes"]
+	path = third_party/hermes
+	url = https://github.com/facebook/hermes.git
+[submodule "third_party/react-native"]
+	path = third_party/react-native
+	url = https://github.com/facebook/react-native.git
+[submodule "third_party/fast_float"]
+	path = third_party/fast_float
+	url = https://github.com/fastfloat/fast_float.git
+[submodule "third_party/imgui"]
+	path = third_party/imgui
+	url = https://github.com/ocornut/imgui.git
+[submodule "third_party/skia"]
+	path = third_party/skia
+	url = https://github.com/google/skia.git
+[submodule "third_party/sdl"]
+	path = third_party/sdl
+	url = https://github.com/libsdl-org/SDL.git

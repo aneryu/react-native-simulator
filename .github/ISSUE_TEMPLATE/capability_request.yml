@@ -1,0 +1,40 @@
+name: Capability request
+description: Propose an RN module, component, event, or platform contract
+title: "[Capability]: "
+labels: [enhancement]
+body:
+  - type: input
+    id: rn_version
+    attributes:
+      label: React Native version
+      placeholder: 0.87.0
+    validations:
+      required: true
+  - type: input
+    id: contract
+    attributes:
+      label: Native contract
+      description: Name the NativeModule, NativeComponent, event, command, or service.
+    validations:
+      required: true
+  - type: textarea
+    id: bundle
+    attributes:
+      label: Bundle and application source
+      description: Explain which caller-built bundle requires this capability.
+    validations:
+      required: true
+  - type: textarea
+    id: platform
+    attributes:
+      label: Expected platform semantics
+      description: Link upstream RN source and describe what must be real, adapted, or explicitly unavailable.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Include rnsim.json, screenshots, traces, or device behavior that define acceptance.
+    validations:
+      required: true

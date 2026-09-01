@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-01T06:39:43.537Z",
+  "mode": "glance",
+  "threshold": 24,
+  "aa": true,
+  "maxMismatchPercent": null,
+  "device": {
+    "path": "build/rntester/compare/text-all-hinting-split-final/TextExample/text-shadow/device.png",
+    "width": 1080,
+    "height": 2340
+  },
+  "simulator": {
+    "path": "build/rntester/compare/text-all-hinting-split-final/TextExample/text-shadow/simulator.png",
+    "width": 1080,
+    "height": 2072
+  },
+  "alignment": {
+    "method": "profile",
+    "crop": {
+      "top": 136,
+      "right": 0,
+      "bottom": 132,
+      "left": 0
+    },
+    "score": null,
+    "profile": "pixel-4a"
+  },
+  "stats": {
+    "width": 1080,
+    "height": 2072,
+    "pixels": 2237760,
+    "mismatchPixels": 7209,
+    "mismatchPercent": 0.3222,
+    "ignoredAaPixels": 9619,
+    "meanChannelDelta": 1.199,
+    "maxChannelDelta": 255,
+    "p95ChannelDelta": 1,
+    "hotspots": [
+      {
+        "x": 288,
+        "y": 192,
+        "width": 32,
+        "height": 32,
+        "mismatchPercent": 59.77
+      },
+      {
+        "x": 352,
+        "y": 192,
+        "width": 32,
+        "height": 32,
+        "mismatchPercent": 58.59
+      },
+      {
+        "x": 384,
+        "y": 192,
+        "width": 32,
+        "height": 32,
+        "mismatchPercent": 52.54
+      },
+      {
+        "x": 320,
+        "y": 192,
+        "width": 32,
+        "height": 32,
+        "mismatchPercent": 50.88
+      },
+      {
+        "x": 224,
+        "y": 192,
+        "width": 32,
+        "height": 32,
+        "mismatchPercent": 46.78
+      },
+      {
+        "x": 416,
+        "y": 192,
+        "width": 32,
+        "height": 32,
+        "mismatchPercent": 46.39
+      },
+      {
+        "x": 192,
+        "y": 192,
+        "width": 32,
+        "height": 32,
+        "mismatchPercent": 34.47
+      },
+      {
+        "x": 96,
+        "y": 192,
+        "width": 32,
+        "height": 32,
+        "mismatchPercent": 27.05
+      },
+      {
+        "x": 32,
+        "y": 192,
+        "width": 32,
+        "height": 32,
+        "mismatchPercent": 25.2
+      },
+      {
+        "x": 64,
+        "y": 192,
+        "width": 32,
+        "height": 32,
+        "mismatchPercent": 24.32
+      },
+      {
+        "x": 160,
+        "y": 192,
+        "width": 32,
+        "height": 32,
+        "mismatchPercent": 24.12
+      },
+      {
+        "x": 288,
+        "y": 160,
+        "width": 32,
+        "height": 32,
+        "mismatchPercent": 23.05
+      }
+    ]
+  },
+  "outputs": {
+    "deviceContent": "build/rntester/compare/text-all-hinting-split-final/TextExample/text-shadow/device-content.png",
+    "sideBySide": "build/rntester/compare/text-all-hinting-split-final/TextExample/text-shadow/side-by-side.png",
+    "diff": "build/rntester/compare/text-all-hinting-split-final/TextExample/text-shadow/diff.png",
+    "mismatch": "build/rntester/compare/text-all-hinting-split-final/TextExample/text-shadow/mismatch.png",
+    "overlay": "build/rntester/compare/text-all-hinting-split-final/TextExample/text-shadow/overlay.png",
+    "deviceLabeled": "build/rntester/compare/text-all-hinting-split-final/TextExample/text-shadow/device-labeled.png",
+    "simulatorLabeled": "build/rntester/compare/text-all-hinting-split-final/TextExample/text-shadow/simulator-labeled.png"
+  },
+  "passed": null,
+  "note": "Glance-level comparison, not HWUI / CoreText pixel equivalence."
+}

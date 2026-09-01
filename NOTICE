@@ -1,0 +1,15 @@
+React Native Simulator
+Copyright (c) 2026 React Native Simulator contributors
+
+This product includes source copied and modified from React Native in
+runtime/shims/react-native/. React Native is copyright Meta Platforms, Inc. and
+affiliates and is distributed under the MIT License.
+
+Pinned third-party source dependencies are maintained as Git submodules under
+third_party/. Their copyright notices and license terms remain in the respective
+submodule directories. Release archives statically link Folly and dynamically
+link a small set of Homebrew libraries. Their license texts are distributed in
+the archive's `rnsim/licenses/` directory.
+
+The compact RN Tester demo uses host macOS font fallback and does not distribute
+Android font files.
