@@ -36,6 +36,8 @@ needed = (
     "third_party/externals/libjpeg-turbo",
     "third_party/externals/libpng",
     "third_party/externals/libwebp",
+    "third_party/externals/wuffs",
+    "third_party/externals/zlib",
 )
 ns = {}
 with open(os.path.join(skia_dir, "DEPS"), encoding="utf-8") as handle:
@@ -93,8 +95,10 @@ if [[ ! -x "${skia_dir}/bin/gn" ]]; then
   (cd "${skia_dir}" && unzip -o "${gn_archive}" gn -d bin && chmod 755 bin/gn)
 fi
 
-# Linux has no ImageIO. Enable Skia PNG/JPEG/WebP decode so Metro assets paint.
-gn_args="is_debug=false is_official_build=false target_cpu=\"${skia_cpu}\" skia_enable_ganesh=false skia_enable_graphite=false skia_enable_pdf=false skia_enable_skparagraph=true skia_enable_skshaper=true skia_enable_skshaper_tests=false skia_enable_skunicode=true skia_use_gl=false skia_use_metal=false skia_use_vulkan=false skia_use_dawn=false skia_use_harfbuzz=true skia_use_icu=true skia_use_freetype=true skia_use_system_freetype2=false skia_use_fontconfig=true skia_use_libjpeg_turbo_decode=true skia_use_libjpeg_turbo_encode=false skia_use_libpng_decode=true skia_use_libpng_encode=true skia_use_libwebp_decode=true skia_use_libwebp_encode=false"
+# Linux has no ImageIO. Enable Skia PNG/JPEG/WebP/GIF decode so Metro assets
+# paint. zlib is required by bundled libpng and FreeType. Disable RAW/XML
+# tracing extras so CI does not need dng_sdk, piex, expat, or perfetto.
+gn_args="is_debug=false is_official_build=false target_cpu=\"${skia_cpu}\" skia_enable_ganesh=false skia_enable_graphite=false skia_enable_pdf=false skia_enable_skparagraph=true skia_enable_skshaper=true skia_enable_skshaper_tests=false skia_enable_skunicode=true skia_use_gl=false skia_use_metal=false skia_use_vulkan=false skia_use_dawn=false skia_use_harfbuzz=true skia_use_icu=true skia_use_freetype=true skia_use_system_freetype2=false skia_use_fontconfig=true skia_use_libjpeg_turbo_decode=true skia_use_libjpeg_turbo_encode=false skia_use_libpng_decode=true skia_use_libpng_encode=true skia_use_libwebp_decode=true skia_use_libwebp_encode=false skia_use_wuffs=true skia_use_expat=false skia_use_piex=false skia_use_perfetto=false skia_use_jpeg_gainmaps=false skia_use_partition_alloc=false"
 
 (cd "${skia_dir}" && \
   bin/gn gen out/rnsim --args="${gn_args}" && \

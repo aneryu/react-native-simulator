@@ -34,12 +34,18 @@ list(APPEND RNS_SKIA_ARCHIVES
   "${RNS_SKIA_OUT_DIR}/libskia.a"
   "${RNS_SKIA_OUT_DIR}/libfreetype2.a"
   "${RNS_SKIA_OUT_DIR}/libskcms.a"
-  "${RNS_SKIA_OUT_DIR}/libraw_ptr.a"
-  "${RNS_SKIA_OUT_DIR}/liballocator_shim.a"
-  "${RNS_SKIA_OUT_DIR}/liballocator_core.a"
-  "${RNS_SKIA_OUT_DIR}/liballocator_base.a"
   "${RNS_SKIA_OUT_DIR}/libzlib.a"
   "${RNS_SKIA_OUT_DIR}/libpng.a")
+# partition_alloc archives exist only when Skia is built with Clang.
+foreach(optional_skia_archive
+    "${RNS_SKIA_OUT_DIR}/libraw_ptr.a"
+    "${RNS_SKIA_OUT_DIR}/liballocator_shim.a"
+    "${RNS_SKIA_OUT_DIR}/liballocator_core.a"
+    "${RNS_SKIA_OUT_DIR}/liballocator_base.a")
+  if(EXISTS "${optional_skia_archive}")
+    list(APPEND RNS_SKIA_ARCHIVES "${optional_skia_archive}")
+  endif()
+endforeach()
 if(NOT APPLE)
   # FontConfig/custom-directory managers compile into libskia.a on this pin.
   # JPEG/WebP stay separate archives because Linux enables those decoders.

@@ -100,9 +100,10 @@ cmake --build --preset release --target react-native-simulator
 Linux uses Fontconfig for the missing-glyph fallback instead of CoreText, and
 enables Skia's PNG/JPEG/WebP decoders because the host has no ImageIO.
 `cmake/bootstrap-skia-linux.sh` checks out only the Skia DEPS pins required for
-that CPU renderer (FreeType, HarfBuzz, ICU, libpng, libjpeg-turbo, libwebp).
-It does not run Skia's full `tools/git-sync-deps`, which also fetches GPU
-toolchains this host never links.
+that CPU renderer (FreeType, HarfBuzz, ICU, zlib, libpng, libjpeg-turbo,
+libwebp, Wuffs). It does not run Skia's full `tools/git-sync-deps`, which also
+fetches GPU toolchains this host never links. RAW (piex/dng), bundled expat,
+and Perfetto stay off.
 
 ## Build on Apple Silicon
 

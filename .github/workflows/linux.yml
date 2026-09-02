@@ -197,6 +197,8 @@ jobs:
             third_party/skia/third_party/externals/libjpeg-turbo
             third_party/skia/third_party/externals/libpng
             third_party/skia/third_party/externals/libwebp
+            third_party/skia/third_party/externals/wuffs
+            third_party/skia/third_party/externals/zlib
           key: skia-linux-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('cmake/DependencyVersions.cmake', 'cmake/bootstrap-skia-linux.sh') }}
       - name: Bootstrap Skia
         run: cmake/bootstrap-skia-linux.sh
