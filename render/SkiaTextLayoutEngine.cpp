@@ -18,6 +18,7 @@
 #endif
 #if defined(SK_FONTMGR_FONTCONFIG_AVAILABLE) || defined(__linux__)
 #include "include/ports/SkFontMgr_fontconfig.h"
+#include "include/ports/SkFontScanner_FreeType.h"
 #endif
 #include "modules/skparagraph/include/FontCollection.h"
 #include "modules/skparagraph/include/TypefaceFontProvider.h"
@@ -1841,7 +1842,7 @@ class SkiaTextLayoutEngine::Impl {
 #if defined(SK_BUILD_FOR_MAC) || defined(SK_BUILD_FOR_IOS)
       fontMgr = SkFontMgr_New_CoreText(nullptr);
 #elif defined(__linux__)
-      fontMgr = SkFontMgr_New_FontConfig(nullptr);
+      fontMgr = SkFontMgr_New_FontConfig(nullptr, SkFontScanner_Make_FreeType());
 #else
       fontMgr = SkFontMgr_New_Custom_Empty();
 #endif

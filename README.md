@@ -166,7 +166,7 @@ Requirements:
   `pkg-config`
 - Interactive packages: `libfontconfig-dev`, `fonts-dejavu-core`, X11/Wayland
   SDL3 headers (`libx11-dev`, `libxext-dev`, `libxrandr-dev`, `libxcursor-dev`,
-  `libxi-dev`, `libxkbcommon-dev`, `libwayland-dev`, `libgl1-mesa-dev`,
+  `libxi-dev`, `libxtst-dev`, `libxkbcommon-dev`, `libwayland-dev`, `libgl1-mesa-dev`,
   `libvulkan-dev`), and a display (`xvfb` is enough for tests)
 
 CMake fetches RN's pinned Folly `2024.11.18.00` subset during configure. There
@@ -182,7 +182,8 @@ sudo apt-get install -y ninja-build g++ libstdc++-14-dev libboost-all-dev \
   libfmt-dev libdouble-conversion-dev libssl-dev libcurl4-openssl-dev \
   libpng-dev zlib1g-dev uuid-dev libevent-dev libicu-dev pkg-config python3 \
   xxd libfontconfig-dev fonts-dejavu-core libx11-dev libxext-dev \
-  libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxkbcommon-dev \
+  libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxtst-dev \
+  libxkbcommon-dev \
   libwayland-dev libgl1-mesa-dev libegl1-mesa-dev libvulkan-dev xvfb
 
 git submodule update --init third_party/skia third_party/imgui third_party/sdl
