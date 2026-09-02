@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export GIT_TERMINAL_PROMPT=0
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(cd "${script_dir}/.." && pwd)"
@@ -18,8 +19,12 @@ fi
 # Do not run Skia's full tools/git-sync-deps. That also fetches Dawn, Vulkan,
 # Emscripten, and other GPU toolchains this CPU renderer never links. Ubuntu CI
 # cannot hold that tree. Checkout only the DEPS pins Skia actually compiles.
+# Shallow-cloning the default branch first cannot see DEPS pins: git then
+# reports "unable to read tree <sha>" on checkout. Fetch the pin into a
+# fresh repo instead.
 python3 - "${skia_dir}" <<'PY'
 import os
+import shutil
 import subprocess
 import sys
 
@@ -36,22 +41,37 @@ ns = {}
 with open(os.path.join(skia_dir, "DEPS"), encoding="utf-8") as handle:
     exec("def Var(x): return vars[x]\n" + handle.read(), ns)
 deps = ns["deps"]
+
+def head_sha(dest):
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=dest,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
 for path in needed:
     spec = deps[path]
     repo, commit = spec.split("@", 1)
     dest = os.path.join(skia_dir, path)
-    if not os.path.isdir(os.path.join(dest, ".git")):
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        subprocess.check_call(
-            ["git", "clone", "--quiet", "--depth=1", "--no-checkout", repo, dest])
-    if subprocess.call(
-            ["git", "rev-parse", "--verify", "--quiet", commit],
-            cwd=dest,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL) != 0:
-        subprocess.check_call(
-            ["git", "fetch", "--quiet", "--depth=1", repo, commit], cwd=dest)
-    subprocess.check_call(["git", "checkout", "--quiet", commit], cwd=dest)
+    git_dir = os.path.join(dest, ".git")
+    if os.path.isdir(git_dir) and head_sha(dest) == commit:
+        print(f"synced {path} @ {commit[:12]}")
+        continue
+    if os.path.exists(dest) and not os.path.isdir(git_dir):
+        shutil.rmtree(dest)
+    os.makedirs(dest, exist_ok=True)
+    if not os.path.isdir(git_dir):
+        subprocess.check_call(["git", "init", "--quiet", dest])
+        subprocess.check_call(["git", "-C", dest, "remote", "add", "origin", repo])
+    print(f"fetching {path} @ {commit[:12]}")
+    subprocess.check_call(
+        ["git", "-C", dest, "fetch", "--quiet", "--depth=1", "origin", commit])
+    subprocess.check_call(
+        ["git", "-C", dest, "checkout", "--quiet", "--force", "FETCH_HEAD"])
     print(f"synced {path} @ {commit[:12]}")
 PY
 
