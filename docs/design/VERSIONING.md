@@ -56,33 +56,41 @@ The commit is authoritative when diagnosing which Nightly bytes were used.
 Runtime assets use stable rolling names:
 
 ```text
-rnsim-nightly-macos-arm64.tar.gz
-rnsim-rntester-demo-nightly-macos-arm64.tar.gz
+rnsim-nightly-macos-arm64.dmg
+rnsim-nightly-macos-arm64.dmg.sha256
 ```
 
 There is one moving GitHub Release and tag named `nightly`. Publishing replaces
-its assets and checksums. Installation uses one `nightly` directory; installing
-a newer package replaces the previous Nightly after confirmation. The project
-does not retain or manage old Nightly binaries. Git history and the commit in
-runtime metadata provide source traceability, not an end-user rollback service.
+its two assets. The DMG contains exactly one self-contained executable named
+`rnsim`; RN Tester, addons, headers, libraries, DevTools frontend files, and
+GitHub CI artifacts do not participate in public distribution. Installing a
+newer package atomically replaces the previous Nightly. The project does not
+retain or manage old Nightly binaries. Git history and the commit in runtime
+metadata provide source traceability, not an end-user rollback service.
 
 CMake still requires a numeric project/package version. During Nightly migration
 that value is transport metadata only; it is not the public simulator version.
-Consumers should use `find_package(ReactNativeSimulator CONFIG REQUIRED)` and
-validate runtime/addon compatibility through the explicit contracts above.
+Source-tree embedders use the `ReactNativeSimulator::Engine` target and validate
+runtime/addon compatibility through the explicit contracts above. The Nightly
+DMG is the CLI distribution and is not an embedding SDK.
 
 ## Rolling update policy
 
-The CLI, CMake metadata, packaging, installer, CI, and release workflow all use
-the single `nightly` channel. No numbered simulator release or old Nightly asset
-is retained. Updating Nightly means rebuilding from the new clean commit,
-replacing the `nightly` tag and GitHub Release assets, and publishing new
-checksums and manifests together.
+The CLI, CMake metadata, packaging, and installer use the single `nightly`
+channel. No numbered simulator release or old Nightly asset is retained.
+Updating Nightly means locally rebuilding from the new clean commit, signing the
+executable with Developer ID and Hardened Runtime, signing and notarizing the
+DMG, stapling its ticket, then replacing the `nightly` tag and Release assets.
+GitHub Actions is a code-validation lane only and cannot publish Nightly.
 
 Maintainers publish an already verified `dist/` from clean `main` with
 `tools/release/publish-nightly.sh`. The script re-verifies the extracted
-runtime and demo, checks that the manifest identifies `HEAD`, pushes `main`,
-moves the `nightly` tag, and creates or overwrites the single prerelease.
+single-file runtime, signature, notarization, dependency closure, metadata, and
+headless smoke; it then pushes `main`, moves the `nightly` tag, overwrites the
+single Latest GitHub Release, and removes obsolete assets. Nightly is not
+marked as a GitHub prerelease so the repository About sidebar can surface the
+download; the rolling-preview contract still lives in this policy and the
+release notes.
 
 ## Leaving Nightly
 

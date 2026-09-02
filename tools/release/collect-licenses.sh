@@ -26,6 +26,8 @@ copy_license "$project_root/third_party/react-native/LICENSE" \
 copy_license "$project_root/third_party/hermes/LICENSE" hermes-MIT.txt
 copy_license "$project_root/third_party/fast_float/LICENSE-MIT" \
   fast_float-MIT.txt
+copy_license "$project_root/third_party/glog/COPYING" \
+  glog-BSD-3-Clause.txt
 copy_license "$project_root/third_party/skia/LICENSE" \
   skia-BSD-3-Clause.txt
 copy_license "$project_root/third_party/skia/third_party/externals/harfbuzz/COPYING" \
@@ -43,20 +45,18 @@ copy_license "$project_root/third_party/sdl/LICENSE.txt" sdl-Zlib.txt
 copy_license "$project_root/third_party/hermes/external/boost/boost_1_86_0/LICENSE_1_0.txt" \
   boost-Boost-1.0.txt
 
-for formula in folly fmt glog gflags double-conversion; do
+for formula in folly fmt double-conversion; do
   formula_prefix=$(brew --prefix "$formula")
   case "$formula" in
     folly) license_path=LICENSE; output=folly-Apache-2.0.txt ;;
     fmt) license_path=LICENSE; output=fmt-MIT.txt ;;
-    glog) license_path=COPYING; output=glog-BSD-3-Clause.txt ;;
-    gflags) license_path=COPYING.txt; output=gflags-BSD-3-Clause.txt ;;
     double-conversion)
       license_path=LICENSE; output=double-conversion-BSD-3-Clause.txt ;;
   esac
   copy_license "$formula_prefix/$license_path" "$output"
 done
 
-expected_count=17
+expected_count=16
 actual_count=$(find "$destination" -type f | wc -l | tr -d ' ')
 if [ "$actual_count" -ne "$expected_count" ]; then
   echo "License inventory contains $actual_count files; expected $expected_count" >&2

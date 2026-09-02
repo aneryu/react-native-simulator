@@ -170,30 +170,6 @@ add_test(NAME validate-runtime-trace
     -P "${PROJECT_SOURCE_DIR}/cmake/ValidateTrace.cmake")
 set_tests_properties(validate-runtime-trace PROPERTIES DEPENDS runtime-trace)
 
-set(RNS_INSTALL_TEST_PREFIX "${CMAKE_BINARY_DIR}/tests/install-prefix-v3")
-add_test(NAME package-install
-  COMMAND "${CMAKE_COMMAND}"
-    -DBUILD_DIR=${CMAKE_BINARY_DIR}
-    -DINSTALL_PREFIX=${RNS_INSTALL_TEST_PREFIX}
-    -DCONSUMER_BUILD=${CMAKE_BINARY_DIR}/tests/install-consumer-build-v3
-    -P "${PROJECT_SOURCE_DIR}/cmake/PrepareInstallTest.cmake")
-add_test(NAME package-consumer-configure
-  COMMAND "${CMAKE_COMMAND}"
-    -S "${CMAKE_CURRENT_LIST_DIR}/install-consumer"
-    -B "${CMAKE_BINARY_DIR}/tests/install-consumer-build-v3"
-    -G Ninja
-    -DCMAKE_BUILD_TYPE=Release
-    -DCMAKE_PREFIX_PATH=${RNS_INSTALL_TEST_PREFIX})
-set_tests_properties(package-consumer-configure PROPERTIES DEPENDS package-install)
-add_test(NAME package-consumer-build
-  COMMAND "${CMAKE_COMMAND}" --build
-    "${CMAKE_BINARY_DIR}/tests/install-consumer-build-v3")
-set_tests_properties(package-consumer-build PROPERTIES
-  DEPENDS package-consumer-configure)
-add_test(NAME package-consumer-run
-  COMMAND "${CMAKE_BINARY_DIR}/tests/install-consumer-build-v3/rns-consumer")
-set_tests_properties(package-consumer-run PROPERTIES DEPENDS package-consumer-build)
-
 add_test(NAME rn73-profile
   COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
     "${RNS_RUNTIME_FIXTURE}"
@@ -320,8 +296,7 @@ set_tests_properties(runtime-source runtime-bytecode runtime-multi-bundle
   cli-version cli-doctor cli-doctor-project cli-doctor-metro-project
   cli-conformance-unavailable
   cli-profile-platform-conflict
-  package-install package-consumer-configure
-  package-consumer-build package-consumer-run metro-http-source cli-help
+  metro-http-source cli-help
   interactive-reload interactive-error-recovery
   PROPERTIES TIMEOUT 10)
 if(TEST interactive-window-before-metro)

@@ -35,11 +35,10 @@ server without opening a UI. Advanced overrides include:
 - `--devtools-frontend-dir DIR`
 - `--devtools-shell PATH`
 
-A runtime archive produced by the current packaging installs the frontend pinned
-with RN 0.87, so the complete package can run `rnsim --devtools` without a React
-Native checkout. Explicit `--devtools-frontend-dir` or
-`RNS_DEVTOOLS_FRONTEND_DIR` overrides remain for diagnostics. Source builds do
-not silently use author-machine files; opt into checkout fallback with
+The one-file Nightly includes the Inspector/CDP backend but not the RN 0.87 web
+frontend directory. Supply a trusted frontend explicitly with
+`--devtools-frontend-dir` or `RNS_DEVTOOLS_FRONTEND_DIR`. Source builds do not
+silently use author-machine files; opt into checkout fallback with
 `-DRNS_ENABLE_SOURCE_DEVTOOLS_FRONTEND=ON`.
 
 The toolbar's **Inspect** mode is not DevTools. It is a same-process ShadowTree

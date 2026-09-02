@@ -20,20 +20,16 @@ dependency stack is rebuilt and verified there.
 
 ## Gatekeeper or quarantine blocks the downloaded asset
 
-Verify the adjacent Nightly checksum first:
+Re-run the installer, which verifies the adjacent checksum, Developer ID
+signature, and stapled notarization ticket before copying the executable:
 
 ```sh
-shasum -a 256 -c rnsim-nightly-macos-arm64.tar.gz.sha256
+curl -fsSL https://raw.githubusercontent.com/aneryu/react-native-simulator/main/install.sh | sh
 ```
 
-Nightly packaging is ad-hoc signed, not Developer ID signed or notarized.
-The runtime installer asks before removing quarantine when Gatekeeper assessment
-requires it. For the optional demo, remove quarantine only after verifying its
-checksum:
-
-```sh
-xattr -dr com.apple.quarantine rnsim-rntester-demo
-```
+The supported installer never bypasses Gatekeeper or removes quarantine. A
+failure here means the download, signature, notarization, or local trust state
+must be diagnosed; do not work around it with `xattr`.
 
 ## `rnsim` is not found
 
@@ -87,7 +83,7 @@ repair the path or override the source explicitly with `--url`/`--bundle`.
 ## RN/Hermes or bytecode mismatch
 
 The current Nightly host supports React Native 0.87.0 and Hermes
-`260318099.0.1`. The runtime archive intentionally does not ship `hermesc`.
+`260318099.0.1`. The one-file Nightly intentionally does not ship `hermesc`.
 Binary users should load a caller-built source `.jsbundle`; compiling HBC
 requires `build/release/bin/hermesc` from the exact source revision. Never mix
 HBC produced by another Hermes revision.
@@ -121,11 +117,9 @@ This is strict runtime validation, not a conformance verdict.
 
 ## DevTools frontend does not open
 
-A runtime archive produced by the current release packaging includes the React
-Native 0.87 DevTools frontend as well as the Inspector/CDP backend. Check
-`installedDevToolsFrontend` in `rnsim doctor --json`. If it is false for an
-installed archive, reinstall the complete runtime tree rather than copying only
-the `rnsim` executable.
+The one-file Nightly includes the Inspector/CDP backend but does not embed the
+React Native DevTools web frontend. `installedDevToolsFrontend` is therefore
+false unless a trusted external frontend directory is configured.
 
 Source builds do not silently read files from an author checkout. Configure
 with `-DRNS_ENABLE_SOURCE_DEVTOOLS_FRONTEND=ON`, or provide a trusted frontend

@@ -48,6 +48,7 @@ set(RNS_REACT_NATIVE_DIR
     "${RNS_REACT_NATIVE_REPOSITORY}/packages/react-native")
 set(RNS_HERMES_DIR "${RNS_THIRD_PARTY_DIR}/hermes")
 set(RNS_FAST_FLOAT_DIR "${RNS_THIRD_PARTY_DIR}/fast_float")
+set(RNS_GLOG_DIR "${RNS_THIRD_PARTY_DIR}/glog")
 set(RNS_IMGUI_DIR "${RNS_THIRD_PARTY_DIR}/imgui")
 set(RNS_SDL_DIR "${RNS_THIRD_PARTY_DIR}/sdl")
 set(RNS_SKIA_DIR "${RNS_THIRD_PARTY_DIR}/skia")
@@ -82,7 +83,8 @@ foreach(required_path
     "${RNS_REACT_NATIVE_DIR}/ReactCommon/react/runtime/ReactInstance.cpp"
     "${RNS_REACT_NATIVE_DIR}/sdks/.hermesv1version"
     "${RNS_HERMES_DIR}/API/hermes/hermes.h"
-    "${RNS_FAST_FLOAT_DIR}/CMakeLists.txt")
+    "${RNS_FAST_FLOAT_DIR}/CMakeLists.txt"
+    "${RNS_GLOG_DIR}/CMakeLists.txt")
   if(NOT EXISTS "${required_path}")
     message(FATAL_ERROR
       "Missing submodule source: ${required_path}\n"
@@ -127,6 +129,18 @@ if(RNS_ENABLE_IMGUI)
       "SDL submodule is ${RNS_ACTUAL_SDL_TAG}, but this project requires "
       "${RNS_EXPECTED_SDL_TAG}.")
   endif()
+endif()
+execute_process(
+  COMMAND git -C "${RNS_GLOG_DIR}" rev-parse HEAD
+  RESULT_VARIABLE RNS_GLOG_COMMIT_RESULT
+  OUTPUT_VARIABLE RNS_ACTUAL_GLOG_COMMIT
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET)
+if(NOT RNS_GLOG_COMMIT_RESULT EQUAL 0 OR
+   NOT RNS_ACTUAL_GLOG_COMMIT STREQUAL RNS_EXPECTED_GLOG_COMMIT)
+  message(FATAL_ERROR
+    "glog submodule is ${RNS_ACTUAL_GLOG_COMMIT}, expected "
+    "${RNS_EXPECTED_GLOG_COMMIT}.")
 endif()
 
 if(RNS_ENABLE_SKIA)
@@ -218,6 +232,39 @@ endif()
 
 add_subdirectory("${RNS_HERMES_DIR}" "${CMAKE_BINARY_DIR}/hermes")
 add_subdirectory("${RNS_FAST_FLOAT_DIR}" "${CMAKE_BINARY_DIR}/fast_float")
+set(WITH_GFLAGS OFF CACHE BOOL "" FORCE)
+set(WITH_GTEST OFF CACHE BOOL "" FORCE)
+set(WITH_PKGCONFIG OFF CACHE BOOL "" FORCE)
+set(WITH_UNWIND OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+if(DEFINED BUILD_TESTING)
+  set(RNS_REQUESTED_BUILD_TESTING "${BUILD_TESTING}")
+else()
+  set(RNS_REQUESTED_BUILD_TESTING ON)
+endif()
+set(BUILD_TESTING OFF CACHE BOOL "Build tests" FORCE)
+set(BUILD_TESTING OFF)
+# CMake does not remove a subdirectory's stale CTestTestfile when an incremental
+# configure turns that dependency's tests off. Clear only glog's generated test
+# registry so old third-party entries cannot leak into the simulator suite.
+file(REMOVE "${CMAKE_BINARY_DIR}/glog/CTestTestfile.cmake")
+add_subdirectory("${RNS_GLOG_DIR}" "${CMAKE_BINARY_DIR}/glog")
+if(RNS_ENABLE_SANITIZERS)
+  # glog compiles its real sources into OBJECT target glog_internal; the glog
+  # archive is only a wrapper. logging.cc instantiates the same libc++
+  # std::regex templates as RN StackTraceParser. Instrument those objects so
+  # ASan container annotations stay consistent when ld coalesces the weak
+  # symbols into the test/CLI image.
+  foreach(glog_target glog_internal glog)
+    target_compile_options(${glog_target} PRIVATE
+      -fsanitize=address,undefined -fno-sanitize=vptr
+      -fno-omit-frame-pointer)
+  endforeach()
+  target_link_options(glog PRIVATE -fsanitize=address,undefined)
+endif()
+set(BUILD_TESTING "${RNS_REQUESTED_BUILD_TESTING}"
+  CACHE BOOL "Build tests" FORCE)
+set(BUILD_TESTING "${RNS_REQUESTED_BUILD_TESTING}")
 if(RNS_ENABLE_IMGUI)
   set(SDL_SHARED OFF CACHE BOOL "" FORCE)
   set(SDL_STATIC ON CACHE BOOL "" FORCE)

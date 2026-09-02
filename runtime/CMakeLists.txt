@@ -17,14 +17,21 @@ if(NOT FOLLY_INCLUDE_DIR)
   message(FATAL_ERROR "folly headers are required (for example: brew install folly).")
 endif()
 
-find_package(glog CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 find_package(Boost CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 find_file(FOLLY_STATIC_LIBRARY NAMES libfolly.a REQUIRED
   PATHS /opt/homebrew/lib /usr/local/lib)
-find_library(DOUBLE_CONVERSION_LIBRARY NAMES double-conversion REQUIRED
+find_file(RNS_DOUBLE_CONVERSION_STATIC_LIBRARY NAMES libdouble-conversion.a REQUIRED
   PATHS /opt/homebrew/lib /usr/local/lib)
+find_file(RNS_FMT_STATIC_LIBRARY NAMES libfmt.a REQUIRED
+  PATHS /opt/homebrew/lib /usr/local/lib)
+if(RNS_ENABLE_SANITIZERS)
+  find_library(RNS_FOLLY_SHARED_LIBRARY NAMES folly REQUIRED
+    PATHS /opt/homebrew/lib /usr/local/lib)
+  find_library(RNS_DOUBLE_CONVERSION_SHARED_LIBRARY NAMES double-conversion REQUIRED
+    PATHS /opt/homebrew/lib /usr/local/lib)
+endif()
 
 # Homebrew's shared Folly records broad formula dependencies that this runtime
 # does not use, including Boost.Regex and its ICU dylibs. Link the matching
@@ -34,10 +41,22 @@ find_library(DOUBLE_CONVERSION_LIBRARY NAMES double-conversion REQUIRED
 # implementation and weak libc++ template symbols from interposing on Hermes.
 add_library(rns_folly INTERFACE)
 target_include_directories(rns_folly INTERFACE "${FOLLY_INCLUDE_DIR}")
-target_link_libraries(rns_folly INTERFACE
-  "-Wl,-load_hidden,${FOLLY_STATIC_LIBRARY}"
-  glog::glog
-  fmt::fmt)
+if(RNS_ENABLE_SANITIZERS)
+  # Homebrew's static Folly contains uninstrumented weak libc++ std::regex
+  # instantiations. Letting ld coalesce those into an ASan executable breaks
+  # libc++'s container annotations. Keeping Folly in a separate image preserves
+  # two-level namespace isolation for sanitizer builds; Release remains static.
+  target_link_libraries(rns_folly INTERFACE
+    "${RNS_FOLLY_SHARED_LIBRARY}"
+    glog::glog
+    "${RNS_DOUBLE_CONVERSION_SHARED_LIBRARY}")
+else()
+  target_link_libraries(rns_folly INTERFACE
+    "-Wl,-load_hidden,${FOLLY_STATIC_LIBRARY}"
+    glog::glog
+    "${RNS_FMT_STATIC_LIBRARY}"
+    "${RNS_DOUBLE_CONVERSION_STATIC_LIBRARY}")
+endif()
 
 foreach(required_path
     "${HERMES_SOURCE}/API/hermes/hermes.h"
@@ -158,7 +177,7 @@ file(GLOB HERMES_INSPECTOR_SOURCES CONFIGURE_DEPENDS
 
 add_subdirectory("${RN_ROOT}/ReactCommon/yoga/yoga" "${CMAKE_BINARY_DIR}/yoga")
 
-add_library(react-native-simulator-engine SHARED
+add_library(react-native-simulator-engine STATIC
   src/core/SceneHitTest.cpp
   src/core/SimulatorAddon.cpp
   src/core/SimulatorEventLoop.cpp
@@ -309,9 +328,6 @@ target_link_libraries(react-native-simulator-engine PRIVATE
   yogacore
   Boost::boost
   rns_folly
-  "${DOUBLE_CONVERSION_LIBRARY}"
-  glog::glog
-  fmt::fmt
   FastFloat::fast_float
   Threads::Threads
   "-framework CoreFoundation"
@@ -323,16 +339,6 @@ target_link_libraries(react-native-simulator-engine PRIVATE
 
 target_compile_options(
   react-native-simulator-engine PRIVATE -Wall -Wextra -Wpedantic)
-target_link_options(react-native-simulator-engine PRIVATE
-  # Export only the installed Engine API, the JSI/TurboModule surface promised
-  # by SimulatorAddon.h, and the separate in-tree CLI's host hooks. This keeps
-  # Skia/ICU/Folly/Hermes implementation symbols out of the dylib ABI and lets
-  # ld64 dead-strip code that accidental exports previously kept alive.
-  "-Wl,-exported_symbols_list,${PROJECT_ROOT}/cmake/macos-engine-exported-symbols.txt"
-  "$<$<CONFIG:Release>:-Wl,-dead_strip>")
-set_property(TARGET react-native-simulator-engine APPEND PROPERTY LINK_DEPENDS
-  "${PROJECT_ROOT}/cmake/macos-engine-exported-symbols.txt")
-
 # AppleClang 17's vptr sanitizer reports invalid std::stringbuf vptrs while
 # crossing the macOS system libc++ boundary, before simulator application code
 # runs. Keep this disabled consistently for the engine, addons, and CLI; ASan
@@ -357,14 +363,15 @@ function(rns_add_simulator_addon target_name output_name source)
     RNS_REACT_NATIVE_VERSION="${RNS_REACT_NATIVE_VERSION}"
     RNS_HERMES_VERSION="${RNS_HERMES_VERSION}")
   target_include_directories(${target_name} PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/include"
     "${RN_ROOT}/ReactCommon"
     "${RN_ROOT}/ReactCommon/jsi"
     "${RN_ROOT}/ReactCommon/callinvoker"
     "${RN_ROOT}/ReactCommon/runtimeexecutor"
     "${RN_ROOT}/ReactCommon/react/nativemodule/core"
     "${FOLLY_INCLUDE_DIR}")
-  target_link_libraries(${target_name} PRIVATE react-native-simulator-engine)
   target_link_options(${target_name} PRIVATE
+    "-Wl,-undefined,dynamic_lookup"
     "$<$<CONFIG:Release>:-Wl,-dead_strip>")
   target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
   if(RNS_ENABLE_SANITIZERS)
@@ -408,11 +415,15 @@ target_include_directories(react-native-simulator PRIVATE
   "${FOLLY_INCLUDE_DIR}")
 target_link_libraries(react-native-simulator PRIVATE
   react-native-simulator-engine
-  Boost::boost
-  rns_folly
-  "${DOUBLE_CONVERSION_LIBRARY}")
+  Boost::boost)
 target_link_options(react-native-simulator PRIVATE
   "$<$<CONFIG:Release>:-Wl,-dead_strip>")
+if(NOT RNS_ENABLE_SANITIZERS)
+  target_link_options(react-native-simulator PRIVATE
+    "-Wl,-exported_symbols_list,${PROJECT_ROOT}/cmake/macos-engine-exported-symbols.txt")
+  set_property(TARGET react-native-simulator APPEND PROPERTY LINK_DEPENDS
+    "${PROJECT_ROOT}/cmake/macos-engine-exported-symbols.txt")
+endif()
 target_compile_definitions(react-native-simulator PRIVATE
   RNS_PROJECT_VERSION="${RNS_RELEASE_CHANNEL}"
   RNS_TRANSPORT_VERSION="${PROJECT_VERSION}"
@@ -439,8 +450,7 @@ if(RNS_ENABLE_SKIA)
 
   target_compile_definitions(react-native-simulator PRIVATE RNS_ENABLE_SKIA=1)
   target_link_libraries(react-native-simulator PRIVATE
-    react-native-simulator-skia-renderer
-    "${DOUBLE_CONVERSION_LIBRARY}")
+    react-native-simulator-skia-renderer)
 endif()
 
 if(RNS_ENABLE_IMGUI)
@@ -474,9 +484,7 @@ if(RNS_ENABLE_IMGUI)
 endif()
 
 include(GNUInstallDirs)
-include(CMakePackageConfigHelpers)
-install(TARGETS react-native-simulator-engine react-native-simulator
-  EXPORT ReactNativeSimulatorTargets
+install(TARGETS react-native-simulator
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     COMPONENT react-native-simulator
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -497,33 +505,3 @@ if(RNS_ENABLE_IMGUI)
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     COMPONENT react-native-simulator-imgui)
 endif()
-install(FILES
-  "${CMAKE_CURRENT_LIST_DIR}/include/react-native-simulator/Engine.h"
-  "${CMAKE_CURRENT_LIST_DIR}/include/react-native-simulator/Interaction.h"
-  "${CMAKE_CURRENT_LIST_DIR}/include/react-native-simulator/Scene.h"
-  "${CMAKE_CURRENT_LIST_DIR}/include/react-native-simulator/SimulatorAddon.h"
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/react-native-simulator
-  COMPONENT react-native-simulator)
-install(DIRECTORY "${RN_ROOT}/../debugger-frontend/dist/third-party/front_end/"
-  DESTINATION ${CMAKE_INSTALL_DATADIR}/react-native-simulator/debugger-frontend
-  COMPONENT react-native-simulator)
-configure_package_config_file(
-  "${PROJECT_ROOT}/cmake/ReactNativeSimulatorConfig.cmake.in"
-  "${CMAKE_CURRENT_BINARY_DIR}/ReactNativeSimulatorConfig.cmake"
-  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ReactNativeSimulator)
-write_basic_package_version_file(
-  "${CMAKE_CURRENT_BINARY_DIR}/ReactNativeSimulatorConfigVersion.cmake"
-  VERSION ${PROJECT_VERSION}
-  # The embedding and addon ABI remain pre-1.0. Do not let a future 0.x minor
-  # silently satisfy a consumer built against another experimental release.
-  COMPATIBILITY ExactVersion)
-install(EXPORT ReactNativeSimulatorTargets
-  FILE ReactNativeSimulatorTargets.cmake
-  NAMESPACE ReactNativeSimulator::
-  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ReactNativeSimulator
-  COMPONENT react-native-simulator)
-install(FILES
-  "${CMAKE_CURRENT_BINARY_DIR}/ReactNativeSimulatorConfig.cmake"
-  "${CMAKE_CURRENT_BINARY_DIR}/ReactNativeSimulatorConfigVersion.cmake"
-  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ReactNativeSimulator
-  COMPONENT react-native-simulator)

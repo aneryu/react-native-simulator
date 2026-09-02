@@ -1,40 +1,29 @@
 # React Native Simulator Nightly
 
-Nightly is the single rolling preview of React Native Simulator. Each update
-replaces the assets on this release; old Nightly binaries are not retained.
-Use `rnsim --version --json` to record the exact Git commit represented by an
-installed build.
+Nightly is the single rolling preview. Every update replaces the assets on this
+release; old Nightly binaries are not retained. Record `rnsim --version --json`
+when reporting an issue so the exact source commit remains identifiable.
 
-## Install the runtime and optional RN Tester demo
-
-Download each desired asset with its adjacent `.sha256` file:
+## Install
 
 ```sh
-shasum -a 256 -c rnsim-nightly-macos-arm64.tar.gz.sha256
-tar xf rnsim-nightly-macos-arm64.tar.gz
-./rnsim/install.sh
-
-shasum -a 256 -c rnsim-rntester-demo-nightly-macos-arm64.tar.gz.sha256
-tar xf rnsim-rntester-demo-nightly-macos-arm64.tar.gz
-xattr -dr com.apple.quarantine rnsim-rntester-demo
-rnsim --config rnsim-rntester-demo/rnsim.json
+curl -fsSL https://raw.githubusercontent.com/aneryu/react-native-simulator/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+rnsim --version
 ```
 
-The installer replaces the currently installed Nightly after confirmation. The
-runtime and RN Tester demo remain separate packages; the demo owns its caller
-bundle and application addon.
+The installer downloads `rnsim-nightly-macos-arm64.dmg` and its SHA-256 file,
+then verifies the checksum, Developer ID signatures, Hardened Runtime,
+notarization ticket, and Gatekeeper assessment. The DMG contains exactly one
+self-contained file named `rnsim` and targets Apple Silicon with macOS 15 or
+newer.
 
-## Current scope
+RN Tester and GitHub CI artifacts are not published. RN Tester remains a local
+caller-built conformance fixture, and GitHub Actions only validates source
+changes. Nightly is built, signed, notarized, verified, and published locally.
 
-- React Native 0.87.0 and Hermes v1 `260318099.0.1` are pinned.
-- Android is the first certification profile.
-- Interactive and headless frontends share one semantic engine.
-- Public conformance commands fail closed.
-- The release targets Apple Silicon and macOS 15 or newer.
-- Packaged Mach-O files are ad-hoc signed, not Developer ID signed or notarized.
-- Capability limitations, mocks, host adapters, and macOS font fallback remain
-  explicit in the capability baseline and packaged manifests.
-
-Every update must pass the release and sanitizer suites, runtime/addon isolation,
-fresh-extraction verification, RN Tester startup, interactive Skia smoke, license
-collection, SBOM generation, signature verification, and reproducible packaging.
+React Native 0.87.0 and Hermes v1 `260318099.0.1` are pinned. Review the
+[capability baseline](../baselines/RN087_CAPABILITY_BASELINE.md),
+[third-party notices](https://github.com/aneryu/react-native-simulator/blob/nightly/THIRD_PARTY_NOTICES.md),
+and [repository license](https://github.com/aneryu/react-native-simulator/blob/nightly/LICENSE)
+at the commit reported by the installed executable.

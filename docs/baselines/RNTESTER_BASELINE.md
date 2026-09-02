@@ -21,8 +21,9 @@ The `rns-addon-rntester` target contains only RN Tester-owned contracts:
 | `NativeCxxModuleExampleCxx` | RN Tester | tester stub |
 | `ScreenshotManager` | RN Tester | tester stub |
 
-The addon is built and tested by default but is installed only by the separate
-`rntester-demo` component. It never enters the generic runtime archive.
+The addon is built and tested by default and can be installed through the local
+`rntester-demo` CMake component. It never enters the public Nightly binary or
+DMG and is not published as a Release asset.
 
 ## Inventory
 

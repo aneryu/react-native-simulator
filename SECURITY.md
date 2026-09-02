@@ -2,9 +2,9 @@
 
 ## Supported version
 
-Only the latest published `v0.1.x` experimental release receives security
-fixes. Until the first GitHub Release exists, the current source checkout is
-development software and has no supported binary distribution.
+Only the current rolling `nightly` release receives security fixes. Each
+publication replaces the previous Nightly; old binary releases are unsupported
+and are not retained by the project.
 
 ## Trust boundary
 
@@ -27,14 +27,15 @@ protect against another process already running as the same user.
 ## Binary distribution
 
 Nightly assets target Apple Silicon with a declared minimum of
-macOS 15. They are ad-hoc signed after relocation and stripping, but are not
-Developer ID signed or notarized. Verify the adjacent SHA-256 file before
-accepting the installer's explicit quarantine-removal step.
+macOS 15. The self-contained `rnsim` executable is Developer ID signed with
+Hardened Runtime. Its one-file DMG is signed, notarized, and stapled. The
+installer verifies the adjacent SHA-256 file, signatures, Gatekeeper assessment,
+notarization ticket, and DMG contents; it never removes quarantine.
 
-Every archive includes a release manifest, SPDX SBOM, third-party notices, and
-license texts. The manifest records the exact Git commit and whether the source
-tree was dirty; published Nightly assets must say `dirty: false` and identify
-their exact commit.
+The executable reports the exact Git commit and clean source state through
+`rnsim --version --json`. Dependency notices and license texts remain in the
+repository at the exact commit identified by the binary and are linked from the
+Nightly release notes.
 
 ## Reporting a vulnerability
 

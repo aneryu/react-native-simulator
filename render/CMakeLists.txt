@@ -82,7 +82,6 @@ target_link_libraries(react-native-simulator-skia-renderer
   PUBLIC react-native-simulator-skia-text
   PRIVATE
     rns_folly
-    "${DOUBLE_CONVERSION_LIBRARY}"
     "-framework Foundation"
     "-framework ImageIO"
     "-framework CoreGraphics")

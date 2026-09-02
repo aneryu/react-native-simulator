@@ -55,7 +55,6 @@ target_include_directories(react-native-simulator-inspector PRIVATE
 target_link_libraries(react-native-simulator-inspector PRIVATE
   react-native-simulator-imgui
   rns_folly
-  "${DOUBLE_CONVERSION_LIBRARY}"
   "-framework AppKit")
 add_dependencies(react-native-simulator-inspector
   react-native-simulator-app-icon)

@@ -52,10 +52,9 @@ build/release/runtime/rnsim --config build/rntester/rnsim.json
 ## Adding an application addon
 
 Nightly addon authoring requires the exact source checkout and pinned React
-Native/Hermes headers. The compact runtime archive installs the ABI declaration
-for inspection, but it is not a standalone addon SDK and does not bundle the
-upstream C++ header trees. Build addons in-tree (or reproduce the same pinned
-toolchain and header inputs) and distribute the resulting compatible dylib.
+Native/Hermes headers. The one-file DMG installs no ABI headers or upstream C++
+header trees. Build addons in-tree (or reproduce the same pinned toolchain and
+header inputs) and distribute the resulting compatible dylib separately.
 
 Implement `ReactNativeSimulator::SimulatorAddon` in
 `runtime/addons/<name>/`, build it as a dylib, and export the C ABI entry point

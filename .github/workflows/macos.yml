@@ -4,13 +4,6 @@ on:
   pull_request:
   push:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      full_release:
-        description: Build and verify the complete release assets
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -34,18 +27,31 @@ jobs:
           git submodule sync -- \
             third_party/hermes \
             third_party/react-native \
-            third_party/fast_float
+            third_party/fast_float \
+            third_party/glog
           git submodule update --init --depth 1 -- \
             third_party/hermes \
             third_party/react-native \
-            third_party/fast_float
+            third_party/fast_float \
+            third_party/glog
           hermes_tag=$(sed -n \
             's/^set(RNS_EXPECTED_HERMES_TAG "\([^"]*\)").*/\1/p' \
             cmake/DependencyVersions.cmake)
           test -n "$hermes_tag"
           git -C third_party/hermes fetch --depth 1 origin tag "$hermes_tag"
+          fast_float_tag=$(sed -n \
+            's/^set(RNS_EXPECTED_FAST_FLOAT_TAG "\([^"]*\)").*/\1/p' \
+            cmake/DependencyVersions.cmake)
+          test -n "$fast_float_tag"
+          git -C third_party/fast_float fetch --depth 1 origin tag "$fast_float_tag"
+          glog_commit=$(sed -n \
+            's/^set(RNS_EXPECTED_GLOG_COMMIT "\([^"]*\)").*/\1/p' \
+            cmake/DependencyVersions.cmake)
+          test -n "$glog_commit"
+          git -C third_party/glog fetch --depth 1 origin "$glog_commit"
+          git -C third_party/glog checkout --detach "$glog_commit"
       - name: Install native dependencies
-        run: brew install cmake ninja boost double-conversion fmt folly glog
+        run: brew install cmake ninja boost double-conversion fmt folly
       - name: Build and test core release
         run: |-
           test "$(uname -m)" = arm64
@@ -70,107 +76,3 @@ jobs:
           ASAN_OPTIONS=halt_on_error=1:detect_container_overflow=1 \
             UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
             ctest --test-dir build/ci-sanitized --output-on-failure
-      - name: Verify clean install consumer
-        run: ctest --test-dir build/ci-release --output-on-failure -R '^package-'
-
-  full-release:
-    if: github.event_name == 'workflow_dispatch' && inputs.full_release
-    permissions:
-      contents: write
-    # A complete RN + Skia checkout exceeds the 14 GB disk on standard hosted
-    # macOS runners. This label identifies an Apple Silicon release machine.
-    runs-on: [self-hosted, macOS, ARM64, rnsim-release]
-    timeout-minutes: 180
-    steps:
-      - name: Check out the exact release source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          fetch-depth: 0
-          submodules: recursive
-          lfs: true
-          persist-credentials: false
-      - name: Verify clean source and runner
-        run: |-
-          test "$(uname -m)" = arm64
-          test -z "$(git status --porcelain)"
-          ! git submodule status --recursive | grep -Eq '^[+-U]'
-          git lfs fsck
-      - name: Install build dependencies
-        run: brew install cmake ninja boost double-conversion fmt folly glog
-      - name: Bootstrap pinned Skia
-        run: cmake/bootstrap-skia-macos.sh
-      - name: Build RN Tester caller bundle
-        run: |-
-          cmake --preset release
-          cmake --build --preset release --parallel 8
-          node tools/rntester/bundle.mjs \
-            --install \
-            --dev false \
-            --out-dir build/release-rntester \
-            --build-dir build/release
-      - name: Verify complete release build
-        run: |-
-          cmake --preset release \
-            -DRNS_RNTESTER_BUNDLE="$PWD/build/release-rntester/RNTesterApp.android.jsbundle" \
-            -DRNS_REQUIRE_RNTESTER_BUNDLE=ON
-          cmake --build --preset release --parallel 8
-          ctest --preset release
-          node tools/diagnostics/verify-runtime.mjs
-          node tools/diagnostics/verify-addons.mjs
-      - name: Verify full sanitizer lane without suppressions
-        run: |-
-          cmake --preset sanitized \
-            -DRNS_RNTESTER_BUNDLE="$PWD/build/release-rntester/RNTesterApp.android.jsbundle" \
-            -DRNS_REQUIRE_RNTESTER_BUNDLE=ON
-          cmake --build --preset sanitized --parallel 8
-          ctest --preset sanitized
-      - name: Package and verify final assets
-        run: |-
-          tools/release/package-macos.sh build/release dist
-          tools/release/package-rntester-demo.sh \
-            build/release build/release-rntester dist
-          tools/release/verify-release.sh dist
-      - name: Verify reproducible archives
-        run: |-
-          second_output=$(mktemp -d "$RUNNER_TEMP/rnsim-repro.XXXXXX")
-          tools/release/package-macos.sh build/release "$second_output"
-          tools/release/package-rntester-demo.sh \
-            build/release build/release-rntester "$second_output"
-          release_channel=$(sed -n \
-            's/^set(RNS_RELEASE_CHANNEL "\([^"]*\)").*/\1/p' \
-            CMakeLists.txt)
-          for asset in \
-            "rnsim-${release_channel}-macos-arm64.tar.gz" \
-            "rnsim-rntester-demo-${release_channel}-macos-arm64.tar.gz"; do
-            cmp "dist/$asset" "$second_output/$asset"
-          done
-      - name: Sign and notarize published assets
-        env:
-          RNS_CODESIGN_IDENTITY: ${{ secrets.RNS_CODESIGN_IDENTITY }}
-          RNS_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.RNS_NOTARY_KEYCHAIN_PROFILE }}
-          RNS_NOTARY_KEY_ID: ${{ secrets.RNS_NOTARY_KEY_ID }}
-          RNS_NOTARY_ISSUER_ID: ${{ secrets.RNS_NOTARY_ISSUER_ID }}
-          RNS_NOTARY_KEY: ${{ secrets.RNS_NOTARY_KEY }}
-        run: |-
-          if [ -z "${RNS_CODESIGN_IDENTITY:-}" ]; then
-            echo "Skipping Developer ID signing; RNS_CODESIGN_IDENTITY is unset."
-            exit 0
-          fi
-          release_channel=$(sed -n \
-            's/^set(RNS_RELEASE_CHANNEL "\([^"]*\)").*/\1/p' \
-            CMakeLists.txt)
-          tools/release/sign-and-notarize.sh \
-            "dist/rnsim-${release_channel}-macos-arm64.tar.gz"
-          tools/release/sign-and-notarize.sh \
-            "dist/rnsim-rntester-demo-${release_channel}-macos-arm64.tar.gz"
-          tools/release/verify-release.sh dist
-      - name: Upload verified release candidates
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: react-native-simulator-${{ github.ref_name }}-macos-arm64
-          path: |-
-            dist/*.tar.gz
-            dist/*.sha256
-            dist/*.dmg
-          if-no-files-found: error
-          retention-days: 14

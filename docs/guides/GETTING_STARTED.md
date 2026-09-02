@@ -29,23 +29,19 @@ builds expose their exact Git commit; see the
 
 ## Install the runtime
 
-Download the runtime archive and adjacent checksum from the rolling
-[Nightly GitHub Release](https://github.com/aneryu/react-native-simulator/releases/tag/nightly),
-then install it. If that page does not contain the named assets, no supported
-binary distribution has been published yet; build from source instead.
+Run the repository-hosted installer. It downloads the rolling Nightly DMG and
+checksum, validates the Developer ID signature and stapled notarization ticket,
+and installs its only file, `rnsim`.
 
 ```sh
-shasum -a 256 -c rnsim-nightly-macos-arm64.tar.gz.sha256
-tar xf rnsim-nightly-macos-arm64.tar.gz
-./rnsim/install.sh
+curl -fsSL https://raw.githubusercontent.com/aneryu/react-native-simulator/main/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-When Gatekeeper assessment requires quarantine removal, the installer confirms
-trust first. It copies the whole runtime to
-`~/.local/lib/react-native-simulator/nightly` and creates
-`~/.local/bin/rnsim`. Use `--prefix DIR` to select another user-owned prefix. It
-does not use sudo or modify shell startup files. Keep `PREFIX/bin` on PATH.
+The installer atomically replaces `~/.local/bin/rnsim`. Use
+`sh -s -- --prefix DIR` after the pipe to select another user-owned prefix. It
+does not use sudo, remove quarantine, or modify shell startup files. Keep
+`PREFIX/bin` on PATH.
 
 Confirm the exact runtime contract before loading an application:
 
@@ -77,17 +73,15 @@ it without requiring a conventional local `index.js`. The RN project metadata
 is still required for doctor readiness; Metro project identity remains
 diagnostic.
 
-Nightly packaging ad-hoc signs Mach-O files for Apple Silicon; those
-artifacts are not Developer ID signed or notarized. Verifying SHA-256 and, when
-requested, accepting the installer's quarantine-removal prompt are therefore
-explicit trust steps.
+Nightly is Developer ID signed with Hardened Runtime. Its DMG is notarized and
+stapled, and the installer fails closed on checksum, signature, notarization, or
+unexpected-content errors.
 
 ### Update Nightly
 
-Run the installer from the newest verified archive. It replaces the existing
-`nightly` installation after confirmation and updates the managed `current`
-link. Old Nightly binaries are not retained. The installer refuses to overwrite
-a `PREFIX/bin/rnsim` it does not manage.
+Run the same curl installer again. It atomically replaces the existing managed
+Nightly binary; old Nightly binaries are not retained. The installer refuses to
+overwrite a `PREFIX/bin/rnsim` it does not recognize as this product.
 
 ## Local development (Fast Refresh)
 

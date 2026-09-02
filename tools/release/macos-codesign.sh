@@ -3,10 +3,9 @@
 # Shared Mach-O signing for release staging. Source this file from another
 # tools/release script, or invoke it directly with one or more file paths.
 #
-# RNS_CODESIGN_IDENTITY selects the signer. Empty or "-" is ad-hoc and keeps
-# package-macos.sh byte-reproducible. A Developer ID Application identity is
-# required for notarization and is applied by sign-and-notarize.sh after the
-# reproducible archive has been verified.
+# RNS_CODESIGN_IDENTITY selects the signer. Empty or "-" remains available for
+# local build-tree sealing, but official Nightly packaging requires a Developer
+# ID Application identity and Hardened Runtime.
 
 set -eu
 

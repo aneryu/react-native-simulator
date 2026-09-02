@@ -4,70 +4,69 @@ set -eu
 
 project_root=$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)
 dist_dir=${1:-"$project_root/dist"}
-channel=$(sed -n \
-  's/^set(RNS_RELEASE_CHANNEL "\([^"]*\)").*/\1/p' \
+channel=$(sed -n 's/^set(RNS_RELEASE_CHANNEL "\([^"]*\)").*/\1/p' \
   "$project_root/CMakeLists.txt")
-runtime_archive="$dist_dir/rnsim-${channel}-macos-arm64.tar.gz"
-demo_archive="$dist_dir/rnsim-rntester-demo-${channel}-macos-arm64.tar.gz"
+dmg="$dist_dir/rnsim-${channel}-macos-arm64.dmg"
+checksum="$dmg.sha256"
+[ -f "$dmg" ] && [ -f "$checksum" ] || {
+  echo "Missing Nightly DMG or checksum in $dist_dir." >&2; exit 1;
+}
+(cd "$dist_dir" && shasum -a 256 -c "$(basename "$checksum")")
+hdiutil verify "$dmg" >/dev/null
+codesign --verify --strict --verbose=2 "$dmg"
+xcrun stapler validate "$dmg"
+spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
 
-for archive in "$runtime_archive" "$demo_archive"; do
-  if [ ! -f "$archive" ] || [ ! -f "$archive.sha256" ]; then
-    echo "Missing release asset or checksum: $archive" >&2
-    exit 1
-  fi
-  (cd "$dist_dir" && shasum -a 256 -c "$(basename "$archive").sha256")
-done
-
-verification_root=$(mktemp -d "${TMPDIR:-/tmp}/rnsim-release-verify.XXXXXX")
+stage=$(mktemp -d "${TMPDIR:-/tmp}/rnsim-verify.XXXXXX")
+mountpoint="$stage/mount"
+mkdir "$mountpoint"
+attached=0
 cleanup() {
-  if [ -n "${verification_root:-}" ] && [ -d "$verification_root" ]; then
-    rm -rf "$verification_root"
-  fi
+  if [ "$attached" -eq 1 ]; then hdiutil detach "$mountpoint" -quiet || true; fi
+  rm -rf "$stage"
 }
 trap cleanup EXIT HUP INT TERM
+hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mountpoint" >/dev/null
+attached=1
+entries=$(find "$mountpoint" -mindepth 1 -maxdepth 1 ! -name '.DS_Store' -print)
+[ "$entries" = "$mountpoint/rnsim" ] && [ -f "$mountpoint/rnsim" ] || {
+  echo "Nightly DMG must contain exactly one file named rnsim." >&2
+  find "$mountpoint" -mindepth 1 -maxdepth 1 -print >&2
+  exit 1
+}
+cp "$mountpoint/rnsim" "$stage/rnsim"
+hdiutil detach "$mountpoint" -quiet
+attached=0
+chmod 755 "$stage/rnsim"
 
-tar xf "$runtime_archive" -C "$verification_root"
-tar xf "$demo_archive" -C "$verification_root"
-macho_list="$verification_root/macho-files"
-find "$verification_root/rnsim" "$verification_root/rnsim-rntester-demo" \
-  -type f -print >"$macho_list"
-while IFS= read -r candidate; do
-  file "$candidate" | grep -q 'Mach-O' || continue
-  codesign --verify --strict --verbose=2 "$candidate"
-done <"$macho_list"
-prefix="$verification_root/prefix"
-"$verification_root/rnsim/install.sh" --yes --prefix "$prefix"
-# Nightly is rolling: reinstalling the same channel replaces it in place.
-"$verification_root/rnsim/install.sh" --yes --prefix "$prefix"
-runtime="$prefix/bin/rnsim"
+file "$stage/rnsim" | grep -q 'Mach-O 64-bit executable arm64'
+non_system=$(otool -L "$stage/rnsim" | tail -n +2 | awk '{print $1}' | \
+  grep -Ev '^(/System/|/usr/lib/)' || true)
+[ -z "$non_system" ] || {
+  echo "Packaged rnsim has non-system dynamic dependencies:" >&2
+  printf '%s\n' "$non_system" >&2
+  exit 1
+}
+codesign --verify --strict --verbose=2 "$stage/rnsim"
+signature=$(codesign -dv --verbose=4 "$stage/rnsim" 2>&1)
+printf '%s\n' "$signature" | grep -Fq 'Authority=Developer ID Application:'
+printf '%s\n' "$signature" | grep -Eq 'flags=.*(runtime|0x10000)'
 
-version_json=$($runtime --version --json)
-printf '%s\n' "$version_json" | grep -Fq "\"channel\":\"$channel\""
-printf '%s\n' "$version_json" | grep -Fq '"minimumMacOS":"15.0"'
-doctor_json=$($runtime doctor --json)
-printf '%s\n' "$doctor_json" | grep -Fq '"securitySandbox":false'
-printf '%s\n' "$doctor_json" | grep -Fq '"installedDevToolsFrontend":true'
-printf '%s\n' "$doctor_json" | grep -Fq '"project":{'
+version=$("$stage/rnsim" --version --json)
+commit=$(git -C "$project_root" rev-parse HEAD)
+printf '%s\n' "$version" | grep -Fq "\"channel\":\"$channel\""
+printf '%s\n' "$version" | grep -Fq "\"commit\":\"$commit\""
+printf '%s\n' "$version" | grep -Fq '"dirty":false'
+printf '%s\n' "$version" | grep -Fq '"minimumMacOS":"15.0"'
+doctor=$(cd "$project_root/tests/fixtures/doctor-project" && "$stage/rnsim" doctor --json)
+printf '%s\n' "$doctor" | grep -Fq '"securitySandbox":false'
 
-demo="$verification_root/rnsim-rntester-demo"
-(cd "$demo" && "$runtime" headless \
-  --config ./rnsim.json \
-  --bundle ./RNTesterApp.android.hbc \
-  --bundle ./rntester-startup-adapter.js \
-  --timeout-ms 15000) >"$verification_root/headless.json"
-grep -Fq '"bundlesLoaded":2' "$verification_root/headless.json"
-grep -Fq '"reactFabric":true' "$verification_root/headless.json"
-grep -Fq '"workloadComplete":true' "$verification_root/headless.json"
-grep -Fq '"pendingWork":false' "$verification_root/headless.json"
-grep -Fq '"jsErrors":0' "$verification_root/headless.json"
+smoke="$stage/smoke.json"
+"$stage/rnsim" headless \
+  --bundle "$project_root/tests/fixtures/runtime-smoke.js" \
+  --iterations 5 --timeout-ms 1000 >"$smoke"
+grep -Fq '"workloadComplete":true' "$smoke"
+grep -Fq '"pendingWork":false' "$smoke"
+grep -Fq '"jsErrors":0' "$smoke"
 
-smoke_result="$verification_root/interactive-smoke.json"
-(cd "$demo" && RNS_INTERACTIVE_SMOKE_OUTPUT="$smoke_result" \
-  "$runtime" --config ./rnsim.json) >"$verification_root/interactive.log" 2>&1
-grep -Fq 'running AppRegistry application RNTesterApp' \
-  "$verification_root/interactive.log"
-grep -Fq '"ready":true' "$smoke_result"
-grep -Eq '"frameWidth":[1-9][0-9]*' "$smoke_result"
-grep -Eq '"sceneRevision":[0-9]+' "$smoke_result"
-
-echo "Verified packaged runtime install, headless RN Tester, and interactive Skia frame."
+echo "Verified one-file Developer ID signed, notarized, and stapled Nightly DMG."

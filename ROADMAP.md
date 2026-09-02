@@ -1,7 +1,7 @@
 # Roadmap
 
 React Native Simulator follows the phased architecture in
-[SIMULATOR_DESIGN.md](docs/design/SIMULATOR_DESIGN.md). The v0.1 line is
+[SIMULATOR_DESIGN.md](docs/design/SIMULATOR_DESIGN.md). The rolling Nightly is
 experimental and Android-first.
 
 ## Phase 4: RN 0.87 Android capability certification
@@ -27,12 +27,11 @@ experimental and Android-first.
 
 ## Phase 6: distribution and automation
 
-- add full macOS CI with shallow pinned submodule recovery, Skia bootstrap, and
-  cacheable Skia artifacts;
-- publish signed and notarized macOS arm64 archives, then evaluate a universal
-  binary once the Skia bootstrap supports Intel;
-- automate checksum generation, relocation audits, sanitizer gates, and release
-  provenance while keeping caller bundles outside the runtime artifact.
+- keep ordinary macOS CI independent from local signing and publication;
+- maintain the Developer ID signed, notarized, and stapled one-file arm64 DMG,
+  then evaluate a universal binary once the Skia bootstrap supports Intel;
+- maintain checksum generation, static-dependency audits, sanitizer gates, and
+  release provenance while keeping caller bundles outside the runtime artifact.
 
 ## Phase 7: stable embedding contract
 

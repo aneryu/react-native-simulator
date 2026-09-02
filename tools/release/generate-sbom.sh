@@ -19,6 +19,7 @@ rn_commit=$(git -C "$project_root/third_party/react-native" rev-parse HEAD)
 hermes_commit=$(git -C "$project_root/third_party/hermes" rev-parse HEAD)
 skia_commit=$(git -C "$project_root/third_party/skia" rev-parse HEAD)
 fast_float_commit=$(git -C "$project_root/third_party/fast_float" rev-parse HEAD)
+glog_commit=$(git -C "$project_root/third_party/glog" rev-parse HEAD)
 imgui_commit=$(git -C "$project_root/third_party/imgui" rev-parse HEAD)
 sdl_commit=$(git -C "$project_root/third_party/sdl" rev-parse HEAD)
 source_date_epoch=${SOURCE_DATE_EPOCH:-$(git -C "$project_root" show -s --format=%ct HEAD)}
@@ -30,8 +31,6 @@ formula_version() {
 
 folly_version=$(formula_version folly)
 fmt_version=$(formula_version fmt)
-glog_version=$(formula_version glog)
-gflags_version=$(formula_version gflags)
 double_conversion_version=$(formula_version double-conversion)
 boost_version=$(formula_version boost)
 
@@ -53,8 +52,7 @@ boost_version=$(formula_version boost)
   printf '    {"SPDXID":"SPDXRef-sdl","name":"SDL","versionInfo":"%s","downloadLocation":"NOASSERTION","licenseConcluded":"Zlib","licenseDeclared":"Zlib"},\n' "$sdl_commit"
   printf '    {"SPDXID":"SPDXRef-folly","name":"folly","versionInfo":"%s","downloadLocation":"NOASSERTION","licenseConcluded":"Apache-2.0","licenseDeclared":"Apache-2.0"},\n' "$folly_version"
   printf '    {"SPDXID":"SPDXRef-fmt","name":"fmt","versionInfo":"%s","downloadLocation":"NOASSERTION","licenseConcluded":"MIT","licenseDeclared":"MIT"},\n' "$fmt_version"
-  printf '    {"SPDXID":"SPDXRef-glog","name":"glog","versionInfo":"%s","downloadLocation":"NOASSERTION","licenseConcluded":"BSD-3-Clause","licenseDeclared":"BSD-3-Clause"},\n' "$glog_version"
-  printf '    {"SPDXID":"SPDXRef-gflags","name":"gflags","versionInfo":"%s","downloadLocation":"NOASSERTION","licenseConcluded":"BSD-3-Clause","licenseDeclared":"BSD-3-Clause"},\n' "$gflags_version"
+  printf '    {"SPDXID":"SPDXRef-glog","name":"glog","versionInfo":"%s","downloadLocation":"NOASSERTION","licenseConcluded":"BSD-3-Clause","licenseDeclared":"BSD-3-Clause"},\n' "$glog_commit"
   printf '    {"SPDXID":"SPDXRef-double-conversion","name":"double-conversion","versionInfo":"%s","downloadLocation":"NOASSERTION","licenseConcluded":"BSD-3-Clause","licenseDeclared":"BSD-3-Clause"},\n' "$double_conversion_version"
   printf '    {"SPDXID":"SPDXRef-boost-system","name":"boost","versionInfo":"%s","downloadLocation":"NOASSERTION","licenseConcluded":"BSL-1.0","licenseDeclared":"BSL-1.0"},\n' "$boost_version"
   printf '    {"SPDXID":"SPDXRef-boost-context","name":"boost-context-vendored","versionInfo":"1.86.0","downloadLocation":"NOASSERTION","licenseConcluded":"BSL-1.0","licenseDeclared":"BSL-1.0"}\n'

@@ -50,25 +50,20 @@ contracts require an explicit addon and never become silent mocks.
 
 ### Install Nightly
 
-Download the runtime archive and adjacent checksum from the rolling
-[Nightly GitHub Release](https://github.com/aneryu/react-native-simulator/releases/tag/nightly).
-If that page does not list the assets below, no supported binary distribution
-has been published yet; use [Build from source](#build-from-source) instead.
+Install the rolling Nightly with the repository-hosted installer:
 
 ```sh
-shasum -a 256 -c rnsim-nightly-macos-arm64.tar.gz.sha256
-tar xf rnsim-nightly-macos-arm64.tar.gz
-./rnsim/install.sh
+curl -fsSL https://raw.githubusercontent.com/aneryu/react-native-simulator/main/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 rnsim --version
 ```
 
-When Gatekeeper assessment requires it, the installer removes quarantine after
-confirmation. It copies the complete tree to
-`~/.local/lib/react-native-simulator/nightly` and links `rnsim` into
-`~/.local/bin`. It does not use sudo or edit shell configuration. The runtime
-itself is self-contained and does not require a React Native checkout, Node.js,
-npm, or Homebrew.
+The installer downloads the DMG and adjacent SHA-256 file from the
+[Nightly GitHub Release](https://github.com/aneryu/react-native-simulator/releases/tag/nightly),
+validates its Developer ID signature, notarization ticket, and one-file layout,
+then atomically installs `rnsim` into `~/.local/bin`. It does not use sudo,
+remove quarantine, or edit shell configuration. The executable is self-contained
+and does not require a React Native checkout, Node.js, npm, or Homebrew.
 
 ### Run your React Native app
 
@@ -117,20 +112,11 @@ TypeScript, or bundle configuration. See
 [running your own app](docs/guides/GETTING_STARTED.md) for non-standard Metro
 ports, offline bundles, local configuration, addons, and troubleshooting.
 
-### Explore RN Tester
+### RN Tester verification
 
-If you do not have an RN 0.87 app ready, the optional RN Tester support package
-contains a caller-built HBC, assets, and an isolated application addon:
-
-```sh
-shasum -a 256 -c rnsim-rntester-demo-nightly-macos-arm64.tar.gz.sha256
-tar xf rnsim-rntester-demo-nightly-macos-arm64.tar.gz
-xattr -dr com.apple.quarantine rnsim-rntester-demo
-rnsim --config rnsim-rntester-demo/rnsim.json
-```
-
-The compact demo uses host macOS font fallback, so it is a functional tour, not
-an Android typography or pixel-certification artifact. Nightly identity,
+RN Tester remains a caller-built repository fixture used for local conformance
+and visual verification. It is not a Nightly download and its application addon
+is never embedded in the public `rnsim` binary. Nightly identity,
 installation, Gatekeeper details, DevTools usage, and
 dependency provenance live in the
 [getting-started guide](docs/guides/GETTING_STARTED.md),
@@ -144,7 +130,7 @@ Requirements:
 
 - Apple Silicon Mac running macOS 15 or newer, with current Xcode Command Line Tools
 - CMake 3.22+, Ninja, Python 3, Git, and Git LFS
-- Homebrew packages: `boost`, `double-conversion`, `fmt`, `folly`, and `glog`
+- Homebrew packages: `boost`, `double-conversion`, `fmt`, and `folly`
 
 Use the repository's GitHub **Code** menu to copy its clone URL, then:
 
@@ -153,7 +139,7 @@ git clone --recurse-submodules REPOSITORY_URL react-native-simulator
 cd react-native-simulator
 git lfs pull
 
-brew install cmake ninja boost double-conversion fmt folly glog
+brew install cmake ninja boost double-conversion fmt folly
 cmake/bootstrap-skia-macos.sh
 cmake --preset release
 cmake --build --preset release
@@ -171,8 +157,8 @@ If Git LFS is absent, the visual-baseline PNGs remain pointer files. This does
 not block the core build, but visual galleries and comparison evidence will be
 incomplete.
 
-The production executable is `build/release/runtime/rnsim`. Install the CLI,
-shared engine, headers, and CMake package with:
+The production executable is `build/release/runtime/rnsim`. Install a local
+source-built CLI with:
 
 ```sh
 cmake --install build/release \
@@ -180,18 +166,16 @@ cmake --install build/release \
   --component react-native-simulator
 ```
 
-External CMake projects should use
-`find_package(ReactNativeSimulator CONFIG REQUIRED)` and link
-`ReactNativeSimulator::Engine`.
-The installed CMake package supports the embedding Engine API. Embedders can
+The Nightly DMG is intentionally not an embedding SDK. Source-tree embedding
+targets link `ReactNativeSimulator::Engine`. Embedders can
 query `Engine::runtimeStatus()` for the runtime generation and phase, HMR state,
 structured JavaScript/application diagnostics, and observed native-module plus
 mounted official, addon, or fallback-component capability usage. The live
 interface consumes this status: the toolbar shows lifecycle and HMR state, while
 the App panel shows structured errors, JavaScript stack frames, and capabilities
 or degradations actually observed by the current generation. Native addon
-authoring still requires the exact source checkout and pinned RN/Hermes headers;
-the compact archive is not a standalone addon SDK.
+authoring requires the exact source checkout and pinned RN/Hermes headers; the
+one-file Nightly is not a standalone addon SDK.
 
 ## Advanced runtime usage
 
@@ -281,22 +265,16 @@ node tools/diagnostics/verify-addons.mjs
 node tools/rntester/bundle.mjs \
   --dev false --out-dir build/release-rntester --build-dir build/release
 tools/release/package-macos.sh build/release dist
-tools/release/package-rntester-demo.sh \
-  build/release build/release-rntester dist
 tools/release/verify-release.sh dist
 ```
 
-The scripts create independent runtime and RN Tester support assets plus their
-SHA-256 files under `dist/`. Runtime packaging recursively vendors non-system
-dylibs, rewrites Mach-O install names, strips local symbols without removing
-embedding exports, ad-hoc signs the final bytes, and fails on absolute
-dependencies/rpaths or application-contract leakage. Demo packaging compiles
-HBC with the same Hermes tree, installs the versioned dynamic addon, records a
-compatibility manifest, and does not duplicate the runtime.
-Official package scripts reject dirty source trees and mismatched build
-commits, include SPDX SBOMs and complete third-party license inventories, fix
-the deployment target at macOS 15, reject author-machine paths, and create
-reproducible archives.
+Local release packaging creates `rnsim-nightly-macos-arm64.dmg` and its SHA-256
+file. The DMG contains exactly one self-contained `rnsim` executable. The binary
+is Developer ID signed with Hardened Runtime; the DMG is signed, notarized, and
+stapled. Packaging rejects dirty source trees, mismatched build commits,
+non-system dynamic dependencies, and author-checkout paths. GitHub Actions does
+not build or publish release assets; a maintainer publishes the locally verified
+DMG with `tools/release/publish-nightly.sh`.
 
 ## Non-goals
 
