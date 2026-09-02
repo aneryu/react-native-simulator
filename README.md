@@ -24,8 +24,10 @@ The project is in Phase 4 of the accepted architecture plan: the engine,
 retained scene, Skia renderer, and same-process interactive frontend are
 connected, and Android RN 0.87 behavior is being certified against RN Tester.
 It is an Android-first experimental preview, not a claim of complete Android
-or iOS equivalence. Public conformance verdicts are intentionally disabled in
-v0.1.0 until the canonical profile, font, and oracle manifests are complete.
+or iOS equivalence. The project currently uses the **Nightly** channel rather
+than promising a numbered release contract. Public conformance verdicts are
+intentionally disabled until the canonical profile, font, and oracle manifests
+are complete. See the [Nightly versioning policy](docs/design/VERSIONING.md).
 
 Current pinned runtime:
 
@@ -40,22 +42,22 @@ demo and visual certification boundary.
 
 ## Quick start
 
-The supported v0.1.0 path is intentionally narrow: Apple Silicon, macOS 15 or
+The supported Nightly path is intentionally narrow: Apple Silicon, macOS 15 or
 newer, React Native 0.87.0, and the Android profile. Check the
 [capability baseline](docs/baselines/RN087_CAPABILITY_BASELINE.md) before using
 an application with platform or third-party native modules; unsupported native
 contracts require an explicit addon and never become silent mocks.
 
-### Install once
+### Install Nightly
 
-Download the runtime archive and its adjacent checksum from the
-[v0.1.0 GitHub Release](https://github.com/aneryu/react-native-simulator/releases/tag/v0.1.0).
+Download the runtime archive and adjacent checksum from the rolling
+[Nightly GitHub Release](https://github.com/aneryu/react-native-simulator/releases/tag/nightly).
 If that page does not list the assets below, no supported binary distribution
 has been published yet; use [Build from source](#build-from-source) instead.
 
 ```sh
-shasum -a 256 -c rnsim-v0.1.0-macos-arm64.tar.gz.sha256
-tar xf rnsim-v0.1.0-macos-arm64.tar.gz
+shasum -a 256 -c rnsim-nightly-macos-arm64.tar.gz.sha256
+tar xf rnsim-nightly-macos-arm64.tar.gz
 ./rnsim/install.sh
 export PATH="$HOME/.local/bin:$PATH"
 rnsim --version
@@ -63,7 +65,7 @@ rnsim --version
 
 When Gatekeeper assessment requires it, the installer removes quarantine after
 confirmation. It copies the complete tree to
-`~/.local/lib/react-native-simulator/0.1.0` and links `rnsim` into
+`~/.local/lib/react-native-simulator/nightly` and links `rnsim` into
 `~/.local/bin`. It does not use sudo or edit shell configuration. The runtime
 itself is self-contained and does not require a React Native checkout, Node.js,
 npm, or Homebrew.
@@ -121,17 +123,19 @@ If you do not have an RN 0.87 app ready, the optional RN Tester support package
 contains a caller-built HBC, assets, and an isolated application addon:
 
 ```sh
-shasum -a 256 -c rnsim-rntester-demo-v0.1.0-macos-arm64.tar.gz.sha256
-tar xf rnsim-rntester-demo-v0.1.0-macos-arm64.tar.gz
+shasum -a 256 -c rnsim-rntester-demo-nightly-macos-arm64.tar.gz.sha256
+tar xf rnsim-rntester-demo-nightly-macos-arm64.tar.gz
 xattr -dr com.apple.quarantine rnsim-rntester-demo
 rnsim --config rnsim-rntester-demo/rnsim.json
 ```
 
 The compact demo uses host macOS font fallback, so it is a functional tour, not
-an Android typography or pixel-certification artifact. Manual version
-management, Gatekeeper details, DevTools usage, and dependency
-provenance live in the [getting-started guide](docs/guides/GETTING_STARTED.md),
-[v0.1.0 release notes](docs/releases/v0.1.0.md), and
+an Android typography or pixel-certification artifact. Nightly identity,
+installation, Gatekeeper details, DevTools usage, and
+dependency provenance live in the
+[getting-started guide](docs/guides/GETTING_STARTED.md),
+[Nightly versioning policy](docs/design/VERSIONING.md),
+[Nightly release notes](docs/releases/nightly.md), and
 [security policy](SECURITY.md), rather than the first-run path.
 
 ## Build from source
@@ -176,8 +180,8 @@ cmake --install build/release \
   --component react-native-simulator
 ```
 
-External CMake projects can use
-`find_package(ReactNativeSimulator 0.1.0 EXACT CONFIG REQUIRED)` and link
+External CMake projects should use
+`find_package(ReactNativeSimulator CONFIG REQUIRED)` and link
 `ReactNativeSimulator::Engine`.
 The installed CMake package supports the embedding Engine API. Embedders can
 query `Engine::runtimeStatus()` for the runtime generation and phase, HMR state,
@@ -233,8 +237,8 @@ rnsim headless \
 ```
 
 These requirements validate one runtime execution; they are not a platform
-conformance certificate. `rnsim test`/`rnsim conformance` fail closed in
-v0.1.0 instead of producing a misleading pass.
+conformance certificate. `rnsim test`/`rnsim conformance` fail closed throughout
+the Nightly phase instead of producing a misleading pass.
 
 Multiple `--bundle` options load sequentially on one ReactInstance,
 RuntimeScheduler, and Hermes VM. JavaScript may also call the Promise-based

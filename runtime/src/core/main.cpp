@@ -436,7 +436,7 @@ Headless options:
 
 Interactive mode does not require RN$SimulatorWorkload signals;
 headless mode remains strict and finite. Public conformance is intentionally
-disabled in v0.1.0 until canonical profile/font/oracle manifests are complete.
+disabled during Nightly until canonical profile/font/oracle manifests are complete.
 )";
 }
 
@@ -446,6 +446,8 @@ folly::dynamic buildInformation() {
   return folly::dynamic::object
       ("name", "react-native-simulator")
       ("version", RNS_PROJECT_VERSION)
+      ("channel", RNS_PROJECT_VERSION)
+      ("transportVersion", RNS_TRANSPORT_VERSION)
       ("commit", RNS_BUILD_COMMIT)
       ("dirty", std::string(RNS_BUILD_DIRTY) == "true")
       ("reactNative", RNS_REACT_NATIVE_VERSION)
@@ -846,8 +848,9 @@ CliOptions parseOptions(int argc, char **argv) {
       ++index;
     } else if (command == "test" || command == "conformance") {
       throw std::invalid_argument(
-          "Conformance is not available in v0.1.0. Use headless with explicit "
-          "runtime requirements; no result from that mode is a certification verdict.");
+          "Conformance is not available during Nightly. Use headless with "
+          "explicit runtime requirements; no result from that mode is a "
+          "certification verdict.");
     } else if (!command.starts_with("--")) {
       throw std::invalid_argument("Unknown command: " + command);
     }

@@ -11,8 +11,8 @@ output=$1
 package_kind=$2
 case "$package_kind" in runtime|demo) ;; *) exit 2 ;; esac
 project_root=$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)
-version=$(sed -n \
-  's/^project(ReactNativeSimulator VERSION \([^ ]*\) .*/\1/p' \
+channel=$(sed -n \
+  's/^set(RNS_RELEASE_CHANNEL "\([^"]*\)").*/\1/p' \
   "$project_root/CMakeLists.txt")
 commit=$(git -C "$project_root" rev-parse HEAD)
 rn_commit=$(git -C "$project_root/third_party/react-native" rev-parse HEAD)
@@ -40,11 +40,11 @@ boost_version=$(formula_version boost)
   printf '  "spdxVersion": "SPDX-2.3",\n'
   printf '  "dataLicense": "CC0-1.0",\n'
   printf '  "SPDXID": "SPDXRef-DOCUMENT",\n'
-  printf '  "name": "react-native-simulator-%s-v%s",\n' "$package_kind" "$version"
-  printf '  "documentNamespace": "https://react-native-simulator.invalid/spdx/%s/%s/%s",\n' "$version" "$commit" "$package_kind"
+  printf '  "name": "react-native-simulator-%s-%s",\n' "$package_kind" "$channel"
+  printf '  "documentNamespace": "https://react-native-simulator.invalid/spdx/%s/%s/%s",\n' "$channel" "$commit" "$package_kind"
   printf '  "creationInfo": {"created": "%s", "creators": ["Tool: tools/release/generate-sbom.sh"]},\n' "$created"
   printf '  "packages": [\n'
-  printf '    {"SPDXID":"SPDXRef-rnsim","name":"react-native-simulator-%s","versionInfo":"%s","downloadLocation":"NOASSERTION","licenseConcluded":"MIT","licenseDeclared":"MIT","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:generic/react-native-simulator@%s?vcs_url=git%%2B%s"}]},\n' "$package_kind" "$version" "$version" "$commit"
+  printf '    {"SPDXID":"SPDXRef-rnsim","name":"react-native-simulator-%s","versionInfo":"%s","downloadLocation":"NOASSERTION","licenseConcluded":"MIT","licenseDeclared":"MIT","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":"pkg:generic/react-native-simulator@%s?vcs_url=git%%2B%s"}]},\n' "$package_kind" "$channel" "$channel" "$commit"
   printf '    {"SPDXID":"SPDXRef-react-native","name":"react-native","versionInfo":"0.87.0","downloadLocation":"NOASSERTION","licenseConcluded":"MIT","licenseDeclared":"MIT","sourceInfo":"git %s"},\n' "$rn_commit"
   printf '    {"SPDXID":"SPDXRef-hermes","name":"hermes","versionInfo":"260318099.0.1","downloadLocation":"NOASSERTION","licenseConcluded":"MIT","licenseDeclared":"MIT","sourceInfo":"git %s"},\n' "$hermes_commit"
   printf '    {"SPDXID":"SPDXRef-skia","name":"skia","versionInfo":"%s","downloadLocation":"NOASSERTION","licenseConcluded":"BSD-3-Clause","licenseDeclared":"BSD-3-Clause"},\n' "$skia_commit"

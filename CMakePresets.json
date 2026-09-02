@@ -18,7 +18,7 @@
       "inherits": "release",
       "binaryDir": "${sourceDir}/build/sanitized",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "RNS_ENABLE_SANITIZERS": "ON"
       }
     },

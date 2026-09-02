@@ -24,7 +24,7 @@ test, and runtime paths must not require Node.js or npm.
 - `interactive` runs the same engine with an SDL/ImGui macOS shell, input,
   live Skia rendering, application selection, reload, and optional DevTools.
 - `headless` runs finite workloads, screenshots, metrics, traces, and CI jobs.
-- public `test` and `conformance` commands fail closed in v0.1.0. A future
+- public `test` and `conformance` commands fail closed during Nightly. A future
   conformance mode must compare against canonical platform profiles, fonts,
   devices, and oracles; strict headless validation is not certification.
 

@@ -9,8 +9,8 @@ RNS_CODESIGN_LIB_DIR="$project_root/tools/release"
 build_dir=${1:-"$project_root/build/release"}
 rntester_dir=${2:-"$project_root/build/release-rntester"}
 output_dir=${3:-"$project_root/dist"}
-release_version=$(sed -n \
-  's/^project(ReactNativeSimulator VERSION \([^ ]*\) .*/\1/p' \
+release_channel=$(sed -n \
+  's/^set(RNS_RELEASE_CHANNEL "\([^"]*\)").*/\1/p' \
   "$project_root/CMakeLists.txt")
 react_native_version=$(sed -n \
   's/^[[:space:]]*"version": "\([^"]*\)",/\1/p' \
@@ -22,7 +22,7 @@ hermes_version=$(sed -n \
 addon_abi=$(sed -n \
   's/.*kSimulatorAddonAbiVersion = \([0-9][0-9]*\);/\1/p' \
   "$project_root/runtime/include/react-native-simulator/SimulatorAddon.h")
-if [ -z "$release_version" ] || [ -z "$react_native_version" ] || \
+if [ -z "$release_channel" ] || [ -z "$react_native_version" ] || \
     [ -z "$hermes_version" ] || [ -z "$addon_abi" ]; then
   echo "Cannot resolve release compatibility metadata" >&2
   exit 1
@@ -171,8 +171,8 @@ SOURCE_DATE_EPOCH=$(git -C "$project_root" show -s --format=%ct HEAD) \
   "$project_root/tools/release/generate-sbom.sh" \
   "$demo_root/SBOM.spdx.json" demo
 
-printf 'RN Tester demo support package for React Native Simulator v%s\n\n' \
-  "$release_version" >"$demo_root/README.txt"
+printf 'RN Tester demo support package for React Native Simulator %s\n\n' \
+  "$release_channel" >"$demo_root/README.txt"
 cat >>"$demo_root/README.txt" <<'EOF'
 This package contains executable arm64 addon code. Before extracting it, verify
 the adjacent .sha256 file from the release. Because this release is ad-hoc
@@ -199,7 +199,7 @@ Android typography or pixel-certification artifact.
 EOF
 
 mkdir -p "$output_dir"
-archive_name="rnsim-rntester-demo-v${release_version}-macos-arm64.tar.gz"
+archive_name="rnsim-rntester-demo-${release_channel}-macos-arm64.tar.gz"
 archive="$output_dir/$archive_name"
 SOURCE_DATE_EPOCH=$(git -C "$project_root" show -s --format=%ct HEAD) \
   "$project_root/tools/release/create-reproducible-tar.sh" \

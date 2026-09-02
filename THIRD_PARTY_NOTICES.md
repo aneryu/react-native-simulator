@@ -1,6 +1,6 @@
 # Third-party notices
 
-React Native Simulator v0.1.0 is distributed under the MIT License. Its
+React Native Simulator Nightly is distributed under the MIT License. Its
 macOS runtime and RN Tester support package also redistribute or statically
 link the projects below. Exact source revisions are recorded in the release
 manifest and SPDX SBOM shipped with each archive; complete license texts are

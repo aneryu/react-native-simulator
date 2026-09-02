@@ -23,9 +23,13 @@ if(NOT result EQUAL 0)
 endif()
 
 string(JSON version GET "${metadata}" version)
+string(JSON channel GET "${metadata}" channel)
+string(JSON transport_version GET "${metadata}" transportVersion)
 string(JSON react_native GET "${metadata}" reactNative)
 string(JSON addon_abi GET "${metadata}" addonAbi)
-if(NOT version STREQUAL "0.1.0" OR
+if(NOT version STREQUAL "nightly" OR
+   NOT channel STREQUAL "nightly" OR
+   NOT transport_version STREQUAL "0.0.0" OR
    NOT react_native STREQUAL "0.87.0" OR
    NOT addon_abi EQUAL 2)
   message(FATAL_ERROR "Unexpected ${MODE} metadata: ${metadata}")

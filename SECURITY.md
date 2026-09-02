@@ -26,14 +26,15 @@ protect against another process already running as the same user.
 
 ## Binary distribution
 
-The v0.1.0 alpha assets are Apple Silicon binaries with a declared minimum of
+Nightly assets target Apple Silicon with a declared minimum of
 macOS 15. They are ad-hoc signed after relocation and stripping, but are not
 Developer ID signed or notarized. Verify the adjacent SHA-256 file before
 accepting the installer's explicit quarantine-removal step.
 
 Every archive includes a release manifest, SPDX SBOM, third-party notices, and
 license texts. The manifest records the exact Git commit and whether the source
-tree was dirty; official assets must say `dirty: false`.
+tree was dirty; published Nightly assets must say `dirty: false` and identify
+their exact commit.
 
 ## Reporting a vulnerability
 

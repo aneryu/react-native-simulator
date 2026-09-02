@@ -4,11 +4,11 @@ set -eu
 
 project_root=$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)
 dist_dir=${1:-"$project_root/dist"}
-version=$(sed -n \
-  's/^project(ReactNativeSimulator VERSION \([^ ]*\) .*/\1/p' \
+channel=$(sed -n \
+  's/^set(RNS_RELEASE_CHANNEL "\([^"]*\)").*/\1/p' \
   "$project_root/CMakeLists.txt")
-runtime_archive="$dist_dir/rnsim-v${version}-macos-arm64.tar.gz"
-demo_archive="$dist_dir/rnsim-rntester-demo-v${version}-macos-arm64.tar.gz"
+runtime_archive="$dist_dir/rnsim-${channel}-macos-arm64.tar.gz"
+demo_archive="$dist_dir/rnsim-rntester-demo-${channel}-macos-arm64.tar.gz"
 
 for archive in "$runtime_archive" "$demo_archive"; do
   if [ ! -f "$archive" ] || [ ! -f "$archive.sha256" ]; then
@@ -37,10 +37,12 @@ while IFS= read -r candidate; do
 done <"$macho_list"
 prefix="$verification_root/prefix"
 "$verification_root/rnsim/install.sh" --yes --prefix "$prefix"
+# Nightly is rolling: reinstalling the same channel replaces it in place.
+"$verification_root/rnsim/install.sh" --yes --prefix "$prefix"
 runtime="$prefix/bin/rnsim"
 
 version_json=$($runtime --version --json)
-printf '%s\n' "$version_json" | grep -Fq "\"version\":\"$version\""
+printf '%s\n' "$version_json" | grep -Fq "\"channel\":\"$channel\""
 printf '%s\n' "$version_json" | grep -Fq '"minimumMacOS":"15.0"'
 doctor_json=$($runtime doctor --json)
 printf '%s\n' "$doctor_json" | grep -Fq '"securitySandbox":false'

@@ -14,19 +14,19 @@ paths can identify local projects. Redact those paths before posting publicly.
 
 ## “bad CPU type”, “requires a newer version of macOS”, or immediate launch failure
 
-The v0.1.0 binary contract targets Apple Silicon (`arm64`) and macOS 15 or newer.
+The Nightly binary contract targets Apple Silicon (`arm64`) and macOS 15 or newer.
 Source builds may choose another deployment target only if the complete
 dependency stack is rebuilt and verified there.
 
 ## Gatekeeper or quarantine blocks the downloaded asset
 
-Verify the adjacent checksum first:
+Verify the adjacent Nightly checksum first:
 
 ```sh
-shasum -a 256 -c rnsim-v0.1.0-macos-arm64.tar.gz.sha256
+shasum -a 256 -c rnsim-nightly-macos-arm64.tar.gz.sha256
 ```
 
-Default v0.1.0 packaging is ad-hoc signed, not Developer ID signed or notarized.
+Nightly packaging is ad-hoc signed, not Developer ID signed or notarized.
 The runtime installer asks before removing quarantine when Gatekeeper assessment
 requires it. For the optional demo, remove quarantine only after verifying its
 checksum:
@@ -86,7 +86,7 @@ repair the path or override the source explicitly with `--url`/`--bundle`.
 
 ## RN/Hermes or bytecode mismatch
 
-The v0.1.0 host supports React Native 0.87.0 and Hermes
+The current Nightly host supports React Native 0.87.0 and Hermes
 `260318099.0.1`. The runtime archive intentionally does not ship `hermesc`.
 Binary users should load a caller-built source `.jsbundle`; compiling HBC
 requires `build/release/bin/hermesc` from the exact source revision. Never mix

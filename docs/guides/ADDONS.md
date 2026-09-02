@@ -51,7 +51,7 @@ build/release/runtime/rnsim --config build/rntester/rnsim.json
 
 ## Adding an application addon
 
-v0.1.0 addon authoring requires the exact source checkout and pinned React
+Nightly addon authoring requires the exact source checkout and pinned React
 Native/Hermes headers. The compact runtime archive installs the ABI declaration
 for inspection, but it is not a standalone addon SDK and does not bundle the
 upstream C++ header trees. Build addons in-tree (or reproduce the same pinned

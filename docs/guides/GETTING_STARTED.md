@@ -9,9 +9,11 @@ or release validation.
 The host does not own Metro, Babel, TypeScript, or a production bundle pipeline.
 You build the JavaScript; `rnsim` loads it.
 
-The v0.1.0 binary contract targets Apple Silicon and macOS 15 or newer. It is an
+The Nightly binary contract targets Apple Silicon and macOS 15 or newer. It is an
 Android-first experimental preview, not a sandbox or a platform conformance
-certificate. The iOS profile remains unverified experimental work.
+certificate. The iOS profile remains unverified experimental work. Nightly
+builds expose their exact Git commit; see the
+[versioning policy](../design/VERSIONING.md).
 
 ## Before you install
 
@@ -27,21 +29,21 @@ certificate. The iOS profile remains unverified experimental work.
 
 ## Install the runtime
 
-Download the runtime archive and adjacent checksum from the
-[v0.1.0 GitHub Release](https://github.com/aneryu/react-native-simulator/releases/tag/v0.1.0),
+Download the runtime archive and adjacent checksum from the rolling
+[Nightly GitHub Release](https://github.com/aneryu/react-native-simulator/releases/tag/nightly),
 then install it. If that page does not contain the named assets, no supported
 binary distribution has been published yet; build from source instead.
 
 ```sh
-shasum -a 256 -c rnsim-v0.1.0-macos-arm64.tar.gz.sha256
-tar xf rnsim-v0.1.0-macos-arm64.tar.gz
+shasum -a 256 -c rnsim-nightly-macos-arm64.tar.gz.sha256
+tar xf rnsim-nightly-macos-arm64.tar.gz
 ./rnsim/install.sh
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
 When Gatekeeper assessment requires quarantine removal, the installer confirms
 trust first. It copies the whole runtime to
-`~/.local/lib/react-native-simulator/0.1.0` and creates
+`~/.local/lib/react-native-simulator/nightly` and creates
 `~/.local/bin/rnsim`. Use `--prefix DIR` to select another user-owned prefix. It
 does not use sudo or modify shell startup files. Keep `PREFIX/bin` on PATH.
 
@@ -75,17 +77,17 @@ it without requiring a conventional local `index.js`. The RN project metadata
 is still required for doctor readiness; Metro project identity remains
 diagnostic.
 
-The default v0.1.0 packaging ad-hoc signs Mach-O files for Apple Silicon; those
+Nightly packaging ad-hoc signs Mach-O files for Apple Silicon; those
 artifacts are not Developer ID signed or notarized. Verifying SHA-256 and, when
 requested, accepting the installer's quarantine-removal prompt are therefore
 explicit trust steps.
 
-### Manage installed versions
+### Update Nightly
 
-Keep the extracted installer when you need to manage this release. Use
-`--reinstall` to replace exactly v0.1.0, `--activate 0.1.0` to switch the managed
-`current` link, and `--uninstall 0.1.0` to remove only that installed version.
-The installer refuses to overwrite a `PREFIX/bin/rnsim` it does not manage.
+Run the installer from the newest verified archive. It replaces the existing
+`nightly` installation after confirmation and updates the managed `current`
+link. Old Nightly binaries are not retained. The installer refuses to overwrite
+a `PREFIX/bin/rnsim` it does not manage.
 
 ## Local development (Fast Refresh)
 

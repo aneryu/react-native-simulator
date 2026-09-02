@@ -4,7 +4,6 @@ on:
   pull_request:
   push:
     branches: [main]
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       full_release:
@@ -40,6 +39,11 @@ jobs:
             third_party/hermes \
             third_party/react-native \
             third_party/fast_float
+          hermes_tag=$(sed -n \
+            's/^set(RNS_EXPECTED_HERMES_TAG "\([^"]*\)").*/\1/p' \
+            cmake/DependencyVersions.cmake)
+          test -n "$hermes_tag"
+          git -C third_party/hermes fetch --depth 1 origin tag "$hermes_tag"
       - name: Install native dependencies
         run: brew install cmake ninja boost double-conversion fmt folly glog
       - name: Build and test core release
@@ -56,7 +60,7 @@ jobs:
       - name: Build and test instrumented core without suppressions
         run: |-
           cmake -S . -B build/ci-sanitized -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
             -DRNS_ENABLE_SANITIZERS=ON \
             -DRNS_ENABLE_SKIA=OFF \
@@ -70,9 +74,7 @@ jobs:
         run: ctest --test-dir build/ci-release --output-on-failure -R '^package-'
 
   full-release:
-    if: >-
-      (github.event_name == 'workflow_dispatch' && inputs.full_release) ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name == 'workflow_dispatch' && inputs.full_release
     permissions:
       contents: write
     # A complete RN + Skia checkout exceeds the 14 GB disk on standard hosted
@@ -93,13 +95,6 @@ jobs:
           test -z "$(git status --porcelain)"
           ! git submodule status --recursive | grep -Eq '^[+-U]'
           git lfs fsck
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            release_version=$(sed -n \
-              's/^project(ReactNativeSimulator VERSION \([^ ]*\) .*/\1/p' \
-              CMakeLists.txt)
-            test "$GITHUB_REF_NAME" = "v$release_version"
-            test "$(git rev-list -n 1 "$GITHUB_REF_NAME")" = "$GITHUB_SHA"
-          fi
       - name: Install build dependencies
         run: brew install cmake ninja boost double-conversion fmt folly glog
       - name: Bootstrap pinned Skia
@@ -141,12 +136,12 @@ jobs:
           tools/release/package-macos.sh build/release "$second_output"
           tools/release/package-rntester-demo.sh \
             build/release build/release-rntester "$second_output"
-          release_version=$(sed -n \
-            's/^project(ReactNativeSimulator VERSION \([^ ]*\) .*/\1/p' \
+          release_channel=$(sed -n \
+            's/^set(RNS_RELEASE_CHANNEL "\([^"]*\)").*/\1/p' \
             CMakeLists.txt)
           for asset in \
-            "rnsim-v${release_version}-macos-arm64.tar.gz" \
-            "rnsim-rntester-demo-v${release_version}-macos-arm64.tar.gz"; do
+            "rnsim-${release_channel}-macos-arm64.tar.gz" \
+            "rnsim-rntester-demo-${release_channel}-macos-arm64.tar.gz"; do
             cmp "dist/$asset" "$second_output/$asset"
           done
       - name: Sign and notarize published assets
@@ -161,13 +156,13 @@ jobs:
             echo "Skipping Developer ID signing; RNS_CODESIGN_IDENTITY is unset."
             exit 0
           fi
-          release_version=$(sed -n \
-            's/^project(ReactNativeSimulator VERSION \([^ ]*\) .*/\1/p' \
+          release_channel=$(sed -n \
+            's/^set(RNS_RELEASE_CHANNEL "\([^"]*\)").*/\1/p' \
             CMakeLists.txt)
           tools/release/sign-and-notarize.sh \
-            "dist/rnsim-v${release_version}-macos-arm64.tar.gz"
+            "dist/rnsim-${release_channel}-macos-arm64.tar.gz"
           tools/release/sign-and-notarize.sh \
-            "dist/rnsim-rntester-demo-v${release_version}-macos-arm64.tar.gz"
+            "dist/rnsim-rntester-demo-${release_channel}-macos-arm64.tar.gz"
           tools/release/verify-release.sh dist
       - name: Upload verified release candidates
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -179,24 +174,3 @@ jobs:
             dist/*.dmg
           if-no-files-found: error
           retention-days: 14
-      - name: Publish verified GitHub release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |-
-          release_version=${GITHUB_REF_NAME#v}
-          notes="docs/releases/v${release_version}.md"
-          test -f "$notes"
-          set -- dist/*.tar.gz dist/*.sha256
-          if ls dist/*.dmg >/dev/null 2>&1; then
-            set -- "$@" dist/*.dmg
-          fi
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$@" --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" "$@" \
-              --verify-tag \
-              --prerelease \
-              --title "React Native Simulator $GITHUB_REF_NAME" \
-              --notes-file "$notes"
-          fi

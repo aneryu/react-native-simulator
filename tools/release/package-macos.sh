@@ -8,11 +8,11 @@ RNS_CODESIGN_LIB_DIR="$project_root/tools/release"
 . "$RNS_CODESIGN_LIB_DIR/macos-codesign.sh"
 build_dir=${1:-"$project_root/build/release"}
 output_dir=${2:-"$project_root/dist"}
-release_version=$(sed -n \
-  's/^project(ReactNativeSimulator VERSION \([^ ]*\) .*/\1/p' \
+release_channel=$(sed -n \
+  's/^set(RNS_RELEASE_CHANNEL "\([^"]*\)").*/\1/p' \
   "$project_root/CMakeLists.txt")
-if [ -z "$release_version" ]; then
-  echo "Cannot read ReactNativeSimulator project version" >&2
+if [ -z "$release_channel" ]; then
+  echo "Cannot read ReactNativeSimulator release channel" >&2
   exit 1
 fi
 
@@ -51,8 +51,8 @@ if ! file "$build_dir/runtime/rnsim" | grep -q 'Mach-O 64-bit executable arm64';
   exit 1
 fi
 build_info=$("$build_dir/runtime/rnsim" --version --json)
-printf '%s\n' "$build_info" | grep -Fq "\"version\":\"$release_version\"" || {
-  echo "Built rnsim version does not match $release_version" >&2
+printf '%s\n' "$build_info" | grep -Fq "\"channel\":\"$release_channel\"" || {
+  echo "Built rnsim channel does not match $release_channel" >&2
   exit 1
 }
 printf '%s\n' "$build_info" | grep -Fq "\"commit\":\"$release_commit\"" || {
@@ -73,10 +73,11 @@ cp "$project_root/LICENSE" "$project_root/NOTICE" \
 mkdir -p "$install_root/docs"
 cp "$project_root/docs/guides/GETTING_STARTED.md" \
   "$project_root/docs/guides/TROUBLESHOOTING.md" \
+  "$project_root/docs/design/VERSIONING.md" \
   "$install_root/docs/"
 cp "$project_root/tools/release/install.sh" "$install_root/install.sh"
 chmod +x "$install_root/install.sh"
-printf '%s\n' "$release_version" >"$install_root/VERSION"
+printf '%s\n' "$release_channel" >"$install_root/VERSION"
 "$project_root/tools/release/collect-licenses.sh" "$install_root/licenses"
 SOURCE_DATE_EPOCH=$(git -C "$project_root" show -s --format=%ct HEAD) \
   "$project_root/tools/release/generate-sbom.sh" \
@@ -240,7 +241,7 @@ for forbidden in \
 done
 
 mkdir -p "$output_dir"
-archive_name="rnsim-v${release_version}-macos-arm64.tar.gz"
+archive_name="rnsim-${release_channel}-macos-arm64.tar.gz"
 archive="$output_dir/$archive_name"
 SOURCE_DATE_EPOCH=$(git -C "$project_root" show -s --format=%ct HEAD) \
   "$project_root/tools/release/create-reproducible-tar.sh" \

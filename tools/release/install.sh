@@ -7,13 +7,10 @@ release_version=$(sed -n '1p' "$package_root/VERSION")
 prefix=${HOME:?HOME is required}/.local
 assume_yes=0
 operation=install
-operation_version=
-reinstall=0
 
 usage() {
-  echo "Usage: ./install.sh [--prefix DIR] [--yes] [--reinstall]"
-  echo "       ./install.sh --activate VERSION [--prefix DIR] [--yes]"
-  echo "       ./install.sh --uninstall VERSION [--prefix DIR] [--yes]"
+  echo "Usage: ./install.sh [--prefix DIR] [--yes]"
+  echo "       ./install.sh --uninstall [--prefix DIR] [--yes]"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -29,17 +26,8 @@ while [ "$#" -gt 0 ]; do
     --yes)
       assume_yes=1
       ;;
-    --reinstall)
-      reinstall=1
-      ;;
-    --activate|--uninstall)
-      operation=${1#--}
-      shift
-      if [ "$#" -eq 0 ]; then
-        echo "--$operation requires a version" >&2
-        exit 1
-      fi
-      operation_version=$1
+    --uninstall)
+      operation=uninstall
       ;;
     --help|-h)
       usage
@@ -55,14 +43,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$release_version" in
-  ''|*[!0-9.]*)
-    echo "Invalid release version in $package_root/VERSION" >&2
-    exit 1
-    ;;
-esac
-case "${operation_version:-$release_version}" in
-  ''|*[!0-9.]*)
-    echo "Invalid version: ${operation_version:-$release_version}" >&2
+  ''|*[!A-Za-z0-9._-]*)
+    echo "Invalid release channel in $package_root/VERSION" >&2
     exit 1
     ;;
 esac
@@ -122,33 +104,25 @@ activate() {
   ln -s ../lib/react-native-simulator/current/bin/rnsim "$link"
 }
 
-if [ "$operation" = activate ]; then
-  confirm "Activate React Native Simulator $operation_version?"
-  activate "$operation_version"
-  echo "Activated React Native Simulator $operation_version"
-  exit 0
-fi
-
 if [ "$operation" = uninstall ]; then
-  uninstall_root="$install_base/$operation_version"
+  uninstall_root="$install_root"
   if [ ! -d "$uninstall_root" ]; then
-    echo "Installed version does not exist: $uninstall_root" >&2
+    echo "Installed Nightly does not exist: $uninstall_root" >&2
     exit 1
   fi
-  confirm "Uninstall React Native Simulator $operation_version from $uninstall_root?"
+  confirm "Uninstall React Native Simulator Nightly from $uninstall_root?"
   current_version=
   if [ -L "$current_link" ]; then
     current_version=$(readlink "$current_link")
   fi
   rm -rf "$uninstall_root"
-  if [ "$current_version" = "$operation_version" ]; then
+  if [ "$current_version" = "$release_version" ]; then
     rm -f "$current_link"
     if is_managed_path_link; then
       rm -f "$link"
     fi
-    echo "The active version was removed. Use --activate VERSION to select another installation."
   fi
-  echo "Uninstalled React Native Simulator $operation_version"
+  echo "Uninstalled React Native Simulator Nightly"
   exit 0
 fi
 
@@ -160,11 +134,6 @@ if [ ! -x "$runtime" ] || \
 fi
 
 if [ -e "$install_root" ] || [ -L "$install_root" ]; then
-  if [ "$reinstall" -ne 1 ]; then
-    echo "Install target already exists: $install_root" >&2
-    echo "Use --reinstall to replace this exact version." >&2
-    exit 1
-  fi
   confirm "Replace React Native Simulator $release_version at $install_root?"
   rm -rf "$install_root"
 else

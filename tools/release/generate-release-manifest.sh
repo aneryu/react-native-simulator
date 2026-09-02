@@ -12,8 +12,8 @@ package_kind=$2
 runtime=$3
 case "$package_kind" in runtime|demo) ;; *) exit 2 ;; esac
 project_root=$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)
-version=$(sed -n \
-  's/^project(ReactNativeSimulator VERSION \([^ ]*\) .*/\1/p' \
+channel=$(sed -n \
+  's/^set(RNS_RELEASE_CHANNEL "\([^"]*\)").*/\1/p' \
   "$project_root/CMakeLists.txt")
 commit=$(git -C "$project_root" rev-parse HEAD)
 dirty=false
@@ -34,7 +34,7 @@ printf '%s\n' \
   '{' \
   "  \"schemaVersion\": 1," \
   "  \"package\": \"$package_kind\"," \
-  "  \"version\": \"$version\"," \
+  "  \"channel\": \"$channel\"," \
   "  \"gitCommit\": \"$commit\"," \
   "  \"dirty\": $dirty," \
   "  \"sourceDate\": \"$built_at\"," \

@@ -414,7 +414,8 @@ target_link_libraries(react-native-simulator PRIVATE
 target_link_options(react-native-simulator PRIVATE
   "$<$<CONFIG:Release>:-Wl,-dead_strip>")
 target_compile_definitions(react-native-simulator PRIVATE
-  RNS_PROJECT_VERSION="${PROJECT_VERSION}"
+  RNS_PROJECT_VERSION="${RNS_RELEASE_CHANNEL}"
+  RNS_TRANSPORT_VERSION="${PROJECT_VERSION}"
   RNS_REACT_NATIVE_VERSION="${RNS_REACT_NATIVE_VERSION}"
   RNS_HERMES_VERSION="${RNS_HERMES_VERSION}"
   RNS_BUILD_COMMIT="${RNS_BUILD_COMMIT}"
