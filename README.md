@@ -4,49 +4,47 @@
 
 # React Native Simulator
 
-**This project is implemented entirely by AI.** React Native Simulator shortens
-the React Native developer and AI-agent loop by providing a native macOS target
-for caller-owned applications. Within its documented React Native 0.87 Android
-capability baseline, it can replace part of the edit, run, inspect, and diagnose
-workflow that normally requires an Android Emulator.
+**Run your React Native app natively on macOS, no Android Emulator required.**
 
-It is not an Android OS emulator or a drop-in replacement for every device
-workflow. Unsupported components, native modules, device services, OEM behavior,
-and release validation still require an explicit addon or a real Android target.
-The supported path runs Hermes, ReactInstance, RuntimeScheduler, Fabric, Yoga,
-and Skia directly on macOS without an Android client process.
+React Native Simulator hosts Hermes, Fabric, Yoga, and Skia in a single macOS
+process, giving developers and AI agents a fast edit, run, inspect, and diagnose
+loop for React Native 0.87 Android apps. It is not an Android OS emulator: work
+outside the documented [capability baseline](docs/baselines/RN087_CAPABILITY_BASELINE.md)
+still needs an explicit addon or a real device.
+
+_This project is implemented entirely by AI._
 
 ![React Native Simulator running RN Tester interactively](docs/assets/rnsim-interactive.png)
 
 ## Status
 
-The project is in Phase 4 of the accepted architecture plan: the engine,
-retained scene, Skia renderer, and same-process interactive frontend are
-connected, and Android RN 0.87 behavior is being certified against RN Tester.
-It is an Android-first experimental preview, not a claim of complete Android
-or iOS equivalence. The project currently uses the **Nightly** channel rather
-than promising a numbered release contract. Public conformance verdicts are
-intentionally disabled until the canonical profile, font, and oracle manifests
-are complete. See the [Nightly versioning policy](docs/design/VERSIONING.md).
+**Android-first experimental preview, shipped on the Nightly channel.** The
+project is in Phase 4 of the accepted architecture plan: engine, retained scene,
+Skia renderer, and same-process interactive frontend are connected, and Android
+RN 0.87 behavior is being certified against RN Tester. This is not a claim of
+complete Android or iOS equivalence, and there is no numbered release contract
+yet. Public conformance verdicts stay disabled until the canonical profile,
+font, and oracle manifests are complete. See the
+[Nightly versioning policy](docs/design/VERSIONING.md).
 
-Current pinned runtime:
+Pinned runtime:
 
 - React Native 0.87.0 (`4bc2473f5d0233ea5384c1ef24f6a55615de2220`)
 - Hermes v1 `260318099.0.1`
 - Apple Silicon (`arm64`), macOS 15 or newer
 
-See the [capability baseline](docs/baselines/RN087_CAPABILITY_BASELINE.md) for
-implemented, approximated, mocked, and unavailable surfaces. The
-[RN Tester baseline](docs/baselines/RNTESTER_BASELINE.md) records the Android
-demo and visual certification boundary.
+What works, what is approximated, and what is unavailable is recorded in the
+[capability baseline](docs/baselines/RN087_CAPABILITY_BASELINE.md); the
+[RN Tester baseline](docs/baselines/RNTESTER_BASELINE.md) marks the Android
+demo and visual certification boundary. Check the capability baseline before
+running an app that depends on platform or third-party native modules:
+unsupported native contracts require an explicit addon and never become silent
+mocks.
 
 ## Quick start
 
-The supported Nightly path is intentionally narrow: Apple Silicon, macOS 15 or
-newer, React Native 0.87.0, and the Android profile. Check the
-[capability baseline](docs/baselines/RN087_CAPABILITY_BASELINE.md) before using
-an application with platform or third-party native modules; unsupported native
-contracts require an explicit addon and never become silent mocks.
+Supported path: Apple Silicon, macOS 15 or newer, React Native 0.87.0, Android
+profile.
 
 ### Install Nightly
 
@@ -80,49 +78,49 @@ Then open another terminal in the same app directory:
 rnsim
 ```
 
-The default target is Android. `rnsim` opens the host window immediately while
-it connects to Metro on localhost:8081; closing the window cancels the wait.
-The selected Metro source owns the bundle regardless of the directory where
-`rnsim` was launched. `rnsim doctor` reports a detected project-root mismatch or
-probe failure as diagnostic evidence without blocking launch.
+`rnsim` targets Android by default. It opens the host window immediately and
+connects to Metro on `localhost:8081`; closing the window cancels the wait. The
+Metro source owns the bundle regardless of where `rnsim` was launched, and
+`rnsim doctor` reports a project-root mismatch or probe failure as diagnostic
+evidence without blocking launch.
 
-The live workspace is application-first: Device is the default view, the
-standard project entry and `app.json` are discovered, and the configured or
-only registered AppRegistry application runs automatically. Several application
-keys or a blocking error force the App panel open. A newly observed compatibility
-warning opens it once and remains dismissible; you can also request it from the
-toolbar. **Inspect** (`⌘2`) opens the ShadowTree element picker, cancels any
-active application pointer, and isolates normal pointer, keyboard, and TextInput
-dispatch while inspection is active. `⌘1`, `⌘2`, `⌘R`, and Inspect Escape remain
-available.
+What you get in the window:
 
-Save a component to exercise Fast Refresh. Metro's `r` command, **Reload**, or
-`⌘R` requests an in-process reload while the interactive window stays open. If
-JavaScript evaluation fails after the initial bundle loads, fix the source and
-reload. Reload is available while the Engine is running, paused after an error,
-or waiting for an application choice. If preparation fails before a bundle
-reaches the Engine, correct the reported Metro or bundle problem and use
-**Retry** or `⌘R`; another Retry is ignored while that attempt is in flight.
-Preparation is transactional for remote sources, so it can fetch and validate
-them again without queueing any fetched remote bundle until all remote sources
-succeed, and without closing the window.
+- **Application-first workspace.** Device is the default view. The standard
+  project entry and `app.json` are discovered, and the configured (or only
+  registered) AppRegistry application starts automatically. Several
+  application keys or a blocking error open the App panel; a newly observed
+  compatibility warning opens it once and stays dismissible. You can also open
+  it from the toolbar.
+- **Inspect** (`⌘2`) opens the ShadowTree element picker. It cancels any active
+  application pointer and isolates normal pointer, keyboard, and TextInput
+  dispatch while active. `⌘1`, `⌘2`, `⌘R`, and Escape keep working.
+- **Fast Refresh and Reload.** Save a component to Fast Refresh. Metro's `r`,
+  the **Reload** button, or `⌘R` reloads in-process while the window stays open,
+  whether the Engine is running, paused after an error, or waiting for an
+  application choice. If JavaScript evaluation fails after the initial bundle
+  loads, fix the source and reload.
+- **Retry.** If preparation fails before a bundle reaches the Engine, fix the
+  reported Metro or bundle problem and use **Retry** or `⌘R`. Repeat Retries
+  are ignored while an attempt is in flight. Remote preparation is
+  transactional: nothing fetched is queued until every remote source succeeds,
+  and the window never closes.
 
-`rnsim` deliberately does not launch Metro or own the caller's Babel,
-TypeScript, or bundle configuration. See
-[running your own app](docs/guides/GETTING_STARTED.md) for non-standard Metro
-ports, offline bundles, local configuration, addons, and troubleshooting.
+`rnsim` deliberately does not launch Metro or own your Babel, TypeScript, or
+bundle configuration. See [running your own app](docs/guides/GETTING_STARTED.md)
+for non-standard Metro ports, offline bundles, local configuration, addons, and
+troubleshooting.
 
 ### RN Tester verification
 
-RN Tester remains a caller-built repository fixture used for local conformance
-and visual verification. It is not a Nightly download and its application addon
-is never embedded in the public `rnsim` binary. Nightly identity,
-installation, Gatekeeper details, DevTools usage, and
-dependency provenance live in the
+RN Tester is a caller-built repository fixture for local conformance and visual
+verification. It is not a Nightly download, and its application addon is never
+embedded in the public `rnsim` binary. Nightly identity, installation,
+Gatekeeper details, DevTools usage, and dependency provenance are covered by the
 [getting-started guide](docs/guides/GETTING_STARTED.md),
 [Nightly versioning policy](docs/design/VERSIONING.md),
 [Nightly release notes](docs/releases/nightly.md), and
-[security policy](SECURITY.md), rather than the first-run path.
+[security policy](SECURITY.md).
 
 ## Build from source
 
@@ -146,16 +144,17 @@ cmake --build --preset release
 ctest --preset release
 ```
 
-The Skia bootstrap currently supports Apple Silicon only. A complete checkout
-and build needs approximately 16 GB for the pinned RN/Skia dependency trees.
-The measured Release tree is about 0.4 GB; the instrumented sanitizer tree is
-about 4.9 GB. Core
-configure/build/test/runtime paths do not invoke Node.js; Node is only used by
-optional RN Tester, diagnostics, and benchmark tooling.
+Notes:
 
-If Git LFS is absent, the visual-baseline PNGs remain pointer files. This does
-not block the core build, but visual galleries and comparison evidence will be
-incomplete.
+- The Skia bootstrap supports Apple Silicon only.
+- A complete checkout and build needs about 16 GB for the pinned RN/Skia
+  dependency trees. The Release tree measures about 0.4 GB; the instrumented
+  sanitizer tree about 4.9 GB.
+- Core configure/build/test/runtime paths never invoke Node.js. Node is used
+  only by the optional RN Tester, diagnostics, and benchmark tooling.
+- Without Git LFS the visual-baseline PNGs stay as pointer files. The core build
+  still succeeds, but visual galleries and comparison evidence will be
+  incomplete.
 
 The production executable is `build/release/runtime/rnsim`. Install a local
 source-built CLI with:
@@ -166,16 +165,15 @@ cmake --install build/release \
   --component react-native-simulator
 ```
 
-The Nightly DMG is intentionally not an embedding SDK. Source-tree embedding
-targets link `ReactNativeSimulator::Engine`. Embedders can
-query `Engine::runtimeStatus()` for the runtime generation and phase, HMR state,
-structured JavaScript/application diagnostics, and observed native-module plus
-mounted official, addon, or fallback-component capability usage. The live
-interface consumes this status: the toolbar shows lifecycle and HMR state, while
-the App panel shows structured errors, JavaScript stack frames, and capabilities
-or degradations actually observed by the current generation. Native addon
-authoring requires the exact source checkout and pinned RN/Hermes headers; the
-one-file Nightly is not a standalone addon SDK.
+The Nightly DMG is not an embedding or addon SDK. Embedding and native addon
+authoring both require the source checkout with its pinned RN/Hermes headers.
+Source-tree embedders link `ReactNativeSimulator::Engine` and can query
+`Engine::runtimeStatus()` for the runtime generation and phase, HMR state,
+structured JavaScript/application diagnostics, and observed native-module and
+mounted official, addon, or fallback-component usage. The interactive UI is
+built on the same status: the toolbar shows lifecycle and HMR state, and the
+App panel shows structured errors, JavaScript stack frames, and the
+capabilities or degradations actually observed by the current generation.
 
 ## Advanced runtime usage
 
@@ -194,17 +192,17 @@ and unknown fields are rejected:
 
 ```json
 {
-  "schemaVersion": 1,
-  "reactNative": "0.87.0",
-  "platform": "android",
-  "appKey": "MyApp",
-  "bundle": "./dist/application.hbc",
-  "viewport": {
-    "width": 392.7273,
-    "height": 753.4545,
-    "pointScaleFactor": 2.75
-  },
-  "addons": []
+    "schemaVersion": 1,
+    "reactNative": "0.87.0",
+    "platform": "android",
+    "appKey": "MyApp",
+    "bundle": "./dist/application.hbc",
+    "viewport": {
+        "width": 392.7273,
+        "height": 753.4545,
+        "pointScaleFactor": 2.75
+    },
+    "addons": []
 }
 ```
 
@@ -244,13 +242,14 @@ typed retained scene + cached Skia prepared paragraphs
 interactive frontend | headless screenshots | future conformance oracle
 ```
 
-The frontend never duplicates React Native semantics. SDL3 and Dear ImGui host
-the macOS shell; Skia paints the retained RN device scene. Pointer, scroll, key,
-and committed-text actions cross a bounded typed queue and are dispatched back
-through RN event contracts.
+One semantic engine serves every mode; the frontend never re-implements React
+Native semantics. SDL3 and Dear ImGui host the macOS shell, Skia paints the
+retained RN device scene, and pointer, scroll, key, and committed-text actions
+cross a bounded typed queue before being dispatched through RN's own event
+contracts.
 
-Application and third-party contracts live in isolated addons. The versioned RN
-profiles own upstream framework contracts. See
+Versioned RN profiles own upstream framework contracts; application and
+third-party contracts live in isolated addons. See
 [profiles and addon implementation guidance](docs/guides/ADDONS.md).
 
 ## Verification and release assets
