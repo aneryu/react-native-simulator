@@ -7,6 +7,8 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
 
+#include <sys/socket.h>
+
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -74,6 +76,23 @@ std::string originFor(const WsUrl& parsed) {
   }
   return std::string(scheme) + "://" + parsed.host + ":" + parsed.port;
 }
+
+void shutdownNative(tcp::socket& socket) {
+  if (!socket.is_open()) {
+    return;
+  }
+  const auto fd = socket.native_handle();
+  if (fd >= 0) {
+    ::shutdown(fd, SHUT_RDWR);
+  }
+}
+
+void interruptibleSleep(std::atomic<bool>& stopped, std::chrono::milliseconds total) {
+  const auto deadline = std::chrono::steady_clock::now() + total;
+  while (!stopped.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+}
 } // namespace
 
 class PackagerConnection::Impl {
@@ -88,7 +107,7 @@ class PackagerConnection::Impl {
     std::lock_guard<std::mutex> lock(mutex);
     if (socket != nullptr) {
       beast::error_code error;
-      socket->cancel(error);
+      shutdownNative(*socket);
       socket->close(error);
     }
   }
@@ -113,7 +132,7 @@ std::unique_ptr<PackagerConnection> PackagerConnection::connect(
       const auto parsed = parseWsUrl(url);
       if (!parsed || parsed->tls) {
         // Metro packager connections are loopback ws://. Fail closed on wss.
-        std::this_thread::sleep_for(std::chrono::seconds(5));
+        interruptibleSleep(impl->stopped, std::chrono::seconds(5));
         continue;
       }
       try {
@@ -140,6 +159,9 @@ std::unique_ptr<PackagerConnection> PackagerConnection::connect(
         while (!impl->stopped.load()) {
           beast::flat_buffer buffer;
           stream.read(buffer);
+          if (impl->stopped.load()) {
+            break;
+          }
           const auto text = beast::buffers_to_string(buffer.data());
           try {
             auto json = folly::parseJson(text);
@@ -161,7 +183,7 @@ std::unique_ptr<PackagerConnection> PackagerConnection::connect(
         impl->socket = nullptr;
       }
       if (!impl->stopped.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(5));
+        interruptibleSleep(impl->stopped, std::chrono::seconds(5));
       }
     }
   });

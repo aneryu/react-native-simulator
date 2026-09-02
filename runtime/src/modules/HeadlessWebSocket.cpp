@@ -9,6 +9,8 @@
 #include <boost/beast/websocket.hpp>
 #include <boost/beast/websocket/ssl.hpp>
 
+#include <sys/socket.h>
+
 #include <cctype>
 #include <memory>
 #include <mutex>
@@ -115,6 +117,16 @@ std::string joinedProtocols(const std::vector<std::string>& protocols) {
   return joined;
 }
 
+void shutdownNative(tcp::socket& socket) {
+  if (!socket.is_open()) {
+    return;
+  }
+  const auto fd = socket.native_handle();
+  if (fd >= 0) {
+    ::shutdown(fd, SHUT_RDWR);
+  }
+}
+
 int intArg(
     const jsi::Value* args,
     size_t count,
@@ -190,6 +202,18 @@ std::shared_ptr<Connection> connectionFor(int socketId) {
   return found == connections.end() ? nullptr : found->second;
 }
 
+void reapConnection(std::shared_ptr<Connection> connection) {
+  if (!connection) {
+    return;
+  }
+  connection->closeSilently();
+  // Connection's destructor joins the reader. Reload calls retainConnection
+  // from JS, so join on a helper thread instead of blocking the JS thread.
+  std::thread([connection = std::move(connection)]() mutable {
+    connection.reset();
+  }).detach();
+}
+
 void retainConnection(int socketId, std::shared_ptr<Connection> connection) {
   std::shared_ptr<Connection> previous;
   {
@@ -197,8 +221,8 @@ void retainConnection(int socketId, std::shared_ptr<Connection> connection) {
     previous = connections[socketId];
     connections[socketId] = std::move(connection);
   }
-  if (previous && previous != connections[socketId]) {
-    previous->closeSilently();
+  if (previous) {
+    reapConnection(std::move(previous));
   }
 }
 
@@ -216,7 +240,7 @@ void closeSocketsOwnedBy(void* module) {
     }
   }
   for (auto& connection : owned) {
-    connection->closeSilently();
+    reapConnection(std::move(connection));
   }
 }
 
@@ -546,18 +570,27 @@ void Connection::run(
     Stream& stream,
     const WsUrl&,
     const std::string&) {
-  while (!closed_) {
-    beast::flat_buffer buffer;
-    stream.read(buffer);
-    if (stream.got_text()) {
-      if (auto module = module_.lock()) {
-        module->emitText(socketId_, beast::buffers_to_string(buffer.data()));
+  try {
+    while (!closed_) {
+      beast::flat_buffer buffer;
+      stream.read(buffer);
+      if (closed_) {
+        return;
       }
-    } else {
-      std::string bytes = beast::buffers_to_string(buffer.data());
-      if (auto module = module_.lock()) {
-        module->emitBinary(socketId_, std::move(bytes));
+      if (stream.got_text()) {
+        if (auto module = module_.lock()) {
+          module->emitText(socketId_, beast::buffers_to_string(buffer.data()));
+        }
+      } else {
+        std::string bytes = beast::buffers_to_string(buffer.data());
+        if (auto module = module_.lock()) {
+          module->emitBinary(socketId_, std::move(bytes));
+        }
       }
+    }
+  } catch (const std::exception&) {
+    if (!closed_) {
+      fail("WebSocket closed");
     }
   }
 }
@@ -650,10 +683,10 @@ void Connection::closeSilently() {
   }
   beast::error_code error;
   if (plain_) {
-    plain_->next_layer().cancel(error);
+    shutdownNative(plain_->next_layer());
     plain_->next_layer().close(error);
   } else if (tls_) {
-    beast::get_lowest_layer(*tls_).cancel(error);
+    shutdownNative(beast::get_lowest_layer(*tls_));
     beast::get_lowest_layer(*tls_).close(error);
   }
   headlessBlobRemoveWebSocketHandler(socketId_);
