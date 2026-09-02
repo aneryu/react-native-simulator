@@ -348,7 +348,7 @@ std::vector<std::string> readRegisteredAppKeys(jsi::Runtime& runtime) {
   return result;
 }
 
-std::string resolveAutoRunAppKey(
+std::optional<std::string> resolveAutoRunAppKey(
     const std::vector<std::string>& keys,
     const std::optional<std::string>& configured) {
   if (configured) {
@@ -360,14 +360,8 @@ std::string resolveAutoRunAppKey(
       candidates.push_back(key);
     }
   }
-  if (candidates.empty()) {
-    throw std::runtime_error(
-        "No application was registered with AppRegistry");
-  }
   if (candidates.size() != 1) {
-    throw std::runtime_error(
-        "Multiple AppRegistry applications are registered; set "
-        "appKey in rnsim.json or pass --app-key");
+    return std::nullopt;
   }
   return candidates.front();
 }
@@ -1814,6 +1808,11 @@ rns::EngineResult rns::Engine::run() {
     for (;;) {
       ++sessionGeneration;
       impl_->reloadRequested.store(false);
+      {
+        std::lock_guard lock(impl_->applicationMutex);
+        impl_->launchState.runtimeGeneration =
+            static_cast<std::uint64_t>(sessionGeneration);
+      }
       if (sessionGeneration > 1) {
         std::cerr << "reloading ReactInstance (generation "
                   << sessionGeneration << ")\n";
@@ -1930,7 +1929,7 @@ rns::EngineResult rns::Engine::run() {
         std::make_unique<SimulatorHermesRuntime>(std::move(hermesRuntime)),
         eventLoop,
         timerManager,
-        [&jsErrorCount, &jsErrors](
+        [impl = impl_.get(), &jsErrorCount, &jsErrors](
             jsi::Runtime&,
             const react::JsErrorHandler::ProcessedError& error) {
             ++jsErrorCount;
@@ -1940,6 +1939,11 @@ rns::EngineResult rns::Engine::run() {
                 .timestamp = std::chrono::steady_clock::now(),
                 .stack = error.stack,
             });
+            {
+              std::lock_guard lock(impl->applicationMutex);
+              impl->launchState.lastError = error.message;
+              impl->launchState.pending = false;
+            }
             std::cerr << "RN JS error: " << error.message << '\n';
             if (error.message.find(
                     "TurboModuleRegistry.getEnforcing") !=
@@ -2506,6 +2510,11 @@ rns::EngineResult rns::Engine::run() {
       } catch (const std::exception& error) {
         record.readEnd = std::chrono::steady_clock::now();
         record.error = error.what();
+        {
+          std::lock_guard lock(impl_->applicationMutex);
+          impl_->launchState.lastError = record.error;
+          impl_->launchState.pending = false;
+        }
         bundleRecords.push_back(std::move(record));
         if (promise) {
           const auto message = bundleRecords.back().error;
@@ -2541,6 +2550,11 @@ rns::EngineResult rns::Engine::run() {
         record.error = jsErrorCount > errorsBeforeLoad
             ? "JavaScript evaluation failed"
             : "Bundle load timed out";
+        if (jsErrorCount == errorsBeforeLoad) {
+          std::lock_guard lock(impl_->applicationMutex);
+          impl_->launchState.lastError = record.error;
+          impl_->launchState.pending = false;
+        }
       } else {
         combinedBundleData.append(contents);
         combinedBundleData.push_back('\0');
@@ -2669,26 +2683,35 @@ rns::EngineResult rns::Engine::run() {
     };
 
     for (const auto& source : impl_->bundles) {
+      std::optional<MetroDevServer> metro;
+      if (developmentMode && source.http && !hmrConfigured) {
+        metro = parseMetroDevServer(source.sourceUrl);
+        hmrConfigured = true;
+        if (metro) {
+          try {
+            packager = PackagerConnection::connect(
+                "ws://" + metro->host + ":" +
+                    std::to_string(metro->port) + "/message",
+                [impl = impl_.get()]() { impl->reloadRequested.store(true); });
+          } catch (const std::exception& error) {
+            std::cerr << "Metro reload connection failed: " << error.what()
+                      << '\n';
+          }
+        }
+      }
       if (!loadBundle(source, false, nullptr)) {
         bundleLoadFailed = true;
         break;
       }
-      if (developmentMode && source.http && !hmrConfigured) {
-        if (const auto metro = parseMetroDevServer(source.sourceUrl)) {
-          try {
-            setupHMRClient(*instance, *metro);
-            eventLoopTasks += eventLoop->drainUntilIdle();
-            packager = PackagerConnection::connect(
-                "ws://" + metro->host + ":" + std::to_string(metro->port) +
-                    "/message",
-                [impl = impl_.get()]() { impl->reloadRequested.store(true); });
-            std::cerr << "Fast Refresh listening on "
-                      << metro->host << ":" << metro->port << '\n';
-          } catch (const std::exception& error) {
-            std::cerr << "HMRClient.setup failed: " << error.what() << '\n';
-          }
+      if (metro) {
+        try {
+          setupHMRClient(*instance, *metro);
+          eventLoopTasks += eventLoop->drainUntilIdle();
+          std::cerr << "Fast Refresh listening on "
+                    << metro->host << ":" << metro->port << '\n';
+        } catch (const std::exception& error) {
+          std::cerr << "HMRClient.setup failed: " << error.what() << '\n';
         }
-        hmrConfigured = true;
       }
       processQueuedActions();
       processQueuedApplication();
@@ -2700,6 +2723,7 @@ rns::EngineResult rns::Engine::run() {
     if (developmentMode && options.autoRunApplication && !bundleLoadFailed &&
         jsErrorCount == 0) {
       bool applicationStarted = false;
+      bool applicationSelectionRequired = false;
       std::string applicationStartError;
       runtimeExecutor([&](jsi::Runtime& runtime) {
         try {
@@ -2710,6 +2734,10 @@ rns::EngineResult rns::Engine::run() {
             keys = impl_->launchState.appKeys;
           }
           const auto appKey = resolveAutoRunAppKey(keys, options.appKey);
+          if (!appKey) {
+            applicationSelectionRequired = true;
+            return;
+          }
           const auto initialProps =
               parseInitialPropsJson(options.initialPropsJson);
           {
@@ -2718,9 +2746,9 @@ rns::EngineResult rns::Engine::run() {
                 ? "{}"
                 : options.initialPropsJson;
           }
-          impl_->applyHostApplication(runtime, appKey, initialProps);
+          impl_->applyHostApplication(runtime, *appKey, initialProps);
           applicationStarted = true;
-          std::cerr << "running AppRegistry application " << appKey << '\n';
+          std::cerr << "running AppRegistry application " << *appKey << '\n';
         } catch (const jsi::JSError& error) {
           applicationStartError = error.getMessage();
         } catch (const std::exception& error) {
@@ -2728,9 +2756,16 @@ rns::EngineResult rns::Engine::run() {
         }
       });
       eventLoopTasks += eventLoop->runUntil(
-          [&] { return applicationStarted || !applicationStartError.empty(); },
+          [&] {
+            return applicationStarted || applicationSelectionRequired ||
+                !applicationStartError.empty();
+          },
           remainingTimeout());
-      if (!applicationStarted) {
+      if (applicationSelectionRequired) {
+        std::cerr
+            << "multiple or no AppRegistry applications are available; "
+               "select one from Pages\n";
+      } else if (!applicationStarted) {
         throw std::runtime_error(
             applicationStartError.empty()
                 ? "AppRegistry.runApplication timed out"
@@ -2806,6 +2841,16 @@ rns::EngineResult rns::Engine::run() {
           },
           developmentMode ? std::chrono::milliseconds(25)
                           : remainingTimeout());
+    }
+    if (developmentMode && (bundleLoadFailed || jsErrorCount > 0) &&
+        !impl_->stopRequested.load() && !impl_->reloadRequested.load()) {
+      std::cerr
+          << "interactive runtime paused after an error; fix the bundle, then "
+             "use Reload or Metro's r command\n";
+      while (!impl_->stopRequested.load() &&
+             !impl_->reloadRequested.load()) {
+        eventLoop->runFor(std::chrono::milliseconds(25));
+      }
     }
     const bool shouldReload = developmentMode &&
         impl_->reloadRequested.load() && !impl_->stopRequested.load();

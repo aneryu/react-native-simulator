@@ -3,6 +3,9 @@
 set -eu
 
 project_root=$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)
+RNS_CODESIGN_LIB_DIR="$project_root/tools/release"
+# shellcheck disable=SC1091
+. "$RNS_CODESIGN_LIB_DIR/macos-codesign.sh"
 build_dir=${1:-"$project_root/build/release"}
 rntester_dir=${2:-"$project_root/build/release-rntester"}
 output_dir=${3:-"$project_root/dist"}
@@ -93,8 +96,8 @@ if otool -l "$addon" | awk '
   echo "non-relocatable rpath remains in $addon" >&2
   exit 1
 fi
-codesign --force --sign - "$addon"
-codesign --verify --strict --verbose=2 "$addon"
+rns_codesign_file "$addon"
+rns_codesign_verify_file "$addon"
 minimum_macos=$(vtool -show-build "$addon" 2>/dev/null | \
   awk '$1 == "minos" {print $2; exit}')
 if [ -z "$minimum_macos" ] || ! awk -v actual="$minimum_macos" 'BEGIN {

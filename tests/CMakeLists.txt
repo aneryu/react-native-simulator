@@ -27,6 +27,10 @@ add_executable(reload-engine-smoke reload-engine-smoke.cpp)
 target_link_libraries(reload-engine-smoke PRIVATE
   react-native-simulator-engine Threads::Threads)
 
+add_executable(reload-error-recovery-smoke reload-error-recovery-smoke.cpp)
+target_link_libraries(reload-error-recovery-smoke PRIVATE
+  react-native-simulator-engine Threads::Threads)
+
 add_executable(hmr-protocol-smoke hmr-protocol-smoke.cpp)
 target_link_libraries(hmr-protocol-smoke PRIVATE
   react-native-simulator-engine Boost::boost Threads::Threads)
@@ -37,6 +41,7 @@ foreach(test_target
     devtools-smoke
     http-bundle-loader-smoke
     reload-engine-smoke
+    reload-error-recovery-smoke
     hmr-protocol-smoke)
   rns_enable_sanitizers(${test_target})
 endforeach()
@@ -60,11 +65,20 @@ if(RNS_ENABLE_SKIA)
   rns_enable_sanitizers(text-example-raster-diag)
 endif()
 
+if(RNS_ENABLE_SKIA AND RNS_ENABLE_IMGUI)
+  add_test(NAME interactive-window-before-metro
+    COMMAND "${CMAKE_COMMAND}"
+      -DRNSIM=$<TARGET_FILE:react-native-simulator>
+      -DOUTPUT=${CMAKE_BINARY_DIR}/tests/window-first-smoke.json
+      -P "${PROJECT_SOURCE_DIR}/cmake/ValidateInteractiveWindowFirst.cmake")
+endif()
+
 add_test(NAME runtime-embedding-api COMMAND runtime-api-smoke)
 add_test(NAME headless-api-modules COMMAND headless-api-modules-smoke)
 add_test(NAME metro-http-source COMMAND http-bundle-loader-smoke)
 add_test(NAME interactive-reload
   COMMAND reload-engine-smoke "${RNS_TEST_FIXTURES_DIR}/reload-smoke.js")
+add_test(NAME interactive-error-recovery COMMAND reload-error-recovery-smoke)
 add_test(NAME hmr-protocol COMMAND hmr-protocol-smoke)
 set_tests_properties(hmr-protocol PROPERTIES
   PASS_REGULAR_EXPRESSION
@@ -82,6 +96,11 @@ add_test(NAME cli-doctor
     -DRNSIM=$<TARGET_FILE:react-native-simulator>
     -DMODE=doctor
     -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliMetadata.cmake")
+add_test(NAME cli-doctor-project
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    -DPROJECT_DIR=${RNS_TEST_FIXTURES_DIR}/doctor-project
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateDoctorProject.cmake")
 add_test(NAME cli-conformance-unavailable
   COMMAND $<TARGET_FILE:react-native-simulator> test
     --bundle "${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js")
@@ -89,6 +108,12 @@ set_tests_properties(cli-conformance-unavailable PROPERTIES WILL_FAIL TRUE)
 add_test(NAME cli-no-legacy-command
   COMMAND $<TARGET_FILE:react-native-simulator> run --bundle ignored.js)
 set_tests_properties(cli-no-legacy-command PROPERTIES WILL_FAIL TRUE)
+add_test(NAME cli-profile-platform-conflict
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    -DBUNDLE=${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js
+    "-DEXPECTED=--platform ios is incompatible with --profile android-rn87"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliFailure.cmake")
 
 set(RNS_RUNTIME_FIXTURE "${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js")
 set(RNS_RUNTIME_FIXTURE_HBC "${CMAKE_BINARY_DIR}/tests/runtime-smoke.hbc")
@@ -262,11 +287,15 @@ endif()
 set_tests_properties(runtime-source runtime-bytecode runtime-multi-bundle
   runtime-trace validate-runtime-trace rn73-profile rn87-profile
   runtime-embedding-api local-config cli-no-legacy-command
-  cli-version cli-doctor cli-conformance-unavailable
+  cli-version cli-doctor cli-doctor-project cli-conformance-unavailable
+  cli-profile-platform-conflict
   package-install package-consumer-configure
   package-consumer-build package-consumer-run metro-http-source cli-help
-  interactive-reload
+  interactive-reload interactive-error-recovery
   PROPERTIES TIMEOUT 10)
+if(TEST interactive-window-before-metro)
+  set_tests_properties(interactive-window-before-metro PROPERTIES TIMEOUT 10)
+endif()
 set_tests_properties(hmr-protocol PROPERTIES TIMEOUT 20)
 if(TEST shopee-addon)
   set_tests_properties(shopee-addon PROPERTIES TIMEOUT 10)
@@ -276,7 +305,7 @@ add_custom_target(verify
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
   DEPENDS react-native-simulator
     react-native-simulator-addon-rntester runtime-api-smoke hermesc
-    reload-engine-smoke hmr-protocol-smoke
+    reload-engine-smoke reload-error-recovery-smoke hmr-protocol-smoke
   USES_TERMINAL)
 if(TARGET react-native-simulator-addon-shopee)
   add_dependencies(verify react-native-simulator-addon-shopee)

@@ -37,6 +37,7 @@ struct FrontendState {
   std::shared_ptr<const SceneSnapshot> scene;
   std::optional<InteractionResult> action;
   std::optional<EngineResult> result;
+  std::atomic<bool> cancelRequested{false};
   std::atomic<bool> runtimeFinished{false};
 };
 
@@ -1431,8 +1432,15 @@ void drawToolbar(
   if (imgui_theme::segmented("mode", modes, 2, &mode, shortcuts)) {
     selectOverlay = mode == 1;
   }
+  const auto launch = engine.applicationLaunchState();
+  ImGui::SameLine(0.0f, 12.0f);
+  ImGui::BeginDisabled(runtimeFinished || !launch.initialBundlesLoaded);
+  if (imgui_theme::button(
+          "Reload", imgui_theme::ButtonKind::Ghost, {72.0f, 0.0f})) {
+    engine.requestReload();
+  }
+  ImGui::EndDisabled();
   {
-    const auto launch = engine.applicationLaunchState();
     if (launch.runningAppKey) {
       ImGui::SameLine(0.0f, 14.0f);
       ImGui::AlignTextToFramePadding();
@@ -1462,7 +1470,8 @@ void drawToolbar(
 
 EngineResult runInteractiveFrontend(
     Engine& engine,
-    const std::filesystem::path& fontDirectory) {
+    const std::filesystem::path& fontDirectory,
+    std::function<void(const std::function<bool()>&)> prepareRuntime) {
   hostUi().setDeferToFrontend(true);
   auto state = std::make_shared<FrontendState>();
   engine.setSceneUpdateCallback(
@@ -1515,8 +1524,25 @@ EngineResult runInteractiveFrontend(
   ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
   ImGui_ImplSDLRenderer3_Init(renderer);
 
-  std::thread runtimeThread([state, &engine] {
-    auto result = engine.run();
+  std::thread runtimeThread(
+      [state, &engine, prepareRuntime = std::move(prepareRuntime)] {
+    EngineResult result;
+    try {
+      if (prepareRuntime) {
+        prepareRuntime([state] { return state->cancelRequested.load(); });
+      }
+      if (state->cancelRequested.load()) {
+        result.exitCode = 0;
+      } else {
+        result = engine.run();
+      }
+    } catch (const std::exception& error) {
+      result.exitCode = 1;
+      result.error = error.what();
+    } catch (...) {
+      result.exitCode = 1;
+      result.error = "Unknown interactive runtime preparation error";
+    }
     {
       std::lock_guard lock(state->mutex);
       state->result = std::move(result);
@@ -1545,10 +1571,20 @@ EngineResult runInteractiveFrontend(
   std::optional<std::pair<float, float>> lastPoint;
   std::shared_ptr<const SceneSnapshot> scene;
   const char* smokeOutput = std::getenv("RNS_INTERACTIVE_SMOKE_OUTPUT");
+  auto smokeTimeout = std::chrono::milliseconds(20000);
+  if (smokeOutput != nullptr) {
+    if (const char* value =
+            std::getenv("RNS_INTERACTIVE_SMOKE_TIMEOUT_MS")) {
+      char* end = nullptr;
+      const long parsed = std::strtol(value, &end, 10);
+      if (end != value && *end == '\0' && parsed >= 100 && parsed <= 60000) {
+        smokeTimeout = std::chrono::milliseconds(parsed);
+      }
+    }
+  }
   const auto smokeDeadline = std::chrono::steady_clock::now() +
-      std::chrono::seconds(20);
+      smokeTimeout;
   bool smokeFrameReady = false;
-  bool smokeRunStarted = false;
   int smokeFrameWidth = 0;
   int smokeFrameHeight = 0;
   bool done = false;
@@ -1669,16 +1705,6 @@ EngineResult runInteractiveFrontend(
       scene = state->scene;
       action = state->action;
       result = state->result;
-    }
-    if (smokeOutput != nullptr && !smokeRunStarted) {
-      const auto launch = engine.applicationLaunchState();
-      if (launch.appRegistryReady && launch.configuredAppKey &&
-          !launch.pending && !launch.runningAppKey) {
-        engine.runApplication(
-            *launch.configuredAppKey,
-            launch.configuredInitialPropsJson);
-        smokeRunStarted = true;
-      }
     }
     if (scene &&
         (scene->revision != renderedRevision ||
@@ -1865,6 +1891,7 @@ EngineResult runInteractiveFrontend(
 
   hostUi().setDeferToFrontend(false);
   hostUi().reset();
+  state->cancelRequested.store(true);
   engine.requestStop();
   runtimeThread.join();
   EngineResult finalResult;

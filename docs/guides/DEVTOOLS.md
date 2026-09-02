@@ -17,7 +17,7 @@ bundles and debugging sessions remain trusted local code.
 ## Start a session
 
 ```sh
-build/release/runtime/rnsim interactive --devtools
+rnsim interactive --devtools
 ```
 
 The default interactive flow waits for Metro on localhost:8081, loads the
@@ -33,11 +33,11 @@ server without opening a UI. Advanced overrides include:
 - `--devtools-frontend-dir DIR`
 - `--devtools-shell PATH`
 
-The compact v0.1.0 archive does not bundle the DevTools web frontend and never
-falls back to an author-machine source directory. Supply a trusted compatible
-RN 0.87 frontend with `--devtools-frontend-dir` or
-`RNS_DEVTOOLS_FRONTEND_DIR`. Source builds may opt into checkout fallback with
-`-DRNS_ENABLE_SOURCE_DEVTOOLS_FRONTEND=ON`.
+The v0.1.0 runtime archive includes the frontend pinned with RN 0.87, so binary
+users can run `rnsim --devtools` without a React Native checkout. Explicit
+`--devtools-frontend-dir` or `RNS_DEVTOOLS_FRONTEND_DIR` overrides remain for
+diagnostics. Source builds do not silently use author-machine files; opt into
+checkout fallback with `-DRNS_ENABLE_SOURCE_DEVTOOLS_FRONTEND=ON`.
 
 ## Reload behavior
 

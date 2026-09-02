@@ -2875,9 +2875,12 @@ class HeadlessReactFabricHost final
       node.includeFontPadding =
           paragraphState->getData().paragraphAttributes.includeFontPadding;
       node.text = attributedString.getString();
+#if RNS_ENABLE_SKIA
       auto dataDetector = ReactNativeSimulator::TextDataDetector::None;
+#endif
       if (const auto paragraphProps = std::dynamic_pointer_cast<
               const react::ParagraphProps>(shadowView.props)) {
+#if RNS_ENABLE_SKIA
         if (paragraphProps->dataDetectorType) {
           switch (*paragraphProps->dataDetectorType) {
             case react::DataDetectorType::PhoneNumber:
@@ -2897,6 +2900,7 @@ class HeadlessReactFabricHost final
               break;
           }
         }
+#endif
         if (paragraphProps->paragraphAttributes.textAlignVertical) {
           switch (*paragraphProps->paragraphAttributes.textAlignVertical) {
             case react::TextAlignmentVertical::Center:

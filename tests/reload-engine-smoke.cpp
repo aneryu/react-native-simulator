@@ -30,20 +30,18 @@ int main(int argc, char** argv) {
 
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  int loadedCycles = 0;
-  bool wasLoaded = false;
+  std::uint64_t loadedGeneration = 0;
   bool requested = false;
   while (std::chrono::steady_clock::now() < deadline) {
     const auto state = engine.applicationLaunchState();
-    if (state.initialBundlesLoaded && !wasLoaded) {
-      ++loadedCycles;
+    if (state.initialBundlesLoaded) {
+      loadedGeneration = state.runtimeGeneration;
     }
-    wasLoaded = state.initialBundlesLoaded;
-    if (loadedCycles == 1 && !requested) {
+    if (loadedGeneration == 1 && !requested) {
       engine.requestReload();
       requested = true;
     }
-    if (loadedCycles >= 2) {
+    if (loadedGeneration >= 2) {
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -54,9 +52,9 @@ int main(int argc, char** argv) {
     std::cerr << runError << '\n';
     return 1;
   }
-  if (loadedCycles < 2) {
-    std::cerr << "reload did not recreate the runtime (loaded cycles="
-              << loadedCycles << ")\n";
+  if (loadedGeneration < 2) {
+    std::cerr << "reload did not recreate the runtime (generation="
+              << loadedGeneration << ")\n";
     return 1;
   }
   return 0;

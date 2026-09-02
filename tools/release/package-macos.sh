@@ -3,6 +3,9 @@
 set -eu
 
 project_root=$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)
+RNS_CODESIGN_LIB_DIR="$project_root/tools/release"
+# shellcheck disable=SC1091
+. "$RNS_CODESIGN_LIB_DIR/macos-codesign.sh"
 build_dir=${1:-"$project_root/build/release"}
 output_dir=${2:-"$project_root/dist"}
 release_version=$(sed -n \
@@ -81,11 +84,6 @@ SOURCE_DATE_EPOCH=$(git -C "$project_root" show -s --format=%ct HEAD) \
 "$project_root/tools/release/generate-release-manifest.sh" \
   "$install_root/release-manifest.json" runtime \
   "$build_dir/runtime/rnsim"
-
-# The compact release keeps the Inspector/CDP backend but does not bundle the
-# React Native DevTools web frontend. Users can supply a compatible checkout
-# with --devtools-frontend-dir or RNS_DEVTOOLS_FRONTEND_DIR.
-rm -rf "$install_root/share/react-native-simulator/debugger-frontend"
 
 mkdir -p "$install_root/lib"
 queue_file="$stage_root/macho-queue"
@@ -172,8 +170,9 @@ while IFS= read -r binary; do
   strip -x "$binary"
   # Apple Silicon requires a valid signature even without a Developer ID.
   # Relocation and stripping happen after link-time signing, so seal the final
-  # bytes explicitly with an ad-hoc signature.
-  codesign --force --sign - "$binary"
+  # bytes here. Default identity is ad-hoc so archives stay reproducible;
+  # Developer ID + notarization is a separate sign-and-notarize.sh step.
+  rns_codesign_file "$binary"
 done <"$seen_file"
 
 # Fail closed if packaging missed an absolute, non-system dependency or rpath.
@@ -193,8 +192,8 @@ while IFS= read -r binary; do
     echo "non-relocatable rpath remains in $binary" >&2
     audit_failed=1
   fi
-  if ! codesign --verify --strict --verbose=2 "$binary"; then
-    echo "invalid ad-hoc code signature in $binary" >&2
+  if ! rns_codesign_verify_file "$binary"; then
+    echo "invalid code signature in $binary" >&2
     audit_failed=1
   fi
   minimum_macos=$(vtool -show-build "$binary" 2>/dev/null | \

@@ -4,10 +4,11 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       full_release:
-        description: Build and verify the complete v0.1.0 release assets
+        description: Build and verify the complete release assets
         required: false
         type: boolean
         default: false
@@ -69,7 +70,11 @@ jobs:
         run: ctest --test-dir build/ci-release --output-on-failure -R '^package-'
 
   full-release:
-    if: github.event_name == 'workflow_dispatch' && inputs.full_release
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.full_release) ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: write
     # A complete RN + Skia checkout exceeds the 14 GB disk on standard hosted
     # macOS runners. This label identifies an Apple Silicon release machine.
     runs-on: [self-hosted, macOS, ARM64, rnsim-release]
@@ -88,6 +93,13 @@ jobs:
           test -z "$(git status --porcelain)"
           ! git submodule status --recursive | grep -Eq '^[+-U]'
           git lfs fsck
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            release_version=$(sed -n \
+              's/^project(ReactNativeSimulator VERSION \([^ ]*\) .*/\1/p' \
+              CMakeLists.txt)
+            test "$GITHUB_REF_NAME" = "v$release_version"
+            test "$(git rev-list -n 1 "$GITHUB_REF_NAME")" = "$GITHUB_SHA"
+          fi
       - name: Install build dependencies
         run: brew install cmake ninja boost double-conversion fmt folly glog
       - name: Bootstrap pinned Skia
@@ -129,16 +141,62 @@ jobs:
           tools/release/package-macos.sh build/release "$second_output"
           tools/release/package-rntester-demo.sh \
             build/release build/release-rntester "$second_output"
-          cmp dist/rnsim-v0.1.0-macos-arm64.tar.gz \
-            "$second_output/rnsim-v0.1.0-macos-arm64.tar.gz"
-          cmp dist/rnsim-rntester-demo-v0.1.0-macos-arm64.tar.gz \
-            "$second_output/rnsim-rntester-demo-v0.1.0-macos-arm64.tar.gz"
+          release_version=$(sed -n \
+            's/^project(ReactNativeSimulator VERSION \([^ ]*\) .*/\1/p' \
+            CMakeLists.txt)
+          for asset in \
+            "rnsim-v${release_version}-macos-arm64.tar.gz" \
+            "rnsim-rntester-demo-v${release_version}-macos-arm64.tar.gz"; do
+            cmp "dist/$asset" "$second_output/$asset"
+          done
+      - name: Sign and notarize published assets
+        env:
+          RNS_CODESIGN_IDENTITY: ${{ secrets.RNS_CODESIGN_IDENTITY }}
+          RNS_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.RNS_NOTARY_KEYCHAIN_PROFILE }}
+          RNS_NOTARY_KEY_ID: ${{ secrets.RNS_NOTARY_KEY_ID }}
+          RNS_NOTARY_ISSUER_ID: ${{ secrets.RNS_NOTARY_ISSUER_ID }}
+          RNS_NOTARY_KEY: ${{ secrets.RNS_NOTARY_KEY }}
+        run: |-
+          if [ -z "${RNS_CODESIGN_IDENTITY:-}" ]; then
+            echo "Skipping Developer ID signing; RNS_CODESIGN_IDENTITY is unset."
+            exit 0
+          fi
+          release_version=$(sed -n \
+            's/^project(ReactNativeSimulator VERSION \([^ ]*\) .*/\1/p' \
+            CMakeLists.txt)
+          tools/release/sign-and-notarize.sh \
+            "dist/rnsim-v${release_version}-macos-arm64.tar.gz"
+          tools/release/sign-and-notarize.sh \
+            "dist/rnsim-rntester-demo-v${release_version}-macos-arm64.tar.gz"
+          tools/release/verify-release.sh dist
       - name: Upload verified release candidates
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: react-native-simulator-v0.1.0-macos-arm64
+          name: react-native-simulator-${{ github.ref_name }}-macos-arm64
           path: |-
             dist/*.tar.gz
             dist/*.sha256
+            dist/*.dmg
           if-no-files-found: error
           retention-days: 14
+      - name: Publish verified GitHub release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |-
+          release_version=${GITHUB_REF_NAME#v}
+          notes="docs/releases/v${release_version}.md"
+          test -f "$notes"
+          set -- dist/*.tar.gz dist/*.sha256
+          if ls dist/*.dmg >/dev/null 2>&1; then
+            set -- "$@" dist/*.dmg
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$@" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$@" \
+              --verify-tag \
+              --prerelease \
+              --title "React Native Simulator $GITHUB_REF_NAME" \
+              --notes-file "$notes"
+          fi

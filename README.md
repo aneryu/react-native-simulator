@@ -37,15 +37,27 @@ implemented, approximated, mocked, and unavailable surfaces. The
 [RN Tester baseline](docs/baselines/RNTESTER_BASELINE.md) records the Android
 demo and visual certification boundary.
 
-## Quick start from the v0.1.0 release
+## Quick start
 
-Download the runtime asset and its adjacent checksum from the v0.1.0 GitHub
-Release, then install it into a stable user-owned prefix:
+The supported v0.1.0 path is intentionally narrow: Apple Silicon, macOS 15 or
+newer, React Native 0.87.0, and the Android profile. Check the
+[capability baseline](docs/baselines/RN087_CAPABILITY_BASELINE.md) before using
+an application with platform or third-party native modules; unsupported native
+contracts require an explicit addon and never become silent mocks.
+
+### Install once
+
+Download the runtime archive and its adjacent checksum from the
+[v0.1.0 GitHub Release](https://github.com/aneryu/react-native-simulator/releases/tag/v0.1.0).
+If that page does not list the assets below, no supported binary distribution
+has been published yet; use [Build from source](#build-from-source) instead.
 
 ```sh
 shasum -a 256 -c rnsim-v0.1.0-macos-arm64.tar.gz.sha256
 tar xf rnsim-v0.1.0-macos-arm64.tar.gz
 ./rnsim/install.sh
+export PATH="$HOME/.local/bin:$PATH"
+rnsim --version
 ```
 
 The installer removes quarantine after confirmation, copies the complete tree
@@ -54,18 +66,40 @@ to `~/.local/lib/react-native-simulator/0.1.0`, and links `rnsim` into
 self-contained and does not require a React Native checkout, Node.js, npm, or
 Homebrew.
 
-Version management is explicit:
+### Run your React Native app
+
+From the root of an RN 0.87 app, keep Metro in one terminal:
 
 ```sh
-./rnsim/install.sh --reinstall
-./rnsim/install.sh --activate 0.1.0
-./rnsim/install.sh --uninstall 0.1.0
+npm start
+# or: yarn start
 ```
 
-The installer refuses to replace an unmanaged `PREFIX/bin/rnsim`.
+Then open another terminal in the same app directory:
 
-The optional RN Tester support package is a separate download containing its
-caller-built HBC, assets, and application addon:
+```sh
+rnsim
+```
+
+The default target is Android. `rnsim` opens the host window immediately while
+it connects to Metro on localhost:8081; closing the window cancels the wait. It
+reads the standard project entry and `app.json`, and automatically runs the
+configured or only registered AppRegistry application. It opens the Pages
+chooser only when multiple application keys require a decision. Save a
+component to exercise Fast Refresh; Metro's `r` command requests an in-process
+reload while the interactive window stays open. If initial evaluation fails,
+the error appears in the Pages log and the session remains recoverable: fix the
+bundle, then click **Reload** or press `r` in Metro.
+
+`rnsim` deliberately does not launch Metro or own the caller's Babel,
+TypeScript, or bundle configuration. See
+[running your own app](docs/guides/GETTING_STARTED.md) for non-standard Metro
+ports, offline bundles, local configuration, addons, and troubleshooting.
+
+### Explore RN Tester
+
+If you do not have an RN 0.87 app ready, the optional RN Tester support package
+contains a caller-built HBC, assets, and an isolated application addon:
 
 ```sh
 shasum -a 256 -c rnsim-rntester-demo-v0.1.0-macos-arm64.tar.gz.sha256
@@ -74,28 +108,12 @@ xattr -dr com.apple.quarantine rnsim-rntester-demo
 rnsim --config rnsim-rntester-demo/rnsim.json
 ```
 
-To keep both assets compact, typography uses the host macOS font fallback and
-the React Native DevTools web frontend is not bundled. The demo therefore is
-not an Android typography or pixel-certification artifact.
-
-The Inspector/CDP backend remains available. To open DevTools, provide a
-compatible frontend with `--devtools-frontend-dir DIR` or
-`RNS_DEVTOOLS_FRONTEND_DIR`.
-
-The release links Folly statically so Homebrew's unused Boost.Regex/ICU
-dependency chain is not shipped. Skia's required ICU implementation also stays
-static and temporarily reuses its pinned Flutter-desktop text-data filter instead
-of embedding unused date, currency, and time-zone resources; this is data-filter
-provenance, not a Flutter runtime dependency. The remaining vendored dylibs
-are limited to the small libraries actually referenced by the runtime.
-
-Every packaged Mach-O has a valid ad-hoc code signature. The release is not
-Developer ID signed or notarized, so Gatekeeper trust remains an explicit user
-step after checking the published SHA-256.
-
-Caller bundles and native addons execute with the current user's process
-permissions. `rnsim` is not a security sandbox. Read [SECURITY.md](SECURITY.md)
-before running third-party code.
+The compact demo uses host macOS font fallback, so it is a functional tour, not
+an Android typography or pixel-certification artifact. Manual version
+management, Gatekeeper details, DevTools usage, and dependency
+provenance live in the [getting-started guide](docs/guides/GETTING_STARTED.md),
+[v0.1.0 release notes](docs/releases/v0.1.0.md), and
+[security policy](SECURITY.md), rather than the first-run path.
 
 ## Build from source
 
@@ -146,15 +164,13 @@ The installed CMake package supports the embedding Engine API. Native addon
 authoring still requires the exact source checkout and pinned RN/Hermes headers;
 the compact archive is not a standalone addon SDK.
 
-## Run an application
+## Advanced runtime usage
 
-Start with [running your own app](docs/guides/GETTING_STARTED.md). This
-repository does not own an application entry point or Metro/Babel/TypeScript
-pipeline. From an RN 0.87 app directory, `npm start` plus `rnsim` waits for
-Metro on localhost:8081. Offline, supply a caller-built bundle:
+The examples below use an installed `rnsim`; source builds can substitute
+`build/release/runtime/rnsim`. Offline, supply a caller-built bundle explicitly:
 
 ```sh
-build/release/runtime/rnsim interactive \
+rnsim interactive \
   --platform android \
   --app-key MyApp \
   --bundle /absolute/path/to/application.jsbundle
@@ -183,7 +199,7 @@ Interactive and headless modes use the same semantic engine. Headless
 workloads are strict and finite:
 
 ```sh
-build/release/runtime/rnsim headless \
+rnsim headless \
   --bundle /absolute/path/to/workload.hbc \
   --timeout-ms 5000 \
   --require-react-fabric true \

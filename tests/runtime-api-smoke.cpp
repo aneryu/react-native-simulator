@@ -325,7 +325,10 @@ int main() {
 
   ReactNativeSimulator::EngineConfig selectConfig;
   selectConfig.mode = ReactNativeSimulator::SimulatorMode::Interactive;
-  selectConfig.autoRunApplication = false;
+  // Auto-run must stay non-fatal when more than one application is
+  // registered. The interactive frontend can then present Pages and queue the
+  // caller's explicit choice.
+  selectConfig.autoRunApplication = true;
   selectConfig.timeoutMs = 2000;
   ReactNativeSimulator::Engine selectable(std::move(selectConfig));
   selectable.loadBundle(
@@ -345,6 +348,13 @@ int main() {
   for (int attempt = 0; attempt < 100; ++attempt) {
     const auto launch = selectable.applicationLaunchState();
     if (launch.appRegistryReady) {
+      if (launch.runningAppKey) {
+        selectable.requestStop();
+        selectThread.join();
+        std::cerr << "ambiguous AppRegistry applications auto-ran "
+                  << *launch.runningAppKey << '\n';
+        return 1;
+      }
       try {
         selectable.runApplication("AppB", "{\"marker\":7}");
         ranSelected = true;

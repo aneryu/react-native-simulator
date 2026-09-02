@@ -20,6 +20,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
@@ -245,9 +246,15 @@ bool metroStatusRunning(const std::string &bundleUrl) {
   }
 }
 
-void waitForMetro(const std::string &bundleUrl) {
+#if RNS_ENABLE_IMGUI
+bool waitForMetro(
+    const std::string &bundleUrl,
+    const std::function<bool()> &cancelled) {
+  if (cancelled()) {
+    return false;
+  }
   if (metroStatusRunning(bundleUrl)) {
-    return;
+    return true;
   }
   const auto origin = bundleOrigin(bundleUrl);
   std::cerr << "waiting for Metro at " << origin << '\n'
@@ -255,6 +262,10 @@ void waitForMetro(const std::string &bundleUrl) {
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(60);
   while (!metroStatusRunning(bundleUrl)) {
+    if (cancelled()) {
+      std::cerr << "Metro wait cancelled\n";
+      return false;
+    }
     if (std::chrono::steady_clock::now() >= deadline) {
       throw std::runtime_error(
           "Timed out waiting for Metro at " + origin +
@@ -263,7 +274,9 @@ void waitForMetro(const std::string &bundleUrl) {
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
   }
   std::cerr << "connected to Metro\n";
+  return true;
 }
+#endif
 
 bool isIndexBundleUrl(const std::string &url) {
   const auto pathStart = url.find('/', std::string("http://").size());
@@ -279,7 +292,7 @@ bool isIndexBundleUrl(const std::string &url) {
 
 std::string fetchDefaultMetroBundle(
     CliOptions::BundleSource &bundle,
-    rns::EngineConfig &runtime) {
+    rns::EngineConfig *runtime) {
   try {
     return fetchHttpBundle(bundle.source);
   } catch (const MetroHttpError &error) {
@@ -309,8 +322,8 @@ std::string fetchDefaultMetroBundle(
       try {
         auto bytes = fetchHttpBundle(fallback);
         bundle.source = std::move(fallback);
-        if (!runtime.appKey) {
-          runtime.appKey = inferAppKeyFromProject(*project, platform);
+        if (runtime != nullptr && !runtime->appKey) {
+          runtime->appKey = inferAppKeyFromProject(*project, platform);
         }
         return bytes;
       } catch (const std::exception&) {
@@ -331,7 +344,7 @@ Usage:
   rnsim [options]               Start an interactive session
   rnsim interactive [options]   Start an interactive session
   rnsim headless [options]      Run a finite headless workload
-  rnsim doctor [--json]         Diagnose this installation
+  rnsim doctor [--json]         Diagnose this installation and RN project
   rnsim --version [--json]      Print build and runtime contract versions
 
 Common options:
@@ -345,14 +358,14 @@ Interactive options:
   --url URL               Complete loopback bundle URL
   --app-key NAME          AppRegistry key (preselected in the interactive launcher)
   --initial-props JSON    JSON object passed as runApplication initialProps
-  --devtools              Enable React Native DevTools (frontend may be external)
+  --devtools              Enable and open the bundled React Native DevTools
   --no-open               Enable DevTools without opening its frontend
-  --devtools-frontend-dir DIR  Compatible external DevTools frontend
+  --devtools-frontend-dir DIR  Override the bundled DevTools frontend
 
-With no --bundle/--url, interactive mode waits for Metro at localhost:8081
-and loads index.bundle. If Metro has no ./index, rnsim reads the packager
-project path from the error and tries entry files found there. app.json name
-becomes --app-key.
+With no --bundle/--url, interactive mode opens its window, then waits for Metro
+at localhost:8081 and loads index.bundle. Closing the window cancels that wait.
+If Metro has no ./index, rnsim reads the packager project path from the error
+and tries entry files found there. app.json name becomes --app-key.
 
 Headless options:
   --iterations N          Workload size
@@ -416,7 +429,124 @@ void printDoctor(const char* argv0, bool json) {
   const auto installRoot = executable.parent_path().parent_path();
   const auto frontend = installRoot /
       "share/react-native-simulator/debugger-frontend/rn_fusebox.html";
-  const auto localConfig = std::filesystem::current_path() / "rnsim.json";
+  error.clear();
+  auto projectRoot =
+      std::filesystem::weakly_canonical(std::filesystem::current_path(), error);
+  if (error) {
+    projectRoot = std::filesystem::current_path();
+  }
+  const auto packageJson = projectRoot / "package.json";
+  const auto appJson = projectRoot / "app.json";
+  const auto localConfig = projectRoot / "rnsim.json";
+  const bool packagePresent = std::filesystem::is_regular_file(packageJson);
+  const auto declaredReactNative = readJsonString(
+      packageJson, "dependencies.react-native");
+  const auto declaredDevReactNative = declaredReactNative
+      ? std::optional<std::string>{}
+      : readJsonString(packageJson, "devDependencies.react-native");
+  const auto declaredVersion = declaredReactNative
+      ? declaredReactNative
+      : declaredDevReactNative;
+  const auto installedVersion = readJsonString(
+      projectRoot / "node_modules/react-native/package.json", "version");
+  const auto effectiveVersion = installedVersion
+      ? installedVersion
+      : declaredVersion;
+  const auto exactVersion = [](const std::optional<std::string>& version) {
+    return version && *version == RNS_REACT_NATIVE_VERSION;
+  };
+  const bool reactNativeCompatible = installedVersion
+      ? exactVersion(installedVersion)
+      : exactVersion(declaredVersion);
+
+  std::string platform = "android";
+  std::optional<std::string> configuredAppKey;
+  std::optional<std::filesystem::path> configuredBundle;
+  bool configValid = true;
+  std::string configError;
+  if (std::filesystem::is_regular_file(localConfig)) {
+    try {
+      const auto config = loadSimulatorConfig(localConfig);
+      platform = config.platform;
+      configuredAppKey = config.appKey;
+      configuredBundle = config.bundle;
+    } catch (const std::exception& configException) {
+      configValid = false;
+      configError = configException.what();
+    }
+  }
+
+  std::vector<std::string> entries;
+  std::unordered_set<std::string> seenEntries;
+  const auto addDoctorEntry = [&](const std::filesystem::path& relative) {
+    std::error_code entryError;
+    if (!std::filesystem::is_regular_file(
+            projectRoot / relative, entryError)) {
+      return;
+    }
+    const auto value = relative.generic_string();
+    if (seenEntries.insert(value).second) {
+      entries.push_back(value);
+    }
+  };
+  addDoctorEntry("index." + platform + ".js");
+  addDoctorEntry("index.js");
+  for (const auto& entry : discoverMetroEntries(projectRoot, platform)) {
+    if (seenEntries.insert(entry).second) {
+      entries.push_back(entry);
+    }
+  }
+  const auto appKey = configuredAppKey
+      ? configuredAppKey
+      : appJsonName(projectRoot);
+  const bool offlineBundle = configuredBundle &&
+      std::filesystem::is_regular_file(*configuredBundle);
+  const bool hasEntry = offlineBundle || !entries.empty();
+  const std::string metroUrl =
+      "http://localhost:8081/index.bundle?platform=" + platform +
+      "&dev=true&minify=false";
+  const bool metroRequired = !offlineBundle;
+  const bool metroRunning = metroRequired && metroStatusRunning(metroUrl);
+  const bool projectDetected = packagePresent && effectiveVersion.has_value();
+  const bool launchable = projectDetected && reactNativeCompatible &&
+      configValid && hasEntry;
+  const bool preflightPassed = launchable;
+  const bool readyToLaunch =
+      launchable && (!metroRequired || metroRunning);
+  std::string projectStatus = offlineBundle
+      ? "ready-offline"
+      : metroRunning ? "compatible-metro-reachable"
+                     : "compatible-metro-not-running";
+  std::string nextAction;
+  if (!projectDetected) {
+    projectStatus = "not-react-native-project";
+    nextAction = "Run rnsim doctor from an RN 0.87 application root.";
+  } else if (!reactNativeCompatible) {
+    projectStatus = "incompatible-react-native";
+    nextAction = std::string("Use React Native ") +
+        RNS_REACT_NATIVE_VERSION + " with this rnsim binary.";
+  } else if (!configValid) {
+    projectStatus = "invalid-config";
+    nextAction = configError;
+  } else if (!hasEntry) {
+    projectStatus = "missing-entry";
+    nextAction =
+        "Add index.js, configure a bundle in rnsim.json, or pass --url/--bundle.";
+  } else if (metroRequired && !metroRunning) {
+    projectStatus = "compatible-metro-not-running";
+    nextAction = "Start Metro with npm start or yarn start.";
+  }
+
+  folly::dynamic entryJson = folly::dynamic::array;
+  for (const auto& entry : entries) {
+    entryJson.push_back(entry);
+  }
+  const auto optionalString = [](const auto& value) -> folly::dynamic {
+    return value ? folly::dynamic(value->string()) : folly::dynamic(nullptr);
+  };
+  const auto optionalText = [](const auto& value) -> folly::dynamic {
+    return value ? folly::dynamic(*value) : folly::dynamic(nullptr);
+  };
   report["executable"] = executable.string();
   report["installedDevToolsFrontend"] =
       std::filesystem::is_regular_file(frontend);
@@ -426,6 +556,41 @@ void printDoctor(const char* argv0, bool json) {
   report["defaultProfile"] = "android-rn87";
   report["status"] = "experimental-android-first";
   report["securitySandbox"] = false;
+  report["project"] = folly::dynamic::object
+      ("root", projectRoot.string())
+      ("detected", projectDetected)
+      ("status", projectStatus)
+      ("preflightPassed", preflightPassed)
+      ("readyToLaunch", readyToLaunch)
+      ("nextAction", nextAction)
+      ("packageJson", packagePresent)
+      ("reactNative", folly::dynamic::object
+          ("expected", RNS_REACT_NATIVE_VERSION)
+          ("declared", optionalText(declaredVersion))
+          ("installed", optionalText(installedVersion))
+          ("effective", optionalText(effectiveVersion))
+          ("compatible", reactNativeCompatible))
+      ("platform", platform)
+      ("profile", platform + "-rn87")
+      ("appKey", optionalText(appKey))
+      ("entries", std::move(entryJson))
+      ("config", folly::dynamic::object
+          ("path", std::filesystem::is_regular_file(localConfig)
+              ? folly::dynamic(localConfig.string())
+              : folly::dynamic(nullptr))
+          ("valid", configValid)
+          ("error", configError.empty()
+              ? folly::dynamic(nullptr)
+              : folly::dynamic(configError))
+          ("bundle", optionalString(configuredBundle)))
+      ("metro", folly::dynamic::object
+          ("url", metroUrl)
+          ("required", metroRequired)
+          ("running", metroRunning)
+          ("projectVerified", false)
+          ("projectVerification", metroRequired
+              ? "bundle-load"
+              : "not-required"));
   if (json) {
     std::cout << folly::toJson(report) << '\n';
     return;
@@ -443,6 +608,30 @@ void printDoctor(const char* argv0, bool json) {
                     ? "none"
                     : report["localConfig"].asString())
             << '\n'
+            << "project: " << projectRoot.string() << '\n'
+            << "React Native: "
+            << (effectiveVersion ? *effectiveVersion : "not detected")
+            << (reactNativeCompatible ? " (compatible)" : " (expected "
+                RNS_REACT_NATIVE_VERSION ")") << '\n'
+            << "entry: "
+            << (offlineBundle ? configuredBundle->string()
+                              : entries.empty() ? "not found" : entries.front())
+            << '\n'
+            << "AppRegistry key: " << (appKey ? *appKey : "auto-detect")
+            << '\n'
+            << "Metro: "
+            << (!metroRequired ? "not required for configured bundle"
+                               : metroRunning ? "reachable at localhost:8081"
+                                              : "not running at localhost:8081")
+            << '\n'
+            << (metroRequired && metroRunning
+                    ? "Metro project: verified when the bundle is loaded\n"
+                    : "")
+            << "project status: " << projectStatus << '\n';
+  if (!nextAction.empty()) {
+    std::cout << "next: " << nextAction << '\n';
+  }
+  std::cout
             << "security: caller bundles and native addons are trusted code; "
                "rnsim is not a sandbox\n";
 }
@@ -454,6 +643,7 @@ CliOptions parseOptions(int argc, char **argv) {
   bool timeoutConfigured = false;
   bool cliBundleSeen = false;
   bool profileConfigured = false;
+  bool platformConfigured = false;
   bool viewportConfigured = false;
   const auto addMetroBundle = [&options](const std::string &platform) {
     const auto cwd = std::filesystem::current_path();
@@ -496,6 +686,7 @@ CliOptions parseOptions(int argc, char **argv) {
     const auto config = loadSimulatorConfig(
         std::filesystem::weakly_canonical(*configPath));
     metroPlatform = config.platform;
+    platformConfigured = true;
     options.runtime.appKey = config.appKey;
     if (config.initialPropsJson) {
       options.runtime.initialPropsJson = *config.initialPropsJson;
@@ -634,6 +825,7 @@ CliOptions parseOptions(int argc, char **argv) {
         throw std::invalid_argument("--platform must be android or ios");
       }
       metroPlatform = value;
+      platformConfigured = true;
     } else if (name == "--app-key") {
       if (value.empty()) {
         throw std::invalid_argument("--app-key must not be empty");
@@ -682,12 +874,31 @@ CliOptions parseOptions(int argc, char **argv) {
       throw std::invalid_argument("Unknown option: " + name);
     }
   }
-  if (!profileConfigured) {
+  if (profileConfigured) {
+    std::optional<std::string> profilePlatform;
+    if (options.runtime.profile.rfind("android-", 0) == 0) {
+      profilePlatform = "android";
+    } else if (options.runtime.profile.rfind("ios-", 0) == 0) {
+      profilePlatform = "ios";
+    }
+    if (profilePlatform) {
+      if (platformConfigured && metroPlatform != *profilePlatform) {
+        throw std::invalid_argument(
+            "--platform " + metroPlatform + " is incompatible with --profile " +
+            options.runtime.profile);
+      }
+      metroPlatform = *profilePlatform;
+    }
+  } else {
     options.runtime.profile = metroPlatform + "-rn87";
   }
   if (options.mode == CliOptions::Mode::Interactive) {
     options.runtime.mode = rns::SimulatorMode::Interactive;
-    options.runtime.autoRunApplication = false;
+    // Match the normal React Native host lifecycle: once the caller bundle has
+    // registered an unambiguous application, run it immediately. The
+    // interactive Pages panel remains available when multiple keys require a
+    // user choice and for switching applications after startup.
+    options.runtime.autoRunApplication = true;
     if (options.bundles.empty()) {
       addMetroBundle(metroPlatform);
     }
@@ -806,46 +1017,80 @@ int main(int argc, char **argv) {
                 << options.runtime.viewportWidth << "x"
                 << options.runtime.viewportHeight << ")\n";
     }
-    std::vector<std::optional<std::string>> httpBodies(options.bundles.size());
-    for (size_t index = 0; index < options.bundles.size(); ++index) {
-      auto &bundle = options.bundles[index];
-      if (!bundle.http) {
-        continue;
-      }
-      std::cerr << "loading Metro bundle " << bundle.source << '\n';
-      try {
-        if (options.mode == CliOptions::Mode::Interactive) {
-          waitForMetro(bundle.source);
-        }
-        httpBodies[index] = fetchDefaultMetroBundle(bundle, options.runtime);
-      } catch (const std::exception &error) {
-        throw std::runtime_error(
-            "Cannot load the bundle from " + bundle.source +
-            ". Start Metro or pass --url/--bundle: " + error.what());
-      }
-    }
-    rns::Engine runtime(std::move(options.runtime));
-    for (const auto &addon : options.addons) {
-      runtime.addAddon(addon);
-    }
-    for (size_t index = 0; index < options.bundles.size(); ++index) {
-      const auto &bundle = options.bundles[index];
-      if (bundle.http) {
-        runtime.loadBundle(*httpBodies[index], bundle.source);
-      } else {
-        runtime.loadBundle(std::filesystem::path(bundle.source));
-      }
-    }
-    const auto result = options.mode == CliOptions::Mode::Interactive
+    const auto fontDirectory = options.runtime.fontDirectory.value_or(
+        std::filesystem::path{});
+    rns::EngineResult result;
+    if (options.mode == CliOptions::Mode::Interactive) {
 #if RNS_ENABLE_IMGUI
-        ? rns::runInteractiveFrontend(
-              runtime,
-              options.runtime.fontDirectory.value_or(std::filesystem::path{}))
+      rns::Engine runtime(std::move(options.runtime));
+      for (const auto &addon : options.addons) {
+        runtime.addAddon(addon);
+      }
+      auto prepareRuntime = [&options, &runtime](
+                                const std::function<bool()> &cancelled) {
+        for (auto &bundle : options.bundles) {
+          if (cancelled()) {
+            return;
+          }
+          if (!bundle.http) {
+            runtime.loadBundle(std::filesystem::path(bundle.source));
+            continue;
+          }
+          std::cerr << "loading Metro bundle " << bundle.source << '\n';
+          try {
+            if (!waitForMetro(bundle.source, cancelled)) {
+              return;
+            }
+            auto bytes = fetchDefaultMetroBundle(bundle, nullptr);
+            if (cancelled()) {
+              return;
+            }
+            runtime.loadBundle(std::move(bytes), bundle.source);
+          } catch (const std::exception &error) {
+            throw std::runtime_error(
+                "Cannot load the bundle from " + bundle.source +
+                ". Start Metro or pass --url/--bundle: " + error.what());
+          }
+        }
+      };
+      result = rns::runInteractiveFrontend(
+          runtime, fontDirectory, std::move(prepareRuntime));
 #else
-        ? throw std::runtime_error(
-              "interactive mode requires RNS_ENABLE_IMGUI=ON and RNS_ENABLE_SKIA=ON")
+      throw std::runtime_error(
+          "interactive mode requires RNS_ENABLE_IMGUI=ON and RNS_ENABLE_SKIA=ON");
 #endif
-        : runtime.run();
+    } else {
+      std::vector<std::optional<std::string>> httpBodies(
+          options.bundles.size());
+      for (size_t index = 0; index < options.bundles.size(); ++index) {
+        auto &bundle = options.bundles[index];
+        if (!bundle.http) {
+          continue;
+        }
+        std::cerr << "loading bundle " << bundle.source << '\n';
+        try {
+          httpBodies[index] =
+              fetchDefaultMetroBundle(bundle, &options.runtime);
+        } catch (const std::exception &error) {
+          throw std::runtime_error(
+              "Cannot load the bundle from " + bundle.source + ": " +
+              error.what());
+        }
+      }
+      rns::Engine runtime(std::move(options.runtime));
+      for (const auto &addon : options.addons) {
+        runtime.addAddon(addon);
+      }
+      for (size_t index = 0; index < options.bundles.size(); ++index) {
+        const auto &bundle = options.bundles[index];
+        if (bundle.http) {
+          runtime.loadBundle(*httpBodies[index], bundle.source);
+        } else {
+          runtime.loadBundle(std::filesystem::path(bundle.source));
+        }
+      }
+      result = runtime.run();
+    }
     if (!result.metricsJson.empty()) {
 #if RNS_ENABLE_SKIA
       if (options.screenshotPath) {
@@ -854,7 +1099,7 @@ int main(int argc, char **argv) {
         }
         const auto image = rns::exportSceneToPng(
             *result.scene, *options.screenshotPath,
-            options.runtime.fontDirectory.value_or(std::filesystem::path{}));
+            fontDirectory);
         std::cerr << "wrote screenshot " << *options.screenshotPath << " ("
                   << image.width << 'x' << image.height << ")\n";
       }

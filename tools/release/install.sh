@@ -171,10 +171,12 @@ else
   confirm "Install trusted React Native Simulator $release_version to $install_root?"
 fi
 
-# The caller verifies the published SHA-256 before this point. This explicit
-# trust step removes quarantine from the archive contents before copying them
-# into a stable installation directory.
-xattr -dr com.apple.quarantine "$package_root"
+# The caller verifies the published SHA-256 before this point. Gatekeeper
+# accepts Developer ID + notarized binaries; ad-hoc (or otherwise rejected)
+# signatures still need an explicit quarantine removal after that checksum.
+if ! spctl --assess --type execute "$runtime" >/dev/null 2>&1; then
+  xattr -dr com.apple.quarantine "$package_root"
+fi
 
 mkdir -p "$install_base" "$prefix/bin"
 stage_root=$(mktemp -d "$install_base/.install-${release_version}.XXXXXX")

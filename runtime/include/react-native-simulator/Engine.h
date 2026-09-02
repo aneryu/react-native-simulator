@@ -90,6 +90,7 @@ struct EngineResult {
 // run() is active. `initialProps` JSON is a caller-owned object; rootTag and
 // fabric stay host-owned.
 struct ApplicationLaunchState {
+  std::uint64_t runtimeGeneration{0};
   bool initialBundlesLoaded{false};
   bool appRegistryReady{false};
   bool pending{false};

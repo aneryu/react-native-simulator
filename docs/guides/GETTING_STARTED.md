@@ -8,25 +8,35 @@ The v0.1.0 binary supports Apple Silicon and macOS 15 or newer. It is an
 Android-first experimental preview, not a sandbox or a platform conformance
 certificate. The iOS profile remains unverified experimental work.
 
+## Before you install
+
+- Use an RN 0.87 app. The host does not sniff other versions or emit a friendly
+  mismatch UI yet; a wrong React Native version fails as a native/JS contract
+  error.
+- Official RN components and modules are the supported starting point. Provide
+  an explicit [addon](ADDONS.md) for application or third-party native
+  contracts; unknown modules stay unavailable.
+- A normal app registers the name from `app.json` with
+  `AppRegistry.registerComponent`. `rnsim` discovers that name automatically.
+
 ## Install the runtime
 
-Download the v0.1.0 runtime archive and its adjacent checksum, then install it:
+Download the runtime archive and adjacent checksum from the
+[v0.1.0 GitHub Release](https://github.com/aneryu/react-native-simulator/releases/tag/v0.1.0),
+then install it. If that page does not contain the named assets, no supported
+binary distribution has been published yet; build from source instead.
 
 ```sh
 shasum -a 256 -c rnsim-v0.1.0-macos-arm64.tar.gz.sha256
 tar xf rnsim-v0.1.0-macos-arm64.tar.gz
 ./rnsim/install.sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 The installer confirms trust before removing quarantine, copies the whole
 runtime to `~/.local/lib/react-native-simulator/0.1.0`, and creates
 `~/.local/bin/rnsim`. Use `--prefix DIR` to select another user-owned prefix.
 It does not use sudo or modify shell startup files. Keep `PREFIX/bin` on PATH.
-
-Use `--reinstall` to replace exactly v0.1.0, `--activate 0.1.0` to switch the
-managed `current` link, and `--uninstall 0.1.0` to remove only that installed
-version. The installer refuses to overwrite a `PREFIX/bin/rnsim` it does not
-manage.
 
 Confirm the exact runtime contract before loading an application:
 
@@ -35,24 +45,28 @@ rnsim --version
 rnsim doctor --json
 ```
 
+Run `doctor` from the application root. It reports the declared/installed RN
+version, entry candidates, AppRegistry key, local config, and whether Metro is
+reachable. Metro `/status` does not identify which project it serves, so project
+ownership is intentionally verified only when `rnsim` loads the bundle.
+
 Packaged Mach-O files are ad-hoc signed for Apple Silicon, but this experimental
 release is not Developer ID signed or notarized. Verifying SHA-256 and accepting
 the installer's quarantine-removal prompt are therefore explicit trust steps.
 
-## Application requirements
+### Manage installed versions
 
-- An RN 0.87 app. The host does not sniff other versions or emit a friendly
-  mismatch UI; a wrong React Native version fails as a native/JS contract error.
-- Official RN components and modules only, unless you provide an explicit
-  [addon](ADDONS.md). Unknown native modules stay unavailable.
-- The AppRegistry key from your app's `app.json` `name` field (or the name you
-  pass to `AppRegistry.registerComponent`).
+Keep the extracted installer when you need to manage this release. Use
+`--reinstall` to replace exactly v0.1.0, `--activate 0.1.0` to switch the managed
+`current` link, and `--uninstall 0.1.0` to remove only that installed version.
+The installer refuses to overwrite a `PREFIX/bin/rnsim` it does not manage.
 
 ## Local development (Fast Refresh)
 
 From the app directory, start Metro in one terminal and `rnsim` in another.
-Order does not matter: interactive mode waits up to 60s for Metro on
-`localhost:8081`.
+Order does not matter: the interactive window opens first and Pages shows its
+loading state while the runtime waits up to 60s for Metro on `localhost:8081`.
+Closing the window cancels the wait.
 
 ```sh
 npm start
@@ -67,11 +81,15 @@ rnsim
 loads `index.bundle`. If Metro has no `./index`, it reads the packager project
 path from the 404 payload and tries entry files found there (`app.json` name,
 `package.json` main, `src/index`, and `js/*.android.js` / `js/*.ios.js`).
-`app.json`'s `name` is used as `--app-key` when you do not pass one.
+`app.json`'s `name` is used as `--app-key` when you do not pass one. After the
+bundle registers that key, `rnsim` runs it automatically. A bundle with one
+non-LogBox AppRegistry key is also run automatically; only an ambiguous
+multi-key bundle waits in the Pages chooser.
 
-`--platform ios` changes the Metro `platform` query. `--url` replaces the
-complete bundle URL. `--app-key` still preselects the Pages list when the name
-is not in `app.json`.
+`--platform ios` changes the Metro `platform` query, but the iOS profile remains
+unverified. `--url` replaces the complete bundle URL. Use `--app-key` when the
+application name is not available from `app.json` or several keys are
+registered.
 
 Save a file in your app. Metro sends a Fast Refresh update over `/hot`. Component
 state is preserved when the change is compatible. Export-shape changes fall back
@@ -80,10 +98,14 @@ replaced, and CLI/config bundles are fetched again. Metro's `r` key sends the
 same reload over `ws://host:port/message`.
 
 If Metro never answers `/status`, `rnsim` times out and tells you to start
-Metro or pass `--url`/`--bundle`.
+Metro or pass `--url`/`--bundle`; the preparation error remains visible in the
+Pages log instead of failing before a window exists.
 
-JavaScript errors print to stderr. There is no in-window LogBox or redbox
-overlay.
+JavaScript errors print to stderr and appear in the Pages log. The interactive
+runtime pauses instead of closing, so after fixing the source you can click
+**Reload** or press `r` in Metro to create a fresh Hermes/ReactInstance in the
+same window. This is host diagnostics, not an emulated in-window LogBox or
+Android redbox overlay.
 
 ## Offline bundle
 
@@ -108,8 +130,8 @@ revision. The compact binary archive does not ship a compiler. Use a source
 checkout's `build/release/bin/hermesc`, or load the source `.jsbundle` directly.
 
 `--bundle` (local source or HBC) does not enable Fast Refresh or the Metro
-packager connection. Reload from `DevSettings` is interactive-only and re-reads
-the local files.
+packager connection. The toolbar's **Reload** action and reload from
+`DevSettings` are interactive-only and re-read the local files.
 
 `rnsim.json` is the local configuration boundary. Paths are resolved relative to
 the config file, unknown fields are rejected, and `--bundle` on the CLI replaces
