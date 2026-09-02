@@ -61,6 +61,9 @@ parity. Runtime metrics are the authoritative per-session inventory:
 | BackHandler | hardwareBackPress event; unmount fallback | host-adapted |
 | Intent, permissions, dialog, share, vibration | deterministic headless mock or interactive ImGui prompt | mocked |
 | SoundManager, HeadlessJsTaskSupport, FrameRateLogger, ModalManager | shape-preserving adapters | mocked |
+| ReactDevToolsSettingsManager, ReactDevToolsRuntimeSettingsModule | in-memory hook and reload/profile settings | host-adapted |
+| LinkingManager | same ImGui/mock open-URL adapter as iOS; Android Linking APIs still use IntentAndroid | mocked |
+| RNCSafeAreaContext | window-relative insets (0 at the root; host notch/nav chrome is outside the RN window) | host-adapted |
 | Unknown modules | `nullptr` / enforcing lookup failure | unavailable |
 
 `android-rn87` and `ios-rn87` provide profile-specific `PlatformConstants`.
@@ -78,7 +81,8 @@ AndroidTextInput/TextInput, ActivityIndicatorView, AndroidSwitch, Switch,
 AndroidProgressBar, ModalHostView, AndroidDrawerLayout,
 AndroidSwipeRefreshLayout, PullToRefreshView,
 AndroidHorizontalScrollView, AndroidHorizontalScrollContentView,
-SafeAreaView, InputAccessory, VirtualView, VirtualViewExperimental,
+SafeAreaView, RNCSafeAreaProvider, RNCSafeAreaView,
+InputAccessory, VirtualView, VirtualViewExperimental,
 DebuggingOverlay, RCTImageView
 ```
 
@@ -106,6 +110,9 @@ not HWUI pixel equivalence. Known boundaries include:
 - `rotateY` remains a 2D determinant approximation;
 - PlatformColor uses a host AppCompat DayNight token map, not Android Resources;
 - Android font padding and hyphenation are deterministic approximations;
+- `RNCSafeAreaProvider` / `RNCSafeAreaView` report window-relative insets. Host
+  status/nav chrome is drawn around the RN window, so a root provider does not
+  overlap the notch; this is not Android 15 edge-to-edge WindowInsets;
 - `VirtualView`, `InputAccessory`, generic `Switch`, `PullToRefreshView`,
   `RCTImageView`, and `DebuggingOverlay` remain primarily layout-only;
 - no macOS accessibility platform source feeds the interactive frontend.

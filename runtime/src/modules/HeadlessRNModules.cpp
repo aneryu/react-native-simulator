@@ -168,6 +168,7 @@ class PlatformConstantsAndroidRN87 final : public react::TurboModule {
       size_t) {
     return jsi::String::createFromAscii(runtime, "react-native-simulator");
   }
+
 };
 
 class PlatformConstantsIOSRN87 final : public react::TurboModule {
@@ -270,6 +271,54 @@ class DeviceInfoModule final : public react::TurboModule {
 
   HeadlessRNModuleHost host_;
   bool androidShape_{false};
+};
+
+class RNCSafeAreaContextModule final : public react::TurboModule {
+ public:
+  RNCSafeAreaContextModule(
+      std::shared_ptr<react::CallInvoker> jsInvoker,
+      HeadlessRNModuleHost host)
+      : TurboModule("RNCSafeAreaContext", std::move(jsInvoker)),
+        host_(std::move(host)) {
+    methodMap_["getConstants"] = {0, &getConstants};
+  }
+
+ private:
+  static jsi::Value getConstants(
+      jsi::Runtime& runtime,
+      react::TurboModule& module,
+      const jsi::Value*,
+      size_t) {
+    const auto& self = static_cast<RNCSafeAreaContextModule&>(module);
+    const auto& environment = hostEnvironment().state;
+    const float width = environment.viewportWidth > 0
+        ? environment.viewportWidth
+        : self.host_.viewportWidth;
+    const float height = environment.viewportHeight > 0
+        ? environment.viewportHeight
+        : self.host_.viewportHeight;
+    jsi::Object insets(runtime);
+    // Host status/nav chrome is reserved around the Fabric window, not inside
+    // it. A root SafeAreaProvider therefore reports no notch/nav overlap.
+    insets.setProperty(runtime, "top", 0);
+    insets.setProperty(runtime, "right", 0);
+    insets.setProperty(runtime, "bottom", 0);
+    insets.setProperty(runtime, "left", 0);
+    jsi::Object frame(runtime);
+    frame.setProperty(runtime, "x", 0);
+    frame.setProperty(runtime, "y", 0);
+    frame.setProperty(runtime, "width", width);
+    frame.setProperty(runtime, "height", height);
+    jsi::Object metrics(runtime);
+    metrics.setProperty(runtime, "insets", std::move(insets));
+    metrics.setProperty(runtime, "frame", std::move(frame));
+    jsi::Object constants(runtime);
+    constants.setProperty(
+        runtime, "initialWindowMetrics", std::move(metrics));
+    return constants;
+  }
+
+  HeadlessRNModuleHost host_;
 };
 
 class SourceCodeModule final : public react::TurboModule {
@@ -1266,7 +1315,11 @@ class LinkingManagerModule final : public react::TurboModule {
       size_t) {
     return react::createPromiseAsJSIValue(
         runtime,
-        [](jsi::Runtime&, std::shared_ptr<react::Promise> promise) {
+        [](jsi::Runtime& runtime, std::shared_ptr<react::Promise> promise) {
+          if (const char* url = std::getenv("RNSIM_INITIAL_URL")) {
+            promise->resolve(jsi::String::createFromUtf8(runtime, url));
+            return;
+          }
           promise->resolve(jsi::Value::null());
         });
   }
@@ -1726,6 +1779,15 @@ std::shared_ptr<react::TurboModule> getHeadlessRNModule(
   if (name == "RedBox") {
     return createHeadlessRedBox(jsInvoker);
   }
+  if (isAndroidProfile(profile) && name == "ReactDevToolsSettingsManager") {
+    return createHeadlessReactDevToolsSettingsManager(jsInvoker);
+  }
+  if (name == "ReactDevToolsRuntimeSettingsModule") {
+    return createHeadlessReactDevToolsRuntimeSettingsModule(jsInvoker);
+  }
+  if (name == "RNCSafeAreaContext") {
+    return std::make_shared<RNCSafeAreaContextModule>(jsInvoker, host);
+  }
   if (isAndroidProfile(profile) && name == "StatusBarManager") {
     return std::make_shared<StatusBarManagerAndroid>(jsInvoker);
   }
@@ -1779,7 +1841,8 @@ std::shared_ptr<react::TurboModule> getHeadlessRNModule(
         std::initializer_list<std::pair<const char*, size_t>>{
             {"playTouchSound", 0}});
   }
-  if (profile == "ios-rn87" && name == "LinkingManager") {
+  if ((isAndroidProfile(profile) || profile == "ios-rn87") &&
+      name == "LinkingManager") {
     return std::make_shared<LinkingManagerModule>(jsInvoker);
   }
   if (profile == "ios-rn87" && name == "AlertManager") {
@@ -1838,7 +1901,9 @@ std::vector<std::string> getHeadlessRNModuleNames(const std::string& profile) {
       "FrameRateLogger",
       "ModalManager",
       "DevLoadingView",
-      "RedBox"};
+      "RedBox",
+      "ReactDevToolsRuntimeSettingsModule",
+      "RNCSafeAreaContext"};
   if (profile == "android-rn73") {
     result.insert(
         result.end(),
@@ -1850,7 +1915,8 @@ std::vector<std::string> getHeadlessRNModuleNames(const std::string& profile) {
          "DialogManagerAndroid",
          "ShareModule",
          "DeviceEventManager",
-         "SoundManager"});
+         "SoundManager",
+         "LinkingManager"});
   } else if (profile == "android-rn87") {
     result.insert(
         result.end(),
@@ -1862,7 +1928,9 @@ std::vector<std::string> getHeadlessRNModuleNames(const std::string& profile) {
          "DialogManagerAndroid",
          "ShareModule",
          "DeviceEventManager",
-         "SoundManager"});
+         "SoundManager",
+         "LinkingManager",
+         "ReactDevToolsSettingsManager"});
   } else if (profile == "ios-rn87") {
     result.insert(
         result.end(),
@@ -1915,6 +1983,8 @@ std::vector<HeadlessModuleCapability> getHeadlessRNModuleCapabilities(
       {"ModalManager", "headless-adapter"},
       {"DevLoadingView", "headless-adapter"},
       {"RedBox", "headless-adapter"},
+      {"ReactDevToolsRuntimeSettingsModule", "in-memory-dev-settings"},
+      {"RNCSafeAreaContext", "window-relative-insets"},
   };
   if (profile == "android-rn73") {
     result.insert(
@@ -1927,7 +1997,8 @@ std::vector<HeadlessModuleCapability> getHeadlessRNModuleCapabilities(
          {"DialogManagerAndroid", "imgui-or-mock"},
          {"ShareModule", "imgui-or-mock"},
          {"DeviceEventManager", "hardware-back-press"},
-         {"SoundManager", "headless-adapter"}});
+         {"SoundManager", "headless-adapter"},
+         {"LinkingManager", "imgui-or-mock"}});
   } else if (profile == "android-rn87") {
     result.insert(
         result.end(),
@@ -1939,7 +2010,9 @@ std::vector<HeadlessModuleCapability> getHeadlessRNModuleCapabilities(
          {"DialogManagerAndroid", "imgui-or-mock"},
          {"ShareModule", "imgui-or-mock"},
          {"DeviceEventManager", "hardware-back-press"},
-         {"SoundManager", "headless-adapter"}});
+         {"SoundManager", "headless-adapter"},
+         {"LinkingManager", "imgui-or-mock"},
+         {"ReactDevToolsSettingsManager", "in-memory-dev-settings"}});
   } else if (profile == "ios-rn87") {
     result.insert(
         result.end(),

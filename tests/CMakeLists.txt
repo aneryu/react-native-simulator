@@ -1,4 +1,5 @@
 find_package(Boost CONFIG REQUIRED)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 find_package(Threads REQUIRED)
 
 set(RNS_TEST_FIXTURES_DIR "${CMAKE_CURRENT_LIST_DIR}/fixtures")
@@ -71,6 +72,13 @@ if(RNS_ENABLE_SKIA AND RNS_ENABLE_IMGUI)
       -DRNSIM=$<TARGET_FILE:react-native-simulator>
       -DOUTPUT=${CMAKE_BINARY_DIR}/tests/window-first-smoke.json
       -P "${PROJECT_SOURCE_DIR}/cmake/ValidateInteractiveWindowFirst.cmake")
+  add_test(NAME interactive-preparation-cancel
+    COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_LIST_DIR}/interactive-preparation-cancel.py"
+      --rnsim $<TARGET_FILE:react-native-simulator>
+      --output
+        "${CMAKE_BINARY_DIR}/tests/interactive-preparation-cancel.json")
+  set_tests_properties(interactive-preparation-cancel PROPERTIES TIMEOUT 10)
 endif()
 
 add_test(NAME runtime-embedding-api COMMAND runtime-api-smoke)
@@ -101,6 +109,12 @@ add_test(NAME cli-doctor-project
     -DRNSIM=$<TARGET_FILE:react-native-simulator>
     -DPROJECT_DIR=${RNS_TEST_FIXTURES_DIR}/doctor-project
     -P "${PROJECT_SOURCE_DIR}/cmake/ValidateDoctorProject.cmake")
+add_test(NAME cli-doctor-metro-project
+  COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/metro-project-identity.py"
+    --rnsim $<TARGET_FILE:react-native-simulator>
+    --project-root "${RNS_TEST_FIXTURES_DIR}/doctor-project"
+    --other-root "${RNS_TEST_FIXTURES_DIR}")
 add_test(NAME cli-conformance-unavailable
   COMMAND $<TARGET_FILE:react-native-simulator> test
     --bundle "${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js")
@@ -211,9 +225,14 @@ set_tests_properties(runtime-multi-bundle PROPERTIES
 set_tests_properties(rn73-profile PROPERTIES
   PASS_REGULAR_EXPRESSION
     "\"profile\":\"android-rn73\".*\"addons\":\\[\\].*\"bundleLoaded\":true")
+if(RNS_ENABLE_SKIA)
+  set(RNS_TEST_IMAGE_FIDELITY "skia-local-and-http-image")
+else()
+  set(RNS_TEST_IMAGE_FIDELITY "unavailable-without-skia")
+endif()
 set_tests_properties(rn87-profile PROPERTIES
   PASS_REGULAR_EXPRESSION
-    "\"profile\":\"android-rn87\".*\"NativeReactNativeFeatureFlagsCxx\",\"NativeMicrotasksCxx\",\"NativeDOMCxx\",\"NativeAnimatedModule\".*\"IntentAndroid\",\"PermissionsAndroid\".*\"Image\":\"skia-local-and-http-image\".*\"fabric-layout-animation\".*\"bundleLoaded\":true")
+    "\"profile\":\"android-rn87\".*\"NativeReactNativeFeatureFlagsCxx\",\"NativeMicrotasksCxx\",\"NativeDOMCxx\",\"NativeAnimatedModule\".*\"IntentAndroid\",\"PermissionsAndroid\".*\"Image\":\"${RNS_TEST_IMAGE_FIDELITY}\".*\"fabric-layout-animation\".*\"bundleLoaded\":true")
 if(TEST shopee-addon)
   set_tests_properties(shopee-addon PROPERTIES
     PASS_REGULAR_EXPRESSION
@@ -253,6 +272,17 @@ if(RNS_RNTESTER_BUNDLE AND EXISTS "${RNS_RNTESTER_BUNDLE}")
     PASS_REGULAR_EXPRESSION
       "\"addons\":\\[\"rntester\"\\].*\"reactFabric\":true.*\"mountedViewTree\":\\{.*\"nodeCount\":[1-9].*\"workloadComplete\":true"
     TIMEOUT 20)
+  if(RNS_ENABLE_SKIA AND RNS_ENABLE_IMGUI)
+    add_test(NAME interactive-preparation-retry
+      COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_LIST_DIR}/interactive-preparation-retry.py"
+        --rnsim $<TARGET_FILE:react-native-simulator>
+        --bundle "${RNS_RNTESTER_BUNDLE}"
+        --addon $<TARGET_FILE:react-native-simulator-addon-rntester>
+        --output
+          "${CMAKE_BINARY_DIR}/tests/interactive-preparation-retry.json")
+    set_tests_properties(interactive-preparation-retry PROPERTIES TIMEOUT 45)
+  endif()
 endif()
 
 if(RNS_RN0732_FIXTURE_BUNDLE AND EXISTS "${RNS_RN0732_FIXTURE_BUNDLE}")
@@ -287,7 +317,8 @@ endif()
 set_tests_properties(runtime-source runtime-bytecode runtime-multi-bundle
   runtime-trace validate-runtime-trace rn73-profile rn87-profile
   runtime-embedding-api local-config cli-no-legacy-command
-  cli-version cli-doctor cli-doctor-project cli-conformance-unavailable
+  cli-version cli-doctor cli-doctor-project cli-doctor-metro-project
+  cli-conformance-unavailable
   cli-profile-platform-conflict
   package-install package-consumer-configure
   package-consumer-build package-consumer-run metro-http-source cli-help

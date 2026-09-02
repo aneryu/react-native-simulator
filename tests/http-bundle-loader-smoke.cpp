@@ -4,6 +4,8 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <exception>
 #include <iostream>
 #include <string>
@@ -97,6 +99,101 @@ int main() {
     if (!running) {
       throw std::runtime_error("Metro /status was not detected");
     }
+
+    // Reproduce the interactive-close edge case: Metro's status endpoint is
+    // healthy, but the subsequent bundle response never finishes. The loader
+    // must observe cancellation without waiting for its normal 60s timeout.
+    asio::io_context hangingContext;
+    tcp::acceptor hangingAcceptor(
+        hangingContext, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto hangingPort = hangingAcceptor.local_endpoint().port();
+    std::atomic<bool> releaseHangingResponse{false};
+    std::atomic<bool> hangingBundleRequested{false};
+    std::exception_ptr hangingServerError;
+    std::thread hangingServer([&] {
+      try {
+        for (int requestIndex = 0; requestIndex < 2; ++requestIndex) {
+          tcp::socket socket(hangingContext);
+          hangingAcceptor.accept(socket);
+          beast::flat_buffer requestBuffer;
+          http::request<http::empty_body> request;
+          http::read(socket, requestBuffer, request);
+          if (request.target() == "/status") {
+            http::response<http::string_body> response{
+                http::status::ok, 11};
+            response.set(http::field::content_type, "text/plain");
+            response.body() = "packager-status:running";
+            response.prepare_payload();
+            http::write(socket, response);
+            continue;
+          }
+          if (request.target() !=
+              "/index.bundle?platform=android&dev=true&minify=false") {
+            throw std::runtime_error("unexpected hanging request target");
+          }
+          const std::string partialResponse =
+              "HTTP/1.1 200 OK\r\n"
+              "Content-Type: application/javascript\r\n"
+              "Content-Length: 4096\r\n\r\n"
+              "/* deliberately incomplete";
+          asio::write(socket, asio::buffer(partialResponse));
+          hangingBundleRequested.store(true);
+          while (!releaseHangingResponse.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+          }
+        }
+      } catch (...) {
+        hangingServerError = std::current_exception();
+      }
+    });
+
+    try {
+      const auto hangingUrl =
+          "http://127.0.0.1:" + std::to_string(hangingPort) +
+          "/index.bundle?platform=android&dev=true&minify=false";
+      if (!isMetroRunning(hangingUrl)) {
+        throw std::runtime_error(
+            "hanging Metro did not first report a healthy /status");
+      }
+      const auto cancellationStart = std::chrono::steady_clock::now();
+      bool requestCancelled = false;
+      try {
+        (void)fetchHttpBundle(hangingUrl, 5000, [&] {
+          return hangingBundleRequested.load() &&
+              std::chrono::steady_clock::now() - cancellationStart >=
+              std::chrono::milliseconds(100);
+        });
+      } catch (const HttpRequestCancelled&) {
+        requestCancelled = true;
+      }
+      const auto cancellationElapsed =
+          std::chrono::steady_clock::now() - cancellationStart;
+      if (!requestCancelled) {
+        throw std::runtime_error(
+            "hanging bundle fetch did not report cancellation");
+      }
+      if (!hangingBundleRequested.load()) {
+        throw std::runtime_error(
+            "cancellation ran before the hanging bundle response started");
+      }
+      if (cancellationElapsed >= std::chrono::seconds(1)) {
+        throw std::runtime_error(
+            "hanging bundle cancellation took one second or longer");
+      }
+    } catch (...) {
+      releaseHangingResponse.store(true);
+      hangingAcceptor.close();
+      if (hangingServer.joinable()) {
+        hangingServer.join();
+      }
+      throw;
+    }
+    releaseHangingResponse.store(true);
+    hangingServer.join();
+    if (hangingServerError) {
+      std::rethrow_exception(hangingServerError);
+    }
+
     if (metroOrigin(
             "http://localhost:8081/index.bundle?platform=android") !=
         "http://localhost:8081") {

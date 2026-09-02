@@ -7,6 +7,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <exception>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -56,6 +58,7 @@ HttpUrl parseLoopbackHttpUrl(const std::string& url) {
 }
 struct LoopbackGet {
   bool connected{false};
+  bool cancelled{false};
   unsigned status{0};
   std::string body;
 };
@@ -63,32 +66,105 @@ struct LoopbackGet {
 LoopbackGet getLoopback(
     const std::string& url,
     std::chrono::milliseconds timeout,
-    std::string_view accept) {
+    std::string_view accept,
+    const std::function<bool()>& cancelled = {}) {
   const auto parsed = parseLoopbackHttpUrl(url);
   LoopbackGet result;
-  try {
-    asio::io_context context;
-    tcp::resolver resolver(context);
-    beast::tcp_stream stream(context);
-    stream.expires_after(timeout);
-    stream.connect(resolver.resolve(parsed.host, parsed.port));
-    http::request<http::empty_body> request{
-        http::verb::get, parsed.target, 11};
-    request.set(http::field::host, parsed.host + ':' + parsed.port);
-    request.set(http::field::user_agent, "react-native-simulator");
-    request.set(http::field::accept, accept);
-    http::write(stream, request);
-    beast::flat_buffer buffer;
-    http::response_parser<http::string_body> parser;
-    parser.body_limit(512 * 1024 * 1024);
-    http::read(stream, buffer, parser);
-    auto response = parser.release();
-    result.connected = true;
-    result.status = response.result_int();
-    result.body = std::move(response.body());
-  } catch (const std::exception&) {
-    return {};
+  asio::io_context context;
+  tcp::resolver resolver(context);
+  beast::tcp_stream stream(context);
+  tcp::resolver::results_type endpoints;
+  beast::flat_buffer buffer;
+  http::request<http::empty_body> request{
+      http::verb::get, parsed.target, 11};
+  request.set(http::field::host, parsed.host + ':' + parsed.port);
+  request.set(http::field::user_agent, "react-native-simulator");
+  request.set(http::field::accept, accept);
+  http::response_parser<http::string_body> parser;
+  parser.body_limit(512 * 1024 * 1024);
+
+  beast::error_code operationError;
+  bool completed = false;
+  auto complete = [&](beast::error_code error) {
+    operationError = error;
+    completed = true;
+  };
+  resolver.async_resolve(
+      parsed.host,
+      parsed.port,
+      [&](beast::error_code error, tcp::resolver::results_type resolved) {
+        if (error) {
+          complete(error);
+          return;
+        }
+        endpoints = std::move(resolved);
+        stream.async_connect(
+            endpoints,
+            [&](beast::error_code error, const tcp::endpoint&) {
+              if (error) {
+                complete(error);
+                return;
+              }
+              http::async_write(
+                  stream,
+                  request,
+                  [&](beast::error_code error, std::size_t) {
+                    if (error) {
+                      complete(error);
+                      return;
+                    }
+                    http::async_read(
+                        stream,
+                        buffer,
+                        parser,
+                        [&](beast::error_code error, std::size_t) {
+                          complete(error);
+                        });
+                  });
+            });
+      });
+
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  std::exception_ptr cancellationError;
+  bool cancellationRequested = false;
+  bool timedOut = false;
+  while (!completed) {
+    try {
+      cancellationRequested = cancelled && cancelled();
+    } catch (...) {
+      cancellationError = std::current_exception();
+      cancellationRequested = true;
+    }
+    timedOut = std::chrono::steady_clock::now() >= deadline;
+    if (cancellationRequested || timedOut) {
+      resolver.cancel();
+      beast::error_code ignored;
+      stream.socket().cancel(ignored);
+      stream.socket().close(ignored);
+      context.restart();
+      context.run();
+      break;
+    }
+    context.run_for(std::chrono::milliseconds(10));
+    if (!completed && context.stopped()) {
+      context.restart();
+    }
   }
+
+  if (cancellationError) {
+    std::rethrow_exception(cancellationError);
+  }
+  if (cancellationRequested) {
+    result.cancelled = true;
+    return result;
+  }
+  if (timedOut || operationError) {
+    return result;
+  }
+  auto response = parser.release();
+  result.connected = true;
+  result.status = response.result_int();
+  result.body = std::move(response.body());
   return result;
 }
 } // namespace
@@ -99,6 +175,9 @@ MetroHttpError::MetroHttpError(unsigned status, std::string body)
           (body.empty() ? std::string{} : ": " + body.substr(0, 1024))),
       status(status),
       body(std::move(body)) {}
+
+HttpRequestCancelled::HttpRequestCancelled()
+    : std::runtime_error("HTTP request cancelled") {}
 
 std::string metroOrigin(const std::string& bundleUrl) {
   const auto parsed = parseLoopbackHttpUrl(bundleUrl);
@@ -130,14 +209,21 @@ bool isMetroRunning(const std::string& bundleUrl) {
       status.body.find("packager-status:running") != std::string::npos;
 }
 
-std::string fetchHttpBundle(const std::string& url, int timeoutMs) {
+std::string fetchHttpBundle(
+    const std::string& url,
+    int timeoutMs,
+    const std::function<bool()>& cancelled) {
   if (timeoutMs < 1) {
     timeoutMs = 1;
   }
   const auto response = getLoopback(
       url,
       std::chrono::milliseconds(timeoutMs),
-      "application/javascript");
+      "application/javascript",
+      cancelled);
+  if (response.cancelled) {
+    throw HttpRequestCancelled();
+  }
   if (!response.connected) {
     throw std::runtime_error("connection failed");
   }

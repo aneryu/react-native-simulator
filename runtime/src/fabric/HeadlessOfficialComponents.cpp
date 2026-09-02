@@ -21,6 +21,8 @@ const char HeadlessModalHostViewName[] = "ModalHostView";
 const char HeadlessAndroidSwipeRefreshLayoutName[] = "AndroidSwipeRefreshLayout";
 const char HeadlessAndroidDrawerLayoutName[] = "AndroidDrawerLayout";
 const char HeadlessSafeAreaViewName[] = "SafeAreaView";
+const char HeadlessRNCSafeAreaProviderName[] = "RNCSafeAreaProvider";
+const char HeadlessRNCSafeAreaViewName[] = "RNCSafeAreaView";
 
 HeadlessActivityIndicatorViewProps::HeadlessActivityIndicatorViewProps(
     const PropsParserContext& context,
@@ -266,6 +268,12 @@ void registerHeadlessOfficialComponents(
   providers.add(
       concreteComponentDescriptorProvider<
           HeadlessSafeAreaViewComponentDescriptor>());
+  providers.add(
+      concreteComponentDescriptorProvider<
+          HeadlessRNCSafeAreaProviderComponentDescriptor>());
+  providers.add(
+      concreteComponentDescriptorProvider<
+          HeadlessRNCSafeAreaViewComponentDescriptor>());
 
   for (const auto& spec : kHeadlessOfficialComponents) {
     if (std::string(spec.name) == "ActivityIndicatorView" ||
@@ -277,7 +285,9 @@ void registerHeadlessOfficialComponents(
         std::string(spec.name) == "AndroidHorizontalScrollContentView" ||
         std::string(spec.name) == "AndroidSwipeRefreshLayout" ||
         std::string(spec.name) == "AndroidDrawerLayout" ||
-        std::string(spec.name) == "SafeAreaView") {
+        std::string(spec.name) == "SafeAreaView" ||
+        std::string(spec.name) == "RNCSafeAreaProvider" ||
+        std::string(spec.name) == "RNCSafeAreaView") {
       continue;
     }
     auto flavor = std::make_shared<std::string>(spec.name);

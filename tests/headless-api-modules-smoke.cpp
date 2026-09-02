@@ -175,5 +175,65 @@ RN$Simulator.dispatchActions([{type: 'hardwareBackPress'}]).then(function() {
     std::cerr << backResult.error << '\n' << backResult.metricsJson << '\n';
     return 1;
   }
+
+  ReactNativeSimulator::EngineConfig gapConfig;
+  gapConfig.iterations = 5;
+  gapConfig.timeoutMs = 2000;
+  gapConfig.profile = "android-rn87";
+  gapConfig.viewportWidth = 390;
+  gapConfig.viewportHeight = 844;
+  gapConfig.insetTop = 24;
+  gapConfig.insetBottom = 48;
+  ReactNativeSimulator::Engine gapRuntime(std::move(gapConfig));
+  gapRuntime.loadBundle(
+      R"JS(
+RN$SimulatorWorkload.ready();
+const modules = globalThis.nativeModuleProxy;
+const settings = modules.ReactDevToolsSettingsManager;
+const runtimeSettings = modules.ReactDevToolsRuntimeSettingsModule;
+const linking = modules.LinkingManager;
+const safeArea = modules.RNCSafeAreaContext;
+if (!settings || !runtimeSettings || !linking || !safeArea) {
+  throw new Error('android capability modules missing');
+}
+settings.setGlobalHookSettings('{"hook":true}');
+runtimeSettings.setReloadAndProfileConfig({
+  shouldReloadAndProfile: true,
+  recordChangeDescriptions: false,
+});
+const reload = runtimeSettings.getReloadAndProfileConfig();
+const metrics = safeArea.getConstants().initialWindowMetrics;
+if (settings.getGlobalHookSettings() !== '{"hook":true}' ||
+    reload.shouldReloadAndProfile !== true ||
+    reload.recordChangeDescriptions !== false ||
+    typeof linking.openURL !== 'function' ||
+    typeof linking.getInitialURL !== 'function' ||
+    metrics.insets.top !== 0 ||
+    metrics.insets.bottom !== 0 ||
+    metrics.insets.left !== 0 ||
+    metrics.insets.right !== 0 ||
+    metrics.frame.width !== 390 ||
+    metrics.frame.height !== 844) {
+  throw new Error('android capability gap smoke failed: ' + JSON.stringify({
+    hook: settings.getGlobalHookSettings(),
+    reload: reload,
+    metrics: metrics,
+    linking: typeof linking.openURL,
+  }));
+}
+globalThis.RN$SimulatorWorkloadResult = {iterations: 5, checksum: 19};
+RN$SimulatorWorkload.complete();
+)JS",
+      "memory://android-capability-gap.js");
+  const auto gapResult = gapRuntime.run();
+  if (gapResult.exitCode != 0 ||
+      gapResult.metricsJson.find("\"workloadChecksum\":19") ==
+          std::string::npos ||
+      gapResult.metricsJson.find(
+          "\"RNCSafeAreaProvider\":\"window-relative-insets\"") ==
+          std::string::npos) {
+    std::cerr << gapResult.error << '\n' << gapResult.metricsJson << '\n';
+    return 1;
+  }
   return 0;
 }

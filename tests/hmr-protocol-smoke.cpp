@@ -7,6 +7,7 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <iostream>
@@ -89,6 +90,16 @@ console.log(
     typeof globalThis.globalEvalWithSourceUrl);
 )JS";
 
+constexpr std::string_view kFailingHMRBundle = R"JS(
+globalThis.RN$registerCallableModule('HMRClient', function () {
+  return {
+    setup: function () {
+      throw new Error('deliberate HMR setup failure');
+    },
+  };
+});
+)JS";
+
 std::string hmrUpdateMessage() {
   return R"({"type":"update","body":{"isInitialUpdate":false,"added":[],"modified":[{"module":[1,"console.log('HMR_INJECTED');"],"sourceURL":"hmr://injected.js"}]}})";
 }
@@ -125,6 +136,11 @@ class StubMetro {
   void sendReload() {
     std::lock_guard lock(mutex_);
     pendingReload_ = true;
+  }
+
+  void failNextBundleRequest() {
+    std::lock_guard lock(mutex_);
+    failNextBundle_ = true;
   }
 
   std::string error() const {
@@ -166,9 +182,19 @@ class StubMetro {
         }
         return;
       }
-      http::response<http::string_body> response{http::status::ok, 11};
+      bool failBundle = false;
+      {
+        std::lock_guard lock(mutex_);
+        failBundle = failNextBundle_;
+        failNextBundle_ = false;
+      }
+      http::response<http::string_body> response{
+          failBundle ? http::status::service_unavailable : http::status::ok,
+          11};
       response.set(http::field::content_type, "application/javascript");
-      response.body() = std::string(kBundle);
+      response.body() = failBundle
+          ? "deliberate reload fetch failure"
+          : std::string(kBundle);
       response.prepare_payload();
       http::write(socket, response);
     } catch (const std::exception&) {
@@ -217,6 +243,7 @@ class StubMetro {
   mutable std::mutex mutex_;
   std::string pendingHot_;
   bool pendingReload_{false};
+  bool failNextBundle_{false};
   std::string error_;
 };
 } // namespace
@@ -248,8 +275,16 @@ int main() {
   bool wasLoaded = false;
   bool sentUpdate = false;
   bool sentReload = false;
+  bool sawPausedReload = false;
+  bool requestedRecovery = false;
+  bool hmrEnabled = false;
+  std::uint64_t latestGeneration = 0;
   while (std::chrono::steady_clock::now() < deadline) {
     const auto state = engine.applicationLaunchState();
+    const auto status = engine.runtimeStatus();
+    latestGeneration = std::max(latestGeneration, status.runtimeGeneration);
+    hmrEnabled = hmrEnabled || status.hmr ==
+            ReactNativeSimulator::HMRStatus::Enabled;
     if (state.initialBundlesLoaded && !wasLoaded) {
       ++loadedCycles;
     }
@@ -261,10 +296,22 @@ int main() {
     }
     if (loadedCycles == 1 && sentUpdate && !sentReload) {
       std::this_thread::sleep_for(std::chrono::milliseconds(300));
+      metro.failNextBundleRequest();
       metro.sendReload();
       sentReload = true;
     }
-    if (loadedCycles >= 2) {
+    if (status.runtimeGeneration >= 2 &&
+        status.phase == ReactNativeSimulator::RuntimePhase::PausedAfterError &&
+        !requestedRecovery) {
+      sawPausedReload = !status.diagnostics.empty() &&
+          status.diagnostics.front().kind ==
+              ReactNativeSimulator::RuntimeDiagnosticKind::ApplicationError;
+      engine.requestReload();
+      requestedRecovery = true;
+    }
+    if (status.runtimeGeneration >= 3 &&
+        status.phase == ReactNativeSimulator::RuntimePhase::ChoosingApplication &&
+        status.hmr == ReactNativeSimulator::HMRStatus::Enabled) {
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(15));
@@ -280,9 +327,52 @@ int main() {
     std::cerr << runError << '\n';
     return 1;
   }
-  if (loadedCycles < 2) {
-    std::cerr << "packager reload did not recreate the runtime (loaded cycles="
-              << loadedCycles << ")\n";
+  if (!sawPausedReload || !requestedRecovery || latestGeneration < 3) {
+    std::cerr << "reload fetch failure did not pause and recover (generation="
+              << latestGeneration << ", loaded cycles=" << loadedCycles
+              << ")\n";
+    return 1;
+  }
+  if (!hmrEnabled) {
+    std::cerr << "runtime status did not report enabled HMR\n";
+    return 1;
+  }
+
+  StubMetro failingMetro;
+  failingMetro.start();
+  const auto failingUrl =
+      "http://127.0.0.1:" + std::to_string(failingMetro.port()) +
+      "/index.bundle?platform=android&dev=true&minify=false";
+  ReactNativeSimulator::EngineConfig failingConfig;
+  failingConfig.mode = ReactNativeSimulator::SimulatorMode::Interactive;
+  failingConfig.timeoutMs = 5000;
+  failingConfig.autoRunApplication = false;
+  ReactNativeSimulator::Engine failingEngine(std::move(failingConfig));
+  failingEngine.loadBundle(std::string(kFailingHMRBundle), failingUrl);
+  ReactNativeSimulator::EngineResult failingResult;
+  TestEngineThread failingRunner(
+      [&] { failingResult = failingEngine.run(); });
+  bool sawFailedHMR = false;
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    const auto status = failingEngine.runtimeStatus();
+    if (status.hmr == ReactNativeSimulator::HMRStatus::Failed) {
+      sawFailedHMR =
+          status.phase == ReactNativeSimulator::RuntimePhase::PausedAfterError &&
+          status.hmrError.find("deliberate HMR setup failure") !=
+              std::string::npos;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  failingEngine.requestStop();
+  failingRunner.join();
+  failingMetro.stop();
+  if (!failingMetro.error().empty()) {
+    std::cerr << failingMetro.error() << '\n';
+    return 1;
+  }
+  if (!sawFailedHMR || failingResult.exitCode == 0) {
+    std::cerr << "asynchronous HMR setup error was not reported as failed\n";
     return 1;
   }
   return 0;

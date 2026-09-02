@@ -289,6 +289,9 @@ struct SceneNode {
 };
 
 struct SceneSnapshot {
+  // Engine generation that produced this immutable snapshot. Frontends use it
+  // to reject stale scenes without re-entering the Engine from its callback.
+  std::uint64_t runtimeGeneration{0};
   int surfaceId{0};
   std::int64_t revision{0};
   int rootTag{0};

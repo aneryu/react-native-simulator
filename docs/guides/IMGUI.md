@@ -34,24 +34,90 @@ build/release/runtime/rnsim interactive \
 
 The main thread owns SDL/ImGui and the runtime thread owns JSI. Pointer, wheel,
 keyboard, and committed-text input cross a bounded typed queue. Closing the
-window calls `Engine::requestStop()` and performs an orderly shutdown.
+window cancels Metro preparation (including an in-flight loopback HTTP request),
+calls `Engine::requestStop()`, and performs an orderly shutdown.
 
-The Pages panel lists `AppRegistry.getAppKeys()` and hides `LogBox` by default.
-Select an application, provide `initialProps` JSON, and choose Run/Re-run.
-`--app-key`, `--initial-props`, and matching `rnsim.json` fields prefill the UI.
-Runtime errors appear in the Pages log and stderr without covering the device.
+The live UI is application-first rather than an internal runtime dashboard. The
+Device is the default main view. Several `AppRegistry.getAppKeys()` entries or a
+blocking error force the App panel open. A newly observed missing-module or
+fallback-component warning opens it once. Closing the panel keeps it closed until
+another warning appears, and the toolbar can always reopen it. It hides `LogBox`
+by default. Launch options expose `initialProps` JSON and Run/Restart App;
+`--app-key`, `--initial-props`, and matching `rnsim.json` fields prefill them.
+Preparation, runtime, rendering, input, and AppRegistry errors open the copyable
+App log and do not cover the device. Engine and JavaScript failures also remain
+observable on stderr.
+
+The primary toolbar chip follows the actual lifecycle: `preparing`,
+`prepare failed`, `starting runtime`, `loading`, `starting app`, `choose app`,
+`live`, `reloading`, `error`, or `stopped`. When HMR is active, a second chip
+shows `Enabling Fast Refresh…`, `Fast Refresh enabled`, or `Fast Refresh failed`.
+The enabling and enabled states use the informational tone. Empty Device messages
+provide the corresponding waiting, start, and recovery action instead of
+requiring the App panel to remain visible during a normal single-application
+session.
+
+`Fast Refresh enabled` means that RN's HMR client was enabled successfully for
+the current runtime generation. It is not a continuous Metro WebSocket health
+probe.
 
 Interaction modes:
 
-- Interact dispatches normal RN pointer, scroll, keyboard, and TextInput events.
-- Select overlays hit-test highlighting without replacing Skia pixels.
-- Alt-click selects a node without dispatching a pointer event.
-- Escape first dismisses the software keyboard, then sends Android
-  `hardwareBackPress`. The unhandled default unmounts the running application.
+- Interact dispatches normal RN pointer, scroll, keyboard, and TextInput events
+  only while the Engine phase is `Running`; leaving that phase cancels any
+  active application pointer instead of queueing input into a paused or
+  reloading runtime.
+- Inspect opens ShadowTree, cancels an active application pointer, and isolates
+  normal canvas pointer, keyboard, and TextInput dispatch while selecting and
+  highlighting nodes without replacing Skia pixels.
+- `Command-1` selects Interact, `Command-2` selects Inspect, and `Command-R`
+  invokes the available Reload or Retry action; these shortcuts remain active in
+  Inspect.
+- Escape leaves Inspect first. In Interact it dismisses the software keyboard,
+  then sends Android `hardwareBackPress`; the unhandled default unmounts the
+  running application.
 
 Interactive alerts, sharing, permissions, URL opening, and similar device
 services use explicit host dialogs. Headless mode uses deterministic mocks.
 Neither path is part of the Fabric tree or a platform-equivalence claim.
+
+### Reload and retry boundary
+
+Once the Engine is running, paused after an error, or waiting for an application
+choice, **Reload**, `Command-R`, and Metro's `r` replace the
+Hermes/ReactInstance generation, fetch Metro/HTTP sources again, and restart the
+current application while keeping the macOS window open.
+
+If preparation fails before the first bundle loads—for example, Metro times out
+or the bundle fetch fails—the toolbar offers **Retry**, and `Command-R` invokes
+the same action. Preparation is transactional: every remote source is fetched
+before any bundle is queued, so the corrected remote attempt can repeat safely
+in the same window. Another Retry is ignored while an attempt is in flight.
+
+### Structured engine status
+
+Embedding clients can query `Engine::runtimeStatus()` while `run()` is active.
+The thread-safe snapshot contains the current generation and lifecycle phase,
+HMR state/error, deduplicated structured diagnostics, and observed native-module
+plus mounted official, addon, or fallback-component capability usage. JavaScript
+diagnostics include fatal state and file, method, line, and column stack frames;
+other kinds cover application errors, missing native modules, and fallback
+Fabric components.
+
+This snapshot is usage-driven and scoped to the current generation, not a full
+capability inventory or cross-reload history. The toolbar renders its actual
+phase and HMR state. The App panel renders structured errors and JavaScript stack
+frames plus the capabilities or degradations observed in that snapshot; its
+copyable string log also retains preparation, rendering, and input failures
+outside the Engine status. The `Compatibility · N used · M limited` section
+lists each observed capability's type, name, classification, and fidelity and
+opens by default when any use is limited. `limited` counts `mocked`,
+`layout-only`, and `unavailable`; `implemented` and `host-adapted` remain visible
+without being labeled limited. Classification is supplied by the Engine enum;
+the UI does not infer it from the free-form fidelity description. The toolbar App
+label keeps the limited count visible after the panel is closed. Consult the
+[capability baseline](../baselines/RN087_CAPABILITY_BASELINE.md) for the complete
+declared support boundary.
 
 ## Device geometry
 

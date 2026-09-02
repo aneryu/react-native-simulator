@@ -3095,6 +3095,33 @@ class HeadlessReactFabricHost final
     }
   }
 
+  void emitSafeAreaInsetsIfNeeded(const react::ShadowView& view) {
+    if (view.componentName == nullptr ||
+        std::string(view.componentName) !=
+            react::HeadlessRNCSafeAreaProviderName ||
+        !view.eventEmitter) {
+      return;
+    }
+    // Notch/status and nav chrome live outside the Fabric window. Emitting the
+    // host chrome sizes here would double-pad safe-area consumers.
+    const auto& frame = view.layoutMetrics.frame;
+    view.eventEmitter->dispatchEvent(
+        "topInsetsChange",
+        folly::dynamic::object
+            ("insets",
+             folly::dynamic::object
+                 ("top", 0)
+                 ("right", 0)
+                 ("bottom", 0)
+                 ("left", 0))
+            ("frame",
+             folly::dynamic::object
+                 ("x", frame.origin.x)
+                 ("y", frame.origin.y)
+                 ("width", frame.size.width)
+                 ("height", frame.size.height)));
+  }
+
   void applyMountingMutation(const react::ShadowViewMutation& mutation) {
     const auto tag = mutation.type == react::ShadowViewMutation::Delete ||
             mutation.type == react::ShadowViewMutation::Remove
@@ -3130,6 +3157,7 @@ class HeadlessReactFabricHost final
           mutation.newChildShadowView.eventEmitter->dispatchEvent(
               "topShow", folly::dynamic::object());
         }
+        emitSafeAreaInsetsIfNeeded(mutation.newChildShadowView);
         break;
       }
       case react::ShadowViewMutation::Insert: {
@@ -3232,6 +3260,7 @@ class HeadlessReactFabricHost final
         found->second.node = std::move(updated);
         found->second.eventEmitter = mutation.newChildShadowView.eventEmitter;
         found->second.state = mutation.newChildShadowView.state;
+        emitSafeAreaInsetsIfNeeded(mutation.newChildShadowView);
         if (imageStateChanged || !found->second.imageObserver) {
           bindMountedImage(found->second, mutation.newChildShadowView);
         }

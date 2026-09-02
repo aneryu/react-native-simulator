@@ -3,6 +3,7 @@
 
 #include "TestEngineThread.h"
 
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <stdexcept>
@@ -235,7 +236,9 @@ int main() {
   const auto result = runtime.run();
   if (result.exitCode != 0 || !result.error.empty() ||
       result.scene == nullptr || result.scene->viewportWidth != 300.0f ||
+      result.scene->runtimeGeneration != 1 ||
       sceneUpdates < 1 || handedOffScene == nullptr ||
+      handedOffScene->runtimeGeneration != 1 ||
       handedOffScene->revision != result.scene->revision ||
       result.scene->viewportHeight != 80.0f ||
       result.scene->pointScaleFactor != 1.0f ||
@@ -284,6 +287,44 @@ int main() {
     return 1;
   }
 
+  ReactNativeSimulator::EngineConfig capabilityConfig;
+  capabilityConfig.iterations = 1;
+  capabilityConfig.timeoutMs = 1000;
+  ReactNativeSimulator::Engine capabilityRuntime(std::move(capabilityConfig));
+  capabilityRuntime.loadBundle(
+      "void globalThis.nativeModuleProxy.$$typeof;\n"
+      "globalThis.__turboModuleProxy('DefinitelyMissingModule');\n"
+      "RN$SimulatorWorkload.ready();\n"
+      "globalThis.RN$SimulatorWorkloadResult={iterations:1,checksum:13};\n"
+      "RN$SimulatorWorkload.complete();\n",
+      "memory://capability-status.js");
+  const auto capabilityResult = capabilityRuntime.run();
+  const auto capabilityStatus = capabilityRuntime.runtimeStatus();
+  bool sawUnavailableUsage = false;
+  bool sawMissingDiagnostic = false;
+  bool sawMetadataProbe = false;
+  for (const auto& capability : capabilityStatus.capabilityUsages) {
+    sawUnavailableUsage = sawUnavailableUsage ||
+        (capability.type == "module" &&
+         capability.name == "DefinitelyMissingModule" &&
+         capability.fidelity == "unavailable" &&
+         capability.classification ==
+             ReactNativeSimulator::RuntimeCapabilityClass::Unavailable);
+    sawMetadataProbe = sawMetadataProbe || capability.name == "$$typeof";
+  }
+  for (const auto& diagnostic : capabilityStatus.diagnostics) {
+    sawMissingDiagnostic = sawMissingDiagnostic ||
+        (diagnostic.kind ==
+             ReactNativeSimulator::RuntimeDiagnosticKind::MissingNativeModule &&
+         diagnostic.name == "DefinitelyMissingModule");
+    sawMetadataProbe = sawMetadataProbe || diagnostic.name == "$$typeof";
+  }
+  if (capabilityResult.exitCode != 0 || !sawUnavailableUsage ||
+      !sawMissingDiagnostic || sawMetadataProbe) {
+    std::cerr << "runtime status did not expose capability degradation\n";
+    return 1;
+  }
+
   ReactNativeSimulator::EngineConfig interactiveConfig;
   interactiveConfig.mode = ReactNativeSimulator::SimulatorMode::Interactive;
   interactiveConfig.autoRunApplication = true;
@@ -291,6 +332,7 @@ int main() {
   interactiveConfig.timeoutMs = 1000;
   ReactNativeSimulator::Engine interactive(std::move(interactiveConfig));
   interactive.loadBundle(
+      "globalThis.__turboModuleProxy('DeviceInfo');\n"
       "globalThis.RN$AppRegistry={\n"
       " getAppKeys:function(){return ['InteractiveApp'];},\n"
       " runApplication:function(key,parameters){\n"
@@ -304,14 +346,113 @@ int main() {
   ReactNativeSimulator::EngineResult interactiveResult;
   TestEngineThread interactiveThread(
       [&] { interactiveResult = interactive.run(); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  bool interactiveRunning = false;
+  bool acceptedActionWhileRunning = false;
+  for (int attempt = 0; attempt < 100; ++attempt) {
+    const auto status = interactive.runtimeStatus();
+    if (status.phase == ReactNativeSimulator::RuntimePhase::Running) {
+      bool sawDeviceInfo = false;
+      for (const auto& capability : status.capabilityUsages) {
+        if (capability.type == "module" &&
+            capability.name == "DeviceInfo" &&
+            capability.fidelity == "headless-adapter" &&
+            capability.classification ==
+                ReactNativeSimulator::RuntimeCapabilityClass::HostAdapted) {
+          sawDeviceInfo = true;
+          break;
+        }
+      }
+      try {
+        acceptedActionWhileRunning = interactive.enqueueAction({
+            .type = ReactNativeSimulator::InteractionActionType::PointerMove,
+            .x = -1,
+            .y = -1,
+        }) > 0;
+      } catch (const std::logic_error&) {
+      }
+      interactiveRunning = status.runtimeGeneration == 1 &&
+          status.hmr == ReactNativeSimulator::HMRStatus::Disabled &&
+          status.diagnostics.empty() && sawDeviceInfo &&
+          acceptedActionWhileRunning;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
   interactive.requestStop();
   interactiveThread.join();
-  if (interactiveResult.exitCode != 0 || !interactiveResult.error.empty() ||
+  if (!interactiveRunning ||
+      interactive.runtimeStatus().phase !=
+          ReactNativeSimulator::RuntimePhase::Stopped ||
+      interactiveResult.exitCode != 0 || !interactiveResult.error.empty() ||
       interactiveResult.metricsJson.find("\"workloadChecksum\":9") ==
           std::string::npos) {
     std::cerr << "interactive stop lifecycle failed: "
               << interactiveResult.error << '\n';
+    return 1;
+  }
+
+  ReactNativeSimulator::EngineConfig errorConfig;
+  errorConfig.mode = ReactNativeSimulator::SimulatorMode::Interactive;
+  errorConfig.timeoutMs = 1000;
+  ReactNativeSimulator::Engine errorRuntime(std::move(errorConfig));
+  errorRuntime.loadBundle(
+      "throw new Error('interactive status boom');\n",
+      "memory://interactive-error.js");
+  ReactNativeSimulator::EngineResult errorResult;
+  TestEngineThread errorThread([&] { errorResult = errorRuntime.run(); });
+  bool observedStructuredError = false;
+  bool rejectedApplicationWhilePaused = false;
+  bool rejectedActionWhilePaused = false;
+  for (int attempt = 0; attempt < 100; ++attempt) {
+    const auto status = errorRuntime.runtimeStatus();
+    if (status.phase ==
+        ReactNativeSimulator::RuntimePhase::PausedAfterError) {
+      observedStructuredError = !status.diagnostics.empty() &&
+          status.diagnostics.front().kind ==
+              ReactNativeSimulator::RuntimeDiagnosticKind::JavaScriptError &&
+          status.diagnostics.front().message.find("interactive status boom") !=
+              std::string::npos;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (observedStructuredError) {
+    const auto before = errorRuntime.runtimeStatus();
+    try {
+      errorRuntime.runApplication("IgnoredApp", "{}");
+    } catch (const std::logic_error&) {
+      const auto after = errorRuntime.runtimeStatus();
+      rejectedApplicationWhilePaused =
+          after.phase == ReactNativeSimulator::RuntimePhase::PausedAfterError &&
+          after.runtimeGeneration == before.runtimeGeneration &&
+          after.diagnostics.size() == before.diagnostics.size() &&
+          !after.diagnostics.empty() &&
+          after.diagnostics.front().message ==
+              before.diagnostics.front().message;
+    }
+    try {
+      errorRuntime.enqueueAction({
+          .type = ReactNativeSimulator::InteractionActionType::PointerDown,
+          .x = 1,
+          .y = 1,
+      });
+    } catch (const std::logic_error&) {
+      const auto after = errorRuntime.runtimeStatus();
+      rejectedActionWhilePaused =
+          after.phase == ReactNativeSimulator::RuntimePhase::PausedAfterError &&
+          after.runtimeGeneration == before.runtimeGeneration &&
+          after.diagnostics.size() == before.diagnostics.size() &&
+          !after.diagnostics.empty() &&
+          after.diagnostics.front().message ==
+              before.diagnostics.front().message;
+    }
+  }
+  errorRuntime.requestStop();
+  errorThread.join();
+  if (!observedStructuredError || !rejectedApplicationWhilePaused ||
+      !rejectedActionWhilePaused || errorResult.exitCode == 0) {
+    std::cerr << "interactive runtime status did not preserve its JS error "
+                 "while rejecting application or input work\n";
     return 1;
   }
 
@@ -325,16 +466,28 @@ int main() {
 
   ReactNativeSimulator::EngineConfig selectConfig;
   selectConfig.mode = ReactNativeSimulator::SimulatorMode::Interactive;
+  selectConfig.profile = "android-rn87";
   // Auto-run must stay non-fatal when more than one application is
-  // registered. The interactive frontend can then present Pages and queue the
-  // caller's explicit choice.
+  // registered or a configured key is stale. The interactive frontend can then
+  // present the live keys and queue the caller's explicit choice.
   selectConfig.autoRunApplication = true;
+  selectConfig.appKey = "StaleConfiguredApp";
   selectConfig.timeoutMs = 2000;
+  std::atomic<std::uint64_t> latestSelectSceneGeneration{0};
+  selectConfig.onSceneUpdate = [&](auto scene) {
+    auto observed = latestSelectSceneGeneration.load();
+    while (observed < scene->runtimeGeneration &&
+           !latestSelectSceneGeneration.compare_exchange_weak(
+               observed, scene->runtimeGeneration)) {
+    }
+  };
   ReactNativeSimulator::Engine selectable(std::move(selectConfig));
   selectable.loadBundle(
       "globalThis.RN$AppRegistry={\n"
       " getAppKeys:function(){return ['LogBox','AppA','AppB'];},\n"
       " runApplication:function(key,parameters){\n"
+      "  const status=globalThis.__turboModuleProxy('StatusBarManager');\n"
+      "  status.setHidden(false); status.setHidden(true);\n"
       "  globalThis.RN$SimulatorWorkloadResult={iterations:1,checksum:\n"
       "   key==='AppB'&&parameters.initialProps&&\n"
       "   parameters.initialProps.marker===7&&\n"
@@ -355,6 +508,19 @@ int main() {
                   << *launch.runningAppKey << '\n';
         return 1;
       }
+      if (selectable.runtimeStatus().phase !=
+          ReactNativeSimulator::RuntimePhase::ChoosingApplication) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        continue;
+      }
+      if (launch.lastError.find("StaleConfiguredApp") == std::string::npos ||
+          launch.lastError.find("AppA") == std::string::npos ||
+          launch.lastError.find("AppB") == std::string::npos) {
+        selectable.requestStop();
+        selectThread.join();
+        std::cerr << "stale configured AppRegistry key was not actionable\n";
+        return 1;
+      }
       try {
         selectable.runApplication("AppB", "{\"marker\":7}");
         ranSelected = true;
@@ -370,12 +536,46 @@ int main() {
     std::cerr << "failed to select AppRegistry application\n";
     return 1;
   }
+  bool selectedRunning = false;
   for (int attempt = 0; attempt < 100; ++attempt) {
     const auto launch = selectable.applicationLaunchState();
-    if (launch.runningAppKey && *launch.runningAppKey == "AppB") {
+    if (launch.runningAppKey && *launch.runningAppKey == "AppB" &&
+        selectable.runtimeStatus().phase ==
+            ReactNativeSimulator::RuntimePhase::Running) {
+      selectedRunning = true;
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  if (!selectedRunning) {
+    selectable.requestStop();
+    selectThread.join();
+    std::cerr << "selected AppRegistry application did not start\n";
+    return 1;
+  }
+  selectable.requestReload();
+  bool restoredSelectedAfterReload = false;
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    const auto launch = selectable.applicationLaunchState();
+    const auto status = selectable.runtimeStatus();
+    if (launch.runtimeGeneration == 2 && status.runtimeGeneration == 2 &&
+        launch.runningAppKey && *launch.runningAppKey == "AppB" &&
+        status.phase == ReactNativeSimulator::RuntimePhase::Running &&
+        latestSelectSceneGeneration.load() >= 2) {
+      restoredSelectedAfterReload = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  if (!restoredSelectedAfterReload) {
+    const auto launch = selectable.applicationLaunchState();
+    selectable.requestStop();
+    selectThread.join();
+    std::cerr << "reload did not restore selected AppB (generation="
+              << launch.runtimeGeneration << ", running="
+              << (launch.runningAppKey ? *launch.runningAppKey : "none")
+              << ")\n";
+    return 1;
   }
   try {
     selectable.runApplication("AppB", "[]");
@@ -388,6 +588,9 @@ int main() {
   selectable.requestStop();
   selectThread.join();
   if (selectResult.exitCode != 0 || !selectResult.error.empty() ||
+      selectResult.scene == nullptr ||
+      selectResult.scene->runtimeGeneration != 2 ||
+      latestSelectSceneGeneration.load() != 2 ||
       selectResult.metricsJson.find("\"workloadChecksum\":11") ==
           std::string::npos) {
     std::cerr << "selected AppRegistry application failed: "

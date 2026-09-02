@@ -25,6 +25,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_set>
 #include <utility>
@@ -80,23 +81,11 @@ bool isScriptFile(const std::filesystem::path &path) {
 std::string toBundlePath(std::string sourceFile) {
   const auto slash = sourceFile.rfind('/');
   const auto dot = sourceFile.rfind('.');
-  if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+  if (dot != std::string::npos &&
+      (slash == std::string::npos || dot > slash)) {
     sourceFile.resize(dot);
   }
   return sourceFile + ".bundle";
-}
-
-std::string appKeyFromEntryFile(const std::string &sourceFile) {
-  auto stem = std::filesystem::path(sourceFile).stem().string();
-  for (const char *suffix : {".android", ".ios", ".native", ".web"}) {
-    const auto size = std::char_traits<char>::length(suffix);
-    if (stem.size() > size &&
-        stem.compare(stem.size() - size, size, suffix) == 0) {
-      stem.resize(stem.size() - size);
-      break;
-    }
-  }
-  return stem;
 }
 
 std::optional<std::string> readJsonString(
@@ -191,19 +180,11 @@ std::vector<std::string> discoverMetroEntries(
 }
 
 std::optional<std::string> inferAppKeyFromProject(
-    const std::filesystem::path &root,
-    const std::string &platform) {
-  if (auto name = appJsonName(root)) {
-    return name;
-  }
-  const auto entries = discoverMetroEntries(root, platform);
-  if (!entries.empty()) {
-    auto key = appKeyFromEntryFile(entries.front());
-    if (!key.empty()) {
-      return key;
-    }
-  }
-  return std::nullopt;
+    const std::filesystem::path &root) {
+  // Entry filenames describe Metro input, not AppRegistry identity. Prefer the
+  // caller's app.json name when present; otherwise let the live AppRegistry
+  // select its sole key or ask the developer to choose among multiple keys.
+  return appJsonName(root);
 }
 
 std::optional<std::filesystem::path> metroProjectRootFromError(
@@ -226,6 +207,80 @@ std::optional<std::filesystem::path> metroProjectRootFromError(
   } catch (const std::exception&) {
     return std::nullopt;
   }
+}
+
+constexpr std::string_view kMetroProjectProbeEntry =
+    "__rnsim_project_root_probe_8f3d6c4a__";
+
+std::filesystem::path canonicalProjectRoot(
+    const std::filesystem::path &path) {
+  std::error_code error;
+  auto canonical = std::filesystem::weakly_canonical(path, error);
+  if (error || !std::filesystem::is_directory(canonical, error) || error) {
+    throw std::runtime_error(
+        "Cannot resolve project root " + path.string());
+  }
+  return canonical;
+}
+
+bool sameProjectRoot(
+    const std::filesystem::path &expected,
+    const std::filesystem::path &actual) {
+  std::error_code error;
+  const bool equivalent = std::filesystem::equivalent(expected, actual, error);
+  return !error ? equivalent : expected == actual;
+}
+
+std::filesystem::path probeMetroProjectRoot(
+    const std::string &bundleUrl,
+    const std::function<bool()> &cancelled = {}) {
+  const auto query = bundleUrl.find('?', std::string("http://").size());
+  const auto probeUrl =
+      metroOrigin(bundleUrl) + "/" + std::string(kMetroProjectProbeEntry) +
+      ".bundle" +
+      (query == std::string::npos ? std::string{} : bundleUrl.substr(query));
+  try {
+    (void)fetchHttpBundle(probeUrl, 3000, cancelled);
+    throw std::runtime_error(
+        "Metro project probe unexpectedly resolved " + probeUrl);
+  } catch (const MetroHttpError &error) {
+    if (error.status != 404 ||
+        error.body.find("UnableToResolveError") == std::string::npos) {
+      throw std::runtime_error(
+          "Metro project probe at " + metroOrigin(bundleUrl) +
+          " returned HTTP " + std::to_string(error.status) +
+          " without project-root evidence");
+    }
+    const auto root = metroProjectRootFromError(error.body);
+    if (!root) {
+      throw std::runtime_error(
+          "Metro project probe at " + metroOrigin(bundleUrl) +
+          " did not report a usable originModulePath");
+    }
+    return canonicalProjectRoot(*root);
+  }
+}
+
+struct MetroProjectCheck {
+  bool verified{false};
+  std::optional<std::filesystem::path> actualRoot;
+  std::string error;
+};
+
+MetroProjectCheck checkMetroProject(
+    const std::string &bundleUrl,
+    const std::filesystem::path &expectedRoot,
+    const std::function<bool()> &cancelled = {}) {
+  MetroProjectCheck check;
+  try {
+    check.actualRoot = probeMetroProjectRoot(bundleUrl, cancelled);
+    check.verified = sameProjectRoot(expectedRoot, *check.actualRoot);
+  } catch (const HttpRequestCancelled &) {
+    throw;
+  } catch (const std::exception &error) {
+    check.error = error.what();
+  }
+  return check;
 }
 
 std::string bundleOrigin(const std::string &bundleUrl) {
@@ -292,9 +347,10 @@ bool isIndexBundleUrl(const std::string &url) {
 
 std::string fetchDefaultMetroBundle(
     CliOptions::BundleSource &bundle,
-    rns::EngineConfig *runtime) {
+    rns::EngineConfig *runtime,
+    const std::function<bool()> &cancelled = {}) {
   try {
-    return fetchHttpBundle(bundle.source);
+    return fetchHttpBundle(bundle.source, 60000, cancelled);
   } catch (const MetroHttpError &error) {
     if (!bundle.defaultMetro || !isIndexBundleUrl(bundle.source) ||
         error.status != 404 ||
@@ -320,12 +376,14 @@ std::string fetchDefaultMetroBundle(
       }
       std::cerr << "Metro has no ./index; trying " << fallback << '\n';
       try {
-        auto bytes = fetchHttpBundle(fallback);
+        auto bytes = fetchHttpBundle(fallback, 60000, cancelled);
         bundle.source = std::move(fallback);
         if (runtime != nullptr && !runtime->appKey) {
-          runtime->appKey = inferAppKeyFromProject(*project, platform);
+          runtime->appKey = inferAppKeyFromProject(*project);
         }
         return bytes;
+      } catch (const HttpRequestCancelled &) {
+        throw;
       } catch (const std::exception&) {
         lastError = std::current_exception();
       }
@@ -344,7 +402,8 @@ Usage:
   rnsim [options]               Start an interactive session
   rnsim interactive [options]   Start an interactive session
   rnsim headless [options]      Run a finite headless workload
-  rnsim doctor [--json]         Diagnose this installation and RN project
+  rnsim doctor [--json] [--url URL]
+                                 Diagnose this installation, RN project, and Metro
   rnsim --version [--json]      Print build and runtime contract versions
 
 Common options:
@@ -421,7 +480,10 @@ void printVersion(bool json) {
             << (info["features"]["skia"].asBool() ? "yes" : "no") << '\n';
 }
 
-void printDoctor(const char* argv0, bool json) {
+void printDoctor(
+    const char* argv0,
+    bool json,
+    const std::optional<std::string>& configuredMetroUrl = std::nullopt) {
   auto report = buildInformation();
   std::error_code error;
   auto executable = std::filesystem::weakly_canonical(argv0, error);
@@ -430,11 +492,7 @@ void printDoctor(const char* argv0, bool json) {
   const auto frontend = installRoot /
       "share/react-native-simulator/debugger-frontend/rn_fusebox.html";
   error.clear();
-  auto projectRoot =
-      std::filesystem::weakly_canonical(std::filesystem::current_path(), error);
-  if (error) {
-    projectRoot = std::filesystem::current_path();
-  }
+  const auto projectRoot = canonicalProjectRoot(std::filesystem::current_path());
   const auto packageJson = projectRoot / "package.json";
   const auto appJson = projectRoot / "app.json";
   const auto localConfig = projectRoot / "rnsim.json";
@@ -499,24 +557,43 @@ void printDoctor(const char* argv0, bool json) {
   const auto appKey = configuredAppKey
       ? configuredAppKey
       : appJsonName(projectRoot);
-  const bool offlineBundle = configuredBundle &&
+  // Match launch source precedence exactly. An explicit doctor URL diagnoses
+  // that Metro source even when rnsim.json names a local bundle. Otherwise a
+  // configured bundle remains selected even when its path is missing.
+  const bool offlineBundleSelected =
+      !configuredMetroUrl && configuredBundle.has_value();
+  const bool offlineBundlePresent = offlineBundleSelected &&
       std::filesystem::is_regular_file(*configuredBundle);
-  const bool hasEntry = offlineBundle || !entries.empty();
-  const std::string metroUrl =
+  const bool hasEntry = configuredMetroUrl.has_value() ||
+      (offlineBundleSelected ? offlineBundlePresent : !entries.empty());
+  const std::string metroUrl = configuredMetroUrl.value_or(
       "http://localhost:8081/index.bundle?platform=" + platform +
-      "&dev=true&minify=false";
-  const bool metroRequired = !offlineBundle;
+      "&dev=true&minify=false");
+  const bool metroRequired = !offlineBundleSelected;
   const bool metroRunning = metroRequired && metroStatusRunning(metroUrl);
+  MetroProjectCheck metroProject;
+  std::string metroProjectVerification = "not-running";
+  if (!metroRequired) {
+    metroProject.verified = true;
+    metroProjectVerification = "not-required-local-bundle";
+  } else if (metroRunning) {
+    metroProject = checkMetroProject(metroUrl, projectRoot);
+    metroProjectVerification = metroProject.verified
+        ? "probe-match"
+        : metroProject.actualRoot ? "probe-mismatch" : "probe-failed";
+  }
   const bool projectDetected = packagePresent && effectiveVersion.has_value();
   const bool launchable = projectDetected && reactNativeCompatible &&
       configValid && hasEntry;
   const bool preflightPassed = launchable;
   const bool readyToLaunch =
       launchable && (!metroRequired || metroRunning);
-  std::string projectStatus = offlineBundle
-      ? "ready-offline"
-      : metroRunning ? "compatible-metro-reachable"
-                     : "compatible-metro-not-running";
+  std::string projectStatus = offlineBundleSelected
+      ? offlineBundlePresent ? "ready-offline" : "missing-configured-bundle"
+      : !metroRunning ? "compatible-metro-not-running"
+      : metroProject.verified ? "compatible-metro-verified"
+      : metroProject.actualRoot ? "metro-project-mismatch"
+                                : "metro-project-unverified";
   std::string nextAction;
   if (!projectDetected) {
     projectStatus = "not-react-native-project";
@@ -528,6 +605,10 @@ void printDoctor(const char* argv0, bool json) {
   } else if (!configValid) {
     projectStatus = "invalid-config";
     nextAction = configError;
+  } else if (offlineBundleSelected && !offlineBundlePresent) {
+    projectStatus = "missing-configured-bundle";
+    nextAction = "Configured bundle is not a regular file: " +
+        configuredBundle->string();
   } else if (!hasEntry) {
     projectStatus = "missing-entry";
     nextAction =
@@ -535,6 +616,17 @@ void printDoctor(const char* argv0, bool json) {
   } else if (metroRequired && !metroRunning) {
     projectStatus = "compatible-metro-not-running";
     nextAction = "Start Metro with npm start or yarn start.";
+  } else if (metroRequired && !metroProject.verified) {
+    if (metroProject.actualRoot) {
+      nextAction =
+          "Metro serves " + metroProject.actualRoot->string() +
+          " while doctor ran from " + projectRoot.string() +
+          "; launch will use the selected Metro source.";
+    } else {
+      nextAction =
+          "Metro project root could not be verified; launch will use the "
+          "selected Metro source. " + metroProject.error;
+    }
   }
 
   folly::dynamic entryJson = folly::dynamic::array;
@@ -582,15 +674,22 @@ void printDoctor(const char* argv0, bool json) {
           ("error", configError.empty()
               ? folly::dynamic(nullptr)
               : folly::dynamic(configError))
-          ("bundle", optionalString(configuredBundle)))
+          ("bundle", optionalString(configuredBundle))
+          ("bundlePresent", configuredBundle
+              ? folly::dynamic(std::filesystem::is_regular_file(
+                    *configuredBundle))
+              : folly::dynamic(nullptr)))
       ("metro", folly::dynamic::object
           ("url", metroUrl)
           ("required", metroRequired)
           ("running", metroRunning)
-          ("projectVerified", false)
-          ("projectVerification", metroRequired
-              ? "bundle-load"
-              : "not-required"));
+          ("expectedProjectRoot", projectRoot.string())
+          ("actualProjectRoot", optionalString(metroProject.actualRoot))
+          ("projectVerified", metroProject.verified)
+          ("projectVerification", metroProjectVerification)
+          ("projectVerificationError", metroProject.error.empty()
+              ? folly::dynamic(nullptr)
+              : folly::dynamic(metroProject.error)));
   if (json) {
     std::cout << folly::toJson(report) << '\n';
     return;
@@ -613,19 +712,28 @@ void printDoctor(const char* argv0, bool json) {
             << (effectiveVersion ? *effectiveVersion : "not detected")
             << (reactNativeCompatible ? " (compatible)" : " (expected "
                 RNS_REACT_NATIVE_VERSION ")") << '\n'
-            << "entry: "
-            << (offlineBundle ? configuredBundle->string()
-                              : entries.empty() ? "not found" : entries.front())
+            << "source: "
+            << (offlineBundleSelected
+                    ? configuredBundle->string()
+                    : configuredMetroUrl
+                        ? *configuredMetroUrl
+                        : entries.empty() ? "not found" : entries.front())
             << '\n'
             << "AppRegistry key: " << (appKey ? *appKey : "auto-detect")
             << '\n'
             << "Metro: "
             << (!metroRequired ? "not required for configured bundle"
-                               : metroRunning ? "reachable at localhost:8081"
-                                              : "not running at localhost:8081")
+                               : metroRunning
+                                   ? "reachable at " + bundleOrigin(metroUrl)
+                                   : "not running at " + bundleOrigin(metroUrl))
             << '\n'
             << (metroRequired && metroRunning
-                    ? "Metro project: verified when the bundle is loaded\n"
+                    ? metroProject.verified
+                        ? "Metro project: verified " + projectRoot.string() + "\n"
+                        : metroProject.actualRoot
+                            ? "Metro project: mismatch; actual " +
+                                metroProject.actualRoot->string() + "\n"
+                            : "Metro project: unverified\n"
                     : "")
             << "project status: " << projectStatus << '\n';
   if (!nextAction.empty()) {
@@ -896,7 +1004,7 @@ CliOptions parseOptions(int argc, char **argv) {
     options.runtime.mode = rns::SimulatorMode::Interactive;
     // Match the normal React Native host lifecycle: once the caller bundle has
     // registered an unambiguous application, run it immediately. The
-    // interactive Pages panel remains available when multiple keys require a
+    // interactive App panel remains available when multiple keys require a
     // user choice and for switching applications after startup.
     options.runtime.autoRunApplication = true;
     if (options.bundles.empty()) {
@@ -973,18 +1081,30 @@ int main(int argc, char **argv) {
       return 0;
     }
     if (argc >= 2 && std::string(argv[1]) == "doctor") {
-      if (argc > 3 ||
-          (argc == 3 && std::string(argv[2]) != "--json" &&
-           std::string(argv[2]) != "--help" &&
-           std::string(argv[2]) != "-h")) {
-        throw std::invalid_argument("Usage: rnsim doctor [--json]");
+      bool json = false;
+      bool help = false;
+      std::optional<std::string> metroUrl;
+      for (int index = 2; index < argc; ++index) {
+        const std::string argument = argv[index];
+        if (argument == "--json") {
+          json = true;
+        } else if (argument == "--help" || argument == "-h") {
+          help = true;
+        } else if (argument == "--url") {
+          if (++index >= argc) {
+            throw std::invalid_argument("--url requires a value");
+          }
+          metroUrl = argv[index];
+        } else {
+          throw std::invalid_argument(
+              "Usage: rnsim doctor [--json] [--url URL]");
+        }
       }
-      if (argc == 3 && (std::string(argv[2]) == "--help" ||
-                        std::string(argv[2]) == "-h")) {
-        std::cout << "Usage: rnsim doctor [--json]\n";
+      if (help) {
+        std::cout << "Usage: rnsim doctor [--json] [--url URL]\n";
         return 0;
       }
-      printDoctor(argv[0], argc == 3);
+      printDoctor(argv[0], json, metroUrl);
       return 0;
     }
     if (argc == 2 && (std::string(argv[1]) == "--help" ||
@@ -1006,10 +1126,8 @@ int main(int argc, char **argv) {
     auto options = parseOptions(argc, argv);
     if (options.mode == CliOptions::Mode::Interactive &&
         !options.runtime.appKey) {
-      const auto platform =
-          options.runtime.profile.rfind("ios", 0) == 0 ? "ios" : "android";
       options.runtime.appKey =
-          inferAppKeyFromProject(std::filesystem::current_path(), platform);
+          inferAppKeyFromProject(std::filesystem::current_path());
     }
     if (options.mode == CliOptions::Mode::Interactive) {
       std::cerr << "starting interactive session ("
@@ -1028,12 +1146,17 @@ int main(int argc, char **argv) {
       }
       auto prepareRuntime = [&options, &runtime](
                                 const std::function<bool()> &cancelled) {
-        for (auto &bundle : options.bundles) {
+        // Preparation is transactional so the frontend can safely retry after
+        // Metro starts or a bundle fetch fails. Do not queue any Engine bundle
+        // until every remote source has been fetched.
+        std::vector<std::optional<std::string>> httpBodies(
+            options.bundles.size());
+        for (size_t index = 0; index < options.bundles.size(); ++index) {
+          auto &bundle = options.bundles[index];
           if (cancelled()) {
             return;
           }
           if (!bundle.http) {
-            runtime.loadBundle(std::filesystem::path(bundle.source));
             continue;
           }
           std::cerr << "loading Metro bundle " << bundle.source << '\n';
@@ -1041,15 +1164,30 @@ int main(int argc, char **argv) {
             if (!waitForMetro(bundle.source, cancelled)) {
               return;
             }
-            auto bytes = fetchDefaultMetroBundle(bundle, nullptr);
+            httpBodies[index] = fetchDefaultMetroBundle(
+                bundle,
+                nullptr,
+                cancelled);
             if (cancelled()) {
               return;
             }
-            runtime.loadBundle(std::move(bytes), bundle.source);
+          } catch (const HttpRequestCancelled &) {
+            return;
           } catch (const std::exception &error) {
             throw std::runtime_error(
                 "Cannot load the bundle from " + bundle.source +
                 ". Start Metro or pass --url/--bundle: " + error.what());
+          }
+        }
+        if (cancelled()) {
+          return;
+        }
+        for (size_t index = 0; index < options.bundles.size(); ++index) {
+          const auto &bundle = options.bundles[index];
+          if (bundle.http) {
+            runtime.loadBundle(std::move(*httpBodies[index]), bundle.source);
+          } else {
+            runtime.loadBundle(std::filesystem::path(bundle.source));
           }
         }
       };
@@ -1104,7 +1242,11 @@ int main(int argc, char **argv) {
                   << image.width << 'x' << image.height << ")\n";
       }
 #endif
-      std::cout << result.metricsJson;
+      // Interactive already has the live window; the metrics document includes
+      // both Fabric trees and is a headless/Inspector payload, not a CLI log.
+      if (options.mode != CliOptions::Mode::Interactive) {
+        std::cout << result.metricsJson;
+      }
       if (options.outputPath) {
         std::ofstream output(*options.outputPath, std::ios::binary);
         if (!output) {

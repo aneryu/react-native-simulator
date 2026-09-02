@@ -48,7 +48,8 @@ struct EngineConfig {
   float viewportWidth{300.0f};
   float viewportHeight{80.0f};
   float pointScaleFactor{1.0f};
-  // WindowInsets-style system chrome around the RN window, in logical dp.
+  // Host status/nav chrome around the RN window, in logical dp. The Fabric
+  // root already excludes this chrome.
   // Pixel 4a (1080x2340 @ 2.75) uses 140px status+cutout and 128px 3-button nav.
   float insetTop{24.0f};
   float insetBottom{0.0f};
@@ -101,6 +102,74 @@ struct ApplicationLaunchState {
   std::string lastError;
 };
 
+enum class RuntimePhase {
+  Idle,
+  Initializing,
+  LoadingBundle,
+  StartingApplication,
+  ChoosingApplication,
+  Running,
+  Reloading,
+  PausedAfterError,
+  Stopped,
+};
+
+enum class HMRStatus {
+  Disabled,
+  Enabling,
+  Enabled,
+  Failed,
+};
+
+enum class RuntimeDiagnosticKind {
+  JavaScriptError,
+  ApplicationError,
+  MissingNativeModule,
+  FallbackComponent,
+};
+
+struct RuntimeStackFrame {
+  std::optional<std::string> file;
+  std::string method;
+  std::optional<int> line;
+  std::optional<int> column;
+};
+
+struct RuntimeDiagnostic {
+  RuntimeDiagnosticKind kind{RuntimeDiagnosticKind::JavaScriptError};
+  std::string name;
+  std::string message;
+  bool fatal{false};
+  std::vector<RuntimeStackFrame> stack;
+};
+
+enum class RuntimeCapabilityClass {
+  Implemented,
+  HostAdapted,
+  Mocked,
+  LayoutOnly,
+  Unavailable,
+};
+
+struct RuntimeCapabilityUsage {
+  std::string type;
+  std::string name;
+  std::string fidelity;
+  RuntimeCapabilityClass classification{RuntimeCapabilityClass::Implemented};
+};
+
+// Thread-safe snapshot of the Engine-owned part of an interactive session.
+// Metro discovery and project identity belong to the CLI/frontend host and are
+// deliberately not represented here.
+struct RuntimeStatus {
+  std::uint64_t runtimeGeneration{0};
+  RuntimePhase phase{RuntimePhase::Idle};
+  HMRStatus hmr{HMRStatus::Disabled};
+  std::string hmrError;
+  std::vector<RuntimeDiagnostic> diagnostics;
+  std::vector<RuntimeCapabilityUsage> capabilityUsages;
+};
+
 // Public, Node-independent embedding boundary. Bundle requests are queued in
 // order and executed in one Hermes/ReactInstance when run() is called.
 class Engine final {
@@ -120,18 +189,21 @@ class Engine final {
       std::function<void(std::shared_ptr<const SceneSnapshot>)> callback);
   void setActionResultCallback(
       std::function<void(const InteractionResult&)> callback);
-  // Thread-safe while run() is active. Returns a monotonically increasing
-  // sequence number or throws when the bounded queue cannot accept a discrete
-  // action.
+  // Thread-safe while run() is active and RuntimePhase is Running. Returns a
+  // monotonically increasing sequence number or throws when the runtime phase
+  // or bounded queue cannot accept a discrete action.
   std::uint64_t enqueueAction(InteractionAction action);
   ApplicationLaunchState applicationLaunchState() const;
-  // Thread-safe while run() is active. Queues AppRegistry.runApplication on
-  // the runtime thread. `initialPropsJson` must be a JSON object or empty.
+  RuntimeStatus runtimeStatus() const;
+  // Thread-safe while run() is active and RuntimePhase is Running or
+  // ChoosingApplication. Queues AppRegistry.runApplication on the runtime
+  // thread. `initialPropsJson` must be a JSON object or empty.
   void runApplication(std::string appKey, std::string initialPropsJson = "{}");
   void requestStop() noexcept;
   // Interactive sessions only. Tears down the running ReactInstance and
-  // replays CLI/config bundles on a new Hermes VM. Headless/conformance
-  // ignore the request so finite workloads stay single-shot.
+  // replays CLI/config bundles on a new Hermes VM, then restores the last
+  // successfully running AppRegistry key and initial props. Headless/
+  // conformance ignore the request so finite workloads stay single-shot.
   void requestReload() noexcept;
   EngineResult run();
 

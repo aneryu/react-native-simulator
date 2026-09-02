@@ -21,6 +21,8 @@ namespace facebook::react {
 struct HeadlessViewportSize {
   float width{0};
   float height{0};
+  // Host status/nav chrome reserved around the Fabric window, not in-window
+  // content insets.
   float insetTop{24};
   float insetRight{0};
   float insetBottom{0};
@@ -51,7 +53,11 @@ inline constexpr HeadlessOfficialComponentSpec kHeadlessOfficialComponents[] = {
     {"PullToRefreshView", "layout-only-placeholder", false, 0, 0},
     {"AndroidHorizontalScrollView", "headless-viewport-state", false, 0, 0},
     {"AndroidHorizontalScrollContentView", "real-fabric-yoga", false, 0, 0},
-    {"SafeAreaView", "headless-safe-area", false, 0, 0},
+    {"SafeAreaView", "window-relative-insets", false, 0, 0},
+    // Temporary host adapter for the community safe-area contract. The addon
+    // ABI cannot yet register event-capable Fabric descriptors.
+    {"RNCSafeAreaProvider", "window-relative-insets", false, 0, 0},
+    {"RNCSafeAreaView", "window-relative-insets", false, 0, 0},
     {"InputAccessory", "layout-only-placeholder", false, 0, 0},
     {"VirtualView", "layout-only-placeholder", false, 0, 0},
     {"VirtualViewExperimental", "layout-only-placeholder", false, 0, 0},
@@ -67,6 +73,8 @@ extern const char HeadlessModalHostViewName[];
 extern const char HeadlessAndroidSwipeRefreshLayoutName[];
 extern const char HeadlessAndroidDrawerLayoutName[];
 extern const char HeadlessSafeAreaViewName[];
+extern const char HeadlessRNCSafeAreaProviderName[];
+extern const char HeadlessRNCSafeAreaViewName[];
 
 template <const char* Name, int Width, int Height>
 class HeadlessMeasuredLeafShadowNode final
@@ -387,23 +395,21 @@ class HeadlessSafeAreaViewComponentDescriptor final
     : public ConcreteComponentDescriptor<HeadlessSafeAreaViewShadowNode> {
  public:
   using ConcreteComponentDescriptor::ConcreteComponentDescriptor;
-
-  void adopt(ShadowNode& shadowNode) const override {
-    auto& layoutable = static_cast<YogaLayoutableShadowNode&>(shadowNode);
-    RectangleEdges<Float> padding{};
-    if (this->contextContainer_) {
-      if (auto viewport = this->contextContainer_->find<HeadlessViewportSize>(
-              kHeadlessViewportKey)) {
-        padding.top = viewport->insetTop;
-        padding.right = viewport->insetRight;
-        padding.bottom = viewport->insetBottom;
-        padding.left = viewport->insetLeft;
-      }
-    }
-    layoutable.setPadding(padding);
-    ConcreteComponentDescriptor::adopt(shadowNode);
-  }
 };
+
+using HeadlessRNCSafeAreaProviderShadowNode = ConcreteViewShadowNode<
+    HeadlessRNCSafeAreaProviderName,
+    ViewProps,
+    ViewEventEmitter>;
+using HeadlessRNCSafeAreaProviderComponentDescriptor =
+    ConcreteComponentDescriptor<HeadlessRNCSafeAreaProviderShadowNode>;
+
+using HeadlessRNCSafeAreaViewShadowNode = ConcreteViewShadowNode<
+    HeadlessRNCSafeAreaViewName,
+    ViewProps,
+    ViewEventEmitter>;
+using HeadlessRNCSafeAreaViewComponentDescriptor =
+    ConcreteComponentDescriptor<HeadlessRNCSafeAreaViewShadowNode>;
 
 void registerHeadlessOfficialComponents(
     ComponentDescriptorProviderRegistry& providers,

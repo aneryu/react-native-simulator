@@ -29,15 +29,24 @@ loop until the window closes. Override the source with `--url`, `--bundle`, or
 server without opening a UI. Advanced overrides include:
 
 - `--devtools-port PORT`
-- `--devtools-open URL`
+- `--devtools-open true|false`
+- `--devtools-wait-for-debugger-ms N`
+- `--devtools-keep-alive-ms N`
 - `--devtools-frontend-dir DIR`
 - `--devtools-shell PATH`
 
-The v0.1.0 runtime archive includes the frontend pinned with RN 0.87, so binary
-users can run `rnsim --devtools` without a React Native checkout. Explicit
-`--devtools-frontend-dir` or `RNS_DEVTOOLS_FRONTEND_DIR` overrides remain for
-diagnostics. Source builds do not silently use author-machine files; opt into
-checkout fallback with `-DRNS_ENABLE_SOURCE_DEVTOOLS_FRONTEND=ON`.
+A runtime archive produced by the current packaging installs the frontend pinned
+with RN 0.87, so the complete package can run `rnsim --devtools` without a React
+Native checkout. Explicit `--devtools-frontend-dir` or
+`RNS_DEVTOOLS_FRONTEND_DIR` overrides remain for diagnostics. Source builds do
+not silently use author-machine files; opt into checkout fallback with
+`-DRNS_ENABLE_SOURCE_DEVTOOLS_FRONTEND=ON`.
+
+The toolbar's **Inspect** mode is not DevTools. It is a same-process ShadowTree
+element picker: it opens the tree panel, cancels any active application pointer,
+and isolates normal device-canvas pointer, keyboard, and TextInput dispatch while
+selecting nodes. Mode/recovery shortcuts and Inspect Escape remain available.
+DevTools is the separate opt-in JavaScript/CDP debugger.
 
 ## Reload behavior
 
@@ -50,9 +59,40 @@ InstanceTarget and are not retained.
 Local `--bundle` and HBC paths do not enable HMR or PackagerConnection. Headless
 workloads keep their finite measurement boundary even when DevTools is enabled.
 
-`wait-for-debugger` pauses after ReactInstance initialization and before the
-first external bundle, allowing the debugger domain to observe script parsing
-and `debugger;` statements.
+`--devtools-wait-for-debugger-ms N` pauses after ReactInstance initialization and
+before the first external bundle, allowing the debugger domain to observe script
+parsing and `debugger;` statements.
+
+If JavaScript evaluation fails after the initial bundle loads, **Reload**, `⌘R`,
+or Metro's `r` replaces the InstanceTarget together with the Hermes VM. A Metro
+timeout, bundle-fetch error, or other preparation failure happens before an
+InstanceTarget exists; correct the problem and use **Retry** or `⌘R` to repeat
+the transactional preparation in the same window. Duplicate Retry requests are
+ignored while an attempt is in flight. Reload is enabled only while the Engine
+is running, paused after an error, or waiting for an application choice. DevTools
+receives its first InstanceTarget only after preparation succeeds and the Engine
+starts.
+
+## Host diagnostics
+
+DevTools and host diagnostics are complementary. The App panel opens for live
+preparation, runtime, rendering, input, and AppRegistry error strings and keeps a
+copyable log; it is not an emulated LogBox/redbox. The public embedding API also
+provides `Engine::runtimeStatus()`, a thread-safe, current-generation snapshot of
+runtime phase, HMR state/error, structured JavaScript/application diagnostics,
+and observed native-module plus mounted official, addon, or fallback-component
+capability usage. JavaScript diagnostics include fatal state and file, method,
+line, and column stack frames.
+
+The interactive toolbar renders the current phase and HMR state. The App panel
+renders structured errors and JavaScript stack frames plus observed capabilities
+or degradations; its copyable string log remains available for preparation,
+rendering, and input failures outside the Engine snapshot. Embedding clients can
+consume the typed fields directly. Reload begins a new generation and clears the
+previous generation's diagnostic and capability snapshot.
+
+The HMR `Enabled` state means `HMRClient.setup` succeeded for that generation;
+it is not a continuous Metro WebSocket liveness signal.
 
 ## Source mapping
 

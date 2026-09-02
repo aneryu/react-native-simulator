@@ -22,8 +22,10 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -35,14 +37,33 @@ namespace {
 struct FrontendState {
   std::mutex mutex;
   std::shared_ptr<const SceneSnapshot> scene;
+  std::uint64_t sceneRuntimeGeneration{0};
   std::optional<InteractionResult> action;
   std::optional<EngineResult> result;
   std::atomic<bool> cancelRequested{false};
+  std::atomic<bool> preparationFailed{false};
+  std::atomic<bool> retryRequested{false};
+  std::atomic<bool> preparationRetrying{false};
+  std::atomic<std::uint32_t> preparationFailures{0};
+  std::atomic<std::uint32_t> preparationRetries{0};
   std::atomic<bool> runtimeFinished{false};
 };
 
-// Interact is always the canvas input path. Select is an inspector overlay
-// drawn on top of the live Skia frame; it does not replace pointer events.
+bool requestPreparationRetry(FrontendState& state) {
+  if (!state.preparationFailed.load() || state.runtimeFinished.load()) {
+    return false;
+  }
+  bool expected = false;
+  if (!state.preparationRetrying.compare_exchange_strong(expected, true)) {
+    return false;
+  }
+  state.retryRequested.store(true);
+  return true;
+}
+
+// Interact is the application input path. Inspect is an element picker drawn
+// over the live Skia frame; it consumes canvas pointer input so inspection
+// cannot accidentally trigger the application.
 
 struct CanvasMapping {
   bool hovered{false};
@@ -53,6 +74,11 @@ struct CanvasMapping {
   ImVec2 navMin{};
   ImVec2 navMax{};
   bool navVisible{false};
+
+  bool contains(float x, float y) const {
+    return size.x > 0 && size.y > 0 && x >= topLeft.x && y >= topLeft.y &&
+        x < topLeft.x + size.x && y < topLeft.y + size.y;
+  }
 
   std::optional<std::pair<float, float>> map(
       float x,
@@ -91,10 +117,49 @@ struct CanvasMapping {
   }
 };
 
-void enqueueIgnoringStopped(Engine& engine, InteractionAction action) {
+int pointerButtonMask(int button) {
+  switch (button) {
+    case 0:
+      return 1;
+    case 2:
+      return 2;
+    case 1:
+      return 4;
+    default:
+      return 0;
+  }
+}
+
+std::optional<ImVec2> mouseEventPosition(const SDL_Event& event) {
+  switch (event.type) {
+    case SDL_EVENT_MOUSE_MOTION:
+      return ImVec2{event.motion.x, event.motion.y};
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+      return ImVec2{event.button.x, event.button.y};
+    case SDL_EVENT_MOUSE_WHEEL:
+      return ImVec2{event.wheel.mouse_x, event.wheel.mouse_y};
+    default:
+      return std::nullopt;
+  }
+}
+
+enum class EnqueueActionResult {
+  Enqueued,
+  RuntimeUnavailable,
+  QueueFull,
+};
+
+EnqueueActionResult enqueueActionSafely(
+    Engine& engine,
+    InteractionAction action) {
   try {
     engine.enqueueAction(std::move(action));
+    return EnqueueActionResult::Enqueued;
+  } catch (const std::overflow_error&) {
+    return EnqueueActionResult::QueueFull;
   } catch (const std::logic_error&) {
+    return EnqueueActionResult::RuntimeUnavailable;
   }
 }
 
@@ -113,6 +178,122 @@ void appendDiagnostic(
   log.append(heading);
   log.append(":\n");
   log.append(text);
+}
+
+void trimDiagnosticLog(std::string& log) {
+  constexpr std::size_t kMaximumBytes = 256 * 1024;
+  constexpr std::string_view kTruncated = "[older diagnostics truncated]\n\n";
+  if (log.size() <= kMaximumBytes) {
+    return;
+  }
+  auto start = log.size() - (kMaximumBytes - kTruncated.size());
+  const auto boundary = log.find("\n\n", start);
+  if (boundary != std::string::npos) {
+    start = boundary + 2;
+  }
+  log.erase(0, start);
+  log.insert(0, kTruncated);
+}
+
+const char* runtimeDiagnosticHeading(RuntimeDiagnosticKind kind) {
+  switch (kind) {
+    case RuntimeDiagnosticKind::JavaScriptError:
+      return "JavaScript error";
+    case RuntimeDiagnosticKind::ApplicationError:
+      return "Application error";
+    case RuntimeDiagnosticKind::MissingNativeModule:
+      return "Missing native module";
+    case RuntimeDiagnosticKind::FallbackComponent:
+      return "Fallback component";
+  }
+  return "Runtime diagnostic";
+}
+
+bool needsCompatibilityAttention(const RuntimeDiagnostic& diagnostic) {
+  return diagnostic.kind == RuntimeDiagnosticKind::MissingNativeModule ||
+      diagnostic.kind == RuntimeDiagnosticKind::FallbackComponent;
+}
+
+bool isCapabilityLimitation(const RuntimeCapabilityUsage& capability) {
+  return capability.classification == RuntimeCapabilityClass::Mocked ||
+      capability.classification == RuntimeCapabilityClass::LayoutOnly ||
+      capability.classification == RuntimeCapabilityClass::Unavailable;
+}
+
+const char* capabilityClassLabel(RuntimeCapabilityClass classification) {
+  switch (classification) {
+    case RuntimeCapabilityClass::Implemented:
+      return "implemented";
+    case RuntimeCapabilityClass::HostAdapted:
+      return "host-adapted";
+    case RuntimeCapabilityClass::Mocked:
+      return "mocked";
+    case RuntimeCapabilityClass::LayoutOnly:
+      return "layout-only";
+    case RuntimeCapabilityClass::Unavailable:
+      return "unavailable";
+  }
+  return "unknown";
+}
+
+std::size_t capabilityLimitationCount(const RuntimeStatus& status) {
+  return static_cast<std::size_t>(std::count_if(
+      status.capabilityUsages.begin(),
+      status.capabilityUsages.end(),
+      isCapabilityLimitation));
+}
+
+std::size_t componentCapabilityUsageCount(const RuntimeStatus& status) {
+  return static_cast<std::size_t>(std::count_if(
+      status.capabilityUsages.begin(),
+      status.capabilityUsages.end(),
+      [](const auto& capability) { return capability.type == "component"; }));
+}
+
+std::string formatRuntimeDiagnostic(const RuntimeDiagnostic& diagnostic) {
+  std::ostringstream output;
+  if (!diagnostic.name.empty()) {
+    output << diagnostic.name << ": ";
+  }
+  output << diagnostic.message;
+  for (const auto& frame : diagnostic.stack) {
+    output << "\n  at ";
+    output << (frame.method.empty() ? "<anonymous>" : frame.method);
+    if (frame.file) {
+      output << " (" << *frame.file;
+      if (frame.line) {
+        output << ':' << *frame.line;
+        if (frame.column) {
+          output << ':' << *frame.column;
+        }
+      }
+      output << ')';
+    }
+  }
+  return output.str();
+}
+
+void appendRuntimeDiagnostics(
+    std::string& log,
+    const RuntimeStatus& status,
+    std::unordered_set<std::string>& logged) {
+  for (const auto& diagnostic : status.diagnostics) {
+    const auto text = formatRuntimeDiagnostic(diagnostic);
+    const auto key = std::to_string(status.runtimeGeneration) + "\n" +
+        std::to_string(static_cast<int>(diagnostic.kind)) + "\n" + text;
+    if (!logged.emplace(key).second) {
+      continue;
+    }
+    if (!log.empty()) {
+      log.append("\n\n");
+    }
+    log.append(runtimeDiagnosticHeading(diagnostic.kind));
+    if (diagnostic.fatal) {
+      log.append(" (fatal)");
+    }
+    log.append(":\n");
+    log.append(text);
+  }
 }
 
 const SceneNode* findNodeByTag(const std::vector<SceneNode>& nodes, int tag) {
@@ -243,14 +424,18 @@ void drawNodeHighlight(
 }
 
 void drawStatusBarChrome(ImDrawList* drawList, ImVec2 min, ImVec2 max, float dp) {
-  drawList->AddRectFilled(min, max, IM_COL32(247, 247, 247, 255));
+  // Host status chrome is an overlay. Do not fill a status-bar surface: the RN
+  // texture underneath is the screen, including under the clock and icons.
   const float width = max.x - min.x;
   const float height = max.y - min.y;
-  const float holeR = std::max(3.5f, 5.5f * dp);
+  const ImU32 iconColor = IM_COL32(32, 32, 36, 255);
+  const float holeR = std::min(
+      std::max(3.5f, 5.5f * dp), std::max(0.0f, height * 0.45f));
   drawList->AddCircleFilled(
       {min.x + width * 0.5f, min.y + holeR + 3.0f * dp},
       holeR,
       IM_COL32(10, 10, 12, 255));
+
   char clock[16] = "9:41";
   std::time_t now = std::time(nullptr);
   std::tm local{};
@@ -261,32 +446,31 @@ void drawStatusBarChrome(ImDrawList* drawList, ImVec2 min, ImVec2 max, float dp)
   const ImVec2 clockSize = ImGui::CalcTextSize(clock);
   drawList->AddText(
       {min.x + 14.0f * dp, iconY - clockSize.y * 0.5f},
-      IM_COL32(32, 32, 36, 255),
+      iconColor,
       clock);
   const float icon = std::max(6.0f, 8.0f * dp);
   float iconX = max.x - 14.0f * dp;
   drawList->AddRect(
       {iconX - icon * 1.7f, iconY - icon * 0.45f},
       {iconX, iconY + icon * 0.45f},
-      IM_COL32(32, 32, 36, 255),
+      iconColor,
       1.5f,
       0,
       1.2f);
   drawList->AddRectFilled(
       {iconX - icon * 1.35f, iconY - icon * 0.22f},
       {iconX - icon * 0.22f, iconY + icon * 0.22f},
-      IM_COL32(32, 32, 36, 255),
+      iconColor,
       0.8f);
   iconX -= icon * 2.4f;
-  drawList->AddCircleFilled({iconX, iconY}, icon * 0.18f, IM_COL32(32, 32, 36, 255));
-  drawList->AddCircle(
-      {iconX, iconY}, icon * 0.42f, IM_COL32(32, 32, 36, 255), 0, 1.2f);
+  drawList->AddCircleFilled({iconX, iconY}, icon * 0.18f, iconColor);
+  drawList->AddCircle({iconX, iconY}, icon * 0.42f, iconColor, 0, 1.2f);
   iconX -= icon * 1.6f;
   drawList->AddTriangleFilled(
       {iconX, iconY - icon * 0.45f},
       {iconX - icon * 0.38f, iconY + icon * 0.35f},
       {iconX + icon * 0.38f, iconY + icon * 0.35f},
-      IM_COL32(32, 32, 36, 255));
+      iconColor);
 }
 
 void drawNavBarChrome(
@@ -306,22 +490,18 @@ void drawNavBarChrome(
   const float x0 = min.x + width * 0.25f;
   const float x1 = min.x + width * 0.5f;
   const float x2 = min.x + width * 0.75f;
-  const ImVec2 savedCursor = ImGui::GetCursorScreenPos();
-  ImGui::SetCursorScreenPos(min);
-  ImGui::InvisibleButton("nav-back", {third, height});
-  const bool backHovered = ImGui::IsItemHovered();
-  const bool backPressed = ImGui::IsItemActive();
-  if (enableInput && engine != nullptr && ImGui::IsItemClicked()) {
-    enqueueIgnoringStopped(*engine, {
-        .type = InteractionActionType::HardwareBackPress});
+  bool backHovered = false;
+  bool backPressed = false;
+  if (enableInput) {
+    ImGui::SetCursorScreenPos(min);
+    ImGui::InvisibleButton("nav-back", {third, height});
+    backHovered = ImGui::IsItemHovered();
+    backPressed = ImGui::IsItemActive();
+    if (engine != nullptr && ImGui::IsItemClicked()) {
+      enqueueActionSafely(*engine, {
+          .type = InteractionActionType::HardwareBackPress});
+    }
   }
-  ImGui::SetCursorScreenPos({min.x + third, min.y});
-  ImGui::InvisibleButton("nav-home", {third, height});
-  const bool homeHovered = ImGui::IsItemHovered();
-  ImGui::SetCursorScreenPos({min.x + 2.0f * third, min.y});
-  ImGui::InvisibleButton("nav-recents", {third, height});
-  const bool recentsHovered = ImGui::IsItemHovered();
-  ImGui::SetCursorScreenPos(savedCursor);
   const auto wash = [&](float cx, bool hovered, bool pressed) {
     if (!hovered) {
       return;
@@ -332,27 +512,30 @@ void drawNavBarChrome(
         pressed ? IM_COL32(95, 99, 104, 36) : IM_COL32(95, 99, 104, 22));
   };
   wash(x0 + icon * 0.45f, backHovered, backPressed);
-  wash(x1, homeHovered, false);
-  wash(x2, recentsHovered, false);
+  const ImU32 backColor = enableInput ? color : IM_COL32(95, 99, 104, 90);
   if (backPressed) {
     drawList->AddTriangleFilled(
         {x0 + icon * 0.15f, cy},
         {x0 + icon, cy - icon * 0.55f},
         {x0 + icon, cy + icon * 0.55f},
-        color);
+        backColor);
   } else {
     drawList->AddTriangle(
         {x0 + icon * 0.15f, cy},
         {x0 + icon, cy - icon * 0.55f},
         {x0 + icon, cy + icon * 0.55f},
-        color,
+        backColor,
         1.6f);
   }
-  drawList->AddCircle({x1, cy}, icon * 0.55f, color, 0, 1.6f);
+  // Home and Recents are recognizable device chrome, but the simulator has no
+  // Android task manager to back them. Keep them visibly inert instead of
+  // presenting hit targets that silently do nothing.
+  const ImU32 unavailable = IM_COL32(95, 99, 104, 90);
+  drawList->AddCircle({x1, cy}, icon * 0.55f, unavailable, 0, 1.6f);
   drawList->AddRect(
       {x2 - icon * 0.5f, cy - icon * 0.5f},
       {x2 + icon * 0.5f, cy + icon * 0.5f},
-      color,
+      unavailable,
       1.2f,
       0,
       1.6f);
@@ -366,7 +549,8 @@ void drawDeviceCanvas(
     int& hoveredTag,
     bool selectOverlay,
     Engine& engine,
-    bool enableInput) {
+    bool enableInput,
+    const char* emptyMessage) {
   mapping = {};
   constexpr float kBezel = 12.0f;
   char subtitle[96] = {};
@@ -377,16 +561,25 @@ void drawDeviceCanvas(
   if (scene != nullptr && scene->viewportWidth > 0 &&
       scene->viewportHeight > 0) {
     const float screenH = scene->viewportHeight + insetTop + insetBottom;
-    std::snprintf(
-        subtitle,
-        sizeof(subtitle),
-        "%.0f × %.0f  ·  status %.0fdp",
-        scene->viewportWidth,
-        screenH,
-        insetTop);
+    if (selectOverlay) {
+      std::snprintf(
+          subtitle,
+          sizeof(subtitle),
+          "%.0f × %.0f  ·  Inspect",
+          scene->viewportWidth,
+          screenH);
+    } else {
+      std::snprintf(
+          subtitle,
+          sizeof(subtitle),
+          "%.0f × %.0f  ·  status %.0fdp",
+          scene->viewportWidth,
+          screenH,
+          insetTop);
+    }
     subtitlePtr = subtitle;
   } else if (selectOverlay) {
-    subtitlePtr = "Select overlay  ·  Alt-click inspects";
+    subtitlePtr = "Inspect  ·  click selects";
   }
   imgui_theme::panelHeader("Device", subtitlePtr);
   const ImVec2 available = ImGui::GetContentRegionAvail();
@@ -407,7 +600,10 @@ void drawDeviceCanvas(
         imgui_theme::vecToU32(imgui_theme::palette().border),
         16.0f);
     ImGui::Dummy(wellSize);
-    const char* waiting = "Select a page, then Run";
+    const char* waiting =
+        emptyMessage != nullptr && emptyMessage[0] != '\0'
+        ? emptyMessage
+        : "Waiting for the first React Native frame…";
     const ImVec2 text = ImGui::CalcTextSize(waiting);
     drawList->AddText(
         {wellMin.x + (wellSize.x - text.x) * 0.5f,
@@ -417,17 +613,18 @@ void drawDeviceCanvas(
     return;
   }
   const ImVec2 content = ImGui::GetContentRegionAvail();
-  const float screenH = scene->viewportHeight + insetTop + insetBottom;
+  // Status chrome overlays the RN texture; only nav chrome adds device height.
+  const float visualH = scene->viewportHeight + insetBottom;
   const float maxWidth = std::max(32.0f, content.x - kBezel * 2.0f);
   const float maxHeight = std::max(32.0f, content.y - kBezel * 2.0f);
   const float scale = std::min(
-      maxWidth / scene->viewportWidth, maxHeight / screenH);
+      maxWidth / scene->viewportWidth, maxHeight / visualH);
   const ImVec2 size{
       scene->viewportWidth * scale, scene->viewportHeight * scale};
   const float statusH = insetTop * scale;
   const float navH = insetBottom * scale;
   const ImVec2 frameSize{
-      size.x + kBezel * 2.0f, size.y + statusH + navH + kBezel * 2.0f};
+      size.x + kBezel * 2.0f, size.y + navH + kBezel * 2.0f};
   ImGui::SetCursorPosX(
       ImGui::GetCursorPosX() +
       std::max(0.0f, (content.x - frameSize.x) * 0.5f));
@@ -435,6 +632,8 @@ void drawDeviceCanvas(
       ImGui::GetCursorPosY() +
       std::max(0.0f, (content.y - frameSize.y) * 0.5f));
   const ImVec2 frameMin = ImGui::GetCursorScreenPos();
+  // Dear ImGui 1.92 requires an item after SetCursorPos to grow parent bounds.
+  ImGui::Dummy(frameSize);
   auto* drawList = ImGui::GetWindowDrawList();
   const ImVec2 frameMax{
       frameMin.x + frameSize.x, frameMin.y + frameSize.y};
@@ -453,24 +652,23 @@ void drawDeviceCanvas(
       0,
       1.0f);
   const ImVec2 innerMin{frameMin.x + kBezel, frameMin.y + kBezel};
-  if (statusH > 0.5f) {
-    drawStatusBarChrome(
-        drawList,
-        innerMin,
-        {innerMin.x + size.x, innerMin.y + statusH},
-        scale);
-  }
-  ImGui::SetCursorScreenPos({innerMin.x, innerMin.y + statusH});
+  ImGui::SetCursorScreenPos(innerMin);
   ImGui::Image(reinterpret_cast<ImTextureID>(texture), size, {0, 0}, {1, 1});
   mapping.hovered = ImGui::IsItemHovered();
   mapping.topLeft = ImGui::GetItemRectMin();
   mapping.size = size;
   mapping.logicalWidth = scene->viewportWidth;
   mapping.logicalHeight = scene->viewportHeight;
+  if (statusH > 0.5f && !scene->statusBarHidden) {
+    drawStatusBarChrome(
+        drawList,
+        innerMin,
+        {innerMin.x + size.x, innerMin.y + statusH},
+        scale);
+  }
   if (navH > 0.5f) {
-    mapping.navMin = {innerMin.x, innerMin.y + statusH + size.y};
-    mapping.navMax = {
-        innerMin.x + size.x, innerMin.y + statusH + size.y + navH};
+    mapping.navMin = {innerMin.x, innerMin.y + size.y};
+    mapping.navMax = {innerMin.x + size.x, innerMin.y + size.y + navH};
     mapping.navVisible = true;
     drawNavBarChrome(
         drawList,
@@ -821,6 +1019,7 @@ struct PagesUi {
   std::vector<char> json = std::vector<char>(32 * 1024, '\0');
   std::string localError;
   bool jsonSeeded{false};
+  std::uint64_t runtimeGeneration{0};
 };
 
 std::vector<std::string> selectableAppKeys(
@@ -861,11 +1060,20 @@ void seedPagesUi(PagesUi& ui, const ApplicationLaunchState& launch) {
         launch.configuredInitialPropsJson.c_str());
     ui.jsonSeeded = true;
   }
-  if (!ui.selectedKey.empty()) {
-    return;
-  }
   const auto keys =
       selectableAppKeys(launch.appKeys, launch.configuredAppKey);
+  const bool generationChanged =
+      ui.runtimeGeneration != launch.runtimeGeneration;
+  ui.runtimeGeneration = launch.runtimeGeneration;
+  if (generationChanged) {
+    ui.localError.clear();
+  }
+  const bool selectedStillExists = std::find(
+      keys.begin(), keys.end(), ui.selectedKey) != keys.end();
+  if (!generationChanged && selectedStillExists) {
+    return;
+  }
+  ui.selectedKey.clear();
   if (launch.configuredAppKey) {
     for (const auto& key : keys) {
       if (key == *launch.configuredAppKey) {
@@ -910,10 +1118,49 @@ void drawPagesLog(std::string& log) {
   }
 }
 
+void drawRuntimeCapabilities(const RuntimeStatus& status) {
+  if (status.capabilityUsages.empty()) {
+    return;
+  }
+  const auto limitations = capabilityLimitationCount(status);
+  char label[128];
+  std::snprintf(
+      label,
+      sizeof(label),
+      "Compatibility · %zu used · %zu limited",
+      status.capabilityUsages.size(),
+      limitations);
+  ImGui::Dummy({0.0f, 6.0f});
+  ImGui::Separator();
+  ImGui::Dummy({0.0f, 4.0f});
+  if (!ImGui::CollapsingHeader(
+          label,
+          limitations > 0 ? ImGuiTreeNodeFlags_DefaultOpen
+                          : ImGuiTreeNodeFlags_None)) {
+    return;
+  }
+  for (const auto& capability : status.capabilityUsages) {
+    const bool limited = isCapabilityLimitation(capability);
+    ImGui::PushStyleColor(
+        ImGuiCol_Text,
+        limited ? imgui_theme::palette().danger
+                : imgui_theme::palette().muted);
+    ImGui::TextWrapped(
+        "%s · %s · %s\n%s",
+        capability.type.c_str(),
+        capability.name.c_str(),
+        capabilityClassLabel(capability.classification),
+        capability.fidelity.c_str());
+    ImGui::PopStyleColor();
+    ImGui::Dummy({0.0f, 2.0f});
+  }
+}
+
 void drawPages(
     Engine& engine,
     PagesUi& ui,
     std::string& log,
+    const RuntimeStatus& runtimeStatus,
     bool runtimeFinished,
     char* filter,
     std::size_t filterSize) {
@@ -931,7 +1178,7 @@ void drawPages(
         "%zu registered",
         keys.size());
   }
-  imgui_theme::panelHeader("Pages", subtitle);
+  imgui_theme::panelHeader("App", subtitle);
 
   const auto tryRun = [&] {
     try {
@@ -941,14 +1188,19 @@ void drawPages(
       ui.localError = error.what();
     }
   };
-  const bool canRun = launch.appRegistryReady && !keys.empty() &&
-      !ui.selectedKey.empty() && !launch.pending && !runtimeFinished;
+  const bool selectedExists = std::find(
+      keys.begin(), keys.end(), ui.selectedKey) != keys.end();
+  const bool phaseAllowsRun =
+      runtimeStatus.phase == RuntimePhase::ChoosingApplication ||
+      runtimeStatus.phase == RuntimePhase::Running;
+  const bool canRun = launch.appRegistryReady && selectedExists &&
+      !launch.pending && !runtimeFinished && phaseAllowsRun;
 
   const bool showFilter = keys.size() > 8;
   if (showFilter) {
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::InputTextWithHint(
-        "##page-filter", "Filter pages", filter, filterSize);
+        "##page-filter", "Filter apps", filter, filterSize);
     ImGui::Dummy({0.0f, 4.0f});
   }
 
@@ -1012,20 +1264,22 @@ void drawPages(
       ImGui::PopID();
     }
     if (!any) {
-      imgui_theme::mutedHint("No pages match the filter.");
+      imgui_theme::mutedHint("No apps match the filter.");
     }
   }
   ImGui::EndChild();
   ImGui::PopStyleColor();
 
   ImGui::Dummy({0.0f, 6.0f});
-  ImGui::TextDisabled("initialProps");
-  ImGui::InputTextMultiline(
-      "##initial-props",
-      ui.json.data(),
-      ui.json.size(),
-      ImVec2(-FLT_MIN, jsonHeight),
-      ImGuiInputTextFlags_AllowTabInput);
+  if (ImGui::CollapsingHeader("Launch options")) {
+    ImGui::TextDisabled("initialProps");
+    ImGui::InputTextMultiline(
+        "##initial-props",
+        ui.json.data(),
+        ui.json.size(),
+        ImVec2(-FLT_MIN, jsonHeight),
+        ImGuiInputTextFlags_AllowTabInput);
+  }
 
   if (launch.pending) {
     ImGui::Dummy({0.0f, 4.0f});
@@ -1041,7 +1295,7 @@ void drawPages(
   }
 
   ImGui::Dummy({0.0f, 8.0f});
-  const char* runLabel = launch.runningAppKey ? "Re-run" : "Run";
+  const char* runLabel = launch.runningAppKey ? "Restart App" : "Run";
   if (imgui_theme::button(
           runLabel,
           canRun ? imgui_theme::ButtonKind::Primary
@@ -1050,6 +1304,7 @@ void drawPages(
       canRun) {
     tryRun();
   }
+  drawRuntimeCapabilities(runtimeStatus);
   drawPagesLog(log);
 }
 
@@ -1400,13 +1655,127 @@ void drawHostUi() {
   ImGui::PopStyleVar(2);
 }
 
+void drawRuntimeStatus(
+    const RuntimeStatus& status,
+    bool preparationFailed,
+    bool runtimeFinished,
+    bool currentError) {
+  if (preparationFailed) {
+    imgui_theme::toneChip("prepare failed", imgui_theme::ChipTone::Danger, true);
+  } else if (currentError || status.phase == RuntimePhase::PausedAfterError) {
+    imgui_theme::toneChip("error", imgui_theme::ChipTone::Danger, true);
+  } else if (runtimeFinished) {
+    imgui_theme::toneChip("stopped", imgui_theme::ChipTone::Danger, true);
+  } else {
+    switch (status.phase) {
+      case RuntimePhase::Idle:
+        imgui_theme::toneChip(
+            "preparing", imgui_theme::ChipTone::Info, true);
+        break;
+      case RuntimePhase::Initializing:
+        imgui_theme::toneChip(
+            "starting runtime", imgui_theme::ChipTone::Info, true);
+        break;
+      case RuntimePhase::LoadingBundle:
+        imgui_theme::toneChip("loading", imgui_theme::ChipTone::Info, true);
+        break;
+      case RuntimePhase::StartingApplication:
+        imgui_theme::toneChip(
+            "starting app", imgui_theme::ChipTone::Info, true);
+        break;
+      case RuntimePhase::ChoosingApplication:
+        imgui_theme::toneChip(
+            "choose app", imgui_theme::ChipTone::Neutral, true);
+        break;
+      case RuntimePhase::Running:
+        imgui_theme::toneChip("live", imgui_theme::ChipTone::Success, true);
+        break;
+      case RuntimePhase::Reloading:
+        imgui_theme::toneChip("reloading", imgui_theme::ChipTone::Info, true);
+        break;
+      case RuntimePhase::PausedAfterError:
+        imgui_theme::toneChip("error", imgui_theme::ChipTone::Danger, true);
+        break;
+      case RuntimePhase::Stopped:
+        imgui_theme::toneChip("stopped", imgui_theme::ChipTone::Danger, true);
+        break;
+    }
+  }
+  if (status.hmr != HMRStatus::Disabled) {
+    ImGui::SameLine(0.0f, 8.0f);
+    switch (status.hmr) {
+      case HMRStatus::Disabled:
+        break;
+      case HMRStatus::Enabling:
+        imgui_theme::toneChip(
+            "Enabling Fast Refresh…", imgui_theme::ChipTone::Info, true);
+        break;
+      case HMRStatus::Enabled:
+        imgui_theme::toneChip(
+            "Fast Refresh enabled", imgui_theme::ChipTone::Info, true);
+        break;
+      case HMRStatus::Failed:
+        imgui_theme::toneChip(
+            "Fast Refresh failed", imgui_theme::ChipTone::Danger, true);
+        break;
+    }
+  }
+}
+
+const char* emptyDeviceMessage(
+    const ApplicationLaunchState& launch,
+    const RuntimeStatus& status,
+    bool preparationFailed,
+    bool runtimeFinished,
+    bool currentError,
+    bool missingApp) {
+  if (preparationFailed) {
+    return "Could not prepare the runtime · fix Metro, then Retry";
+  }
+  if (currentError && runtimeFinished) {
+    return "Runtime stopped after an error";
+  }
+  if (status.phase == RuntimePhase::PausedAfterError ||
+      (currentError && !missingApp)) {
+    return "The app is paused after an error · fix it, then Reload";
+  }
+  if (missingApp) {
+    return "The bundle did not register an application";
+  }
+  if (currentError) {
+    return "The app is paused after an error · fix it, then Reload";
+  }
+  if (runtimeFinished) {
+    return "Runtime stopped";
+  }
+  if (!launch.initialBundlesLoaded) {
+    return status.phase == RuntimePhase::Reloading ||
+            launch.runtimeGeneration > 1
+        ? "Reloading JavaScript…"
+        : "Waiting for Metro or loading the bundle…";
+  }
+  if (launch.pending) {
+    return "Starting the application…";
+  }
+  if (launch.appRegistryReady && !launch.appKeys.empty()) {
+    return "Choose an app to run";
+  }
+  return "Waiting for the first React Native frame…";
+}
+
 void drawToolbar(
     Engine& engine,
+    FrontendState& state,
     const SimulatorWindowChrome& chrome,
-    std::string& diagnosticLog,
-    std::string& lastLoggedAppError,
+    const ApplicationLaunchState& launch,
+    const RuntimeStatus& runtimeStatus,
+    bool preparationFailed,
     bool runtimeFinished,
-    bool& selectOverlay) {
+    bool currentError,
+    bool appPanelVisible,
+    bool appPanelForced,
+    bool& selectOverlay,
+    bool& appPanelOpen) {
   const float contentHeight = ImGui::GetFrameHeight();
   float height = contentHeight + 16.0f;
   if (chrome.overlaysTitlebar && chrome.toolbarHeight > height) {
@@ -1424,35 +1793,72 @@ void drawToolbar(
       ImVec2(0.0f, height),
       ImGuiChildFlags_AlwaysUseWindowPadding,
       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-  imgui_theme::liveChip(!runtimeFinished);
+  drawRuntimeStatus(
+      runtimeStatus, preparationFailed, runtimeFinished, currentError);
   ImGui::SameLine(0.0f, 12.0f);
   int mode = selectOverlay ? 1 : 0;
-  const char* modes[] = {"Interact", "Select"};
-  const char* shortcuts[] = {"1", "2"};
+  const char* modes[] = {"Interact", "Inspect"};
+  const char* shortcuts[] = {"⌘1", "⌘2"};
   if (imgui_theme::segmented("mode", modes, 2, &mode, shortcuts)) {
     selectOverlay = mode == 1;
   }
-  const auto launch = engine.applicationLaunchState();
   ImGui::SameLine(0.0f, 12.0f);
-  ImGui::BeginDisabled(runtimeFinished || !launch.initialBundlesLoaded);
+  const bool canRetry = preparationFailed && !runtimeFinished &&
+      !state.preparationRetrying.load();
+  const bool reloadablePhase =
+      runtimeStatus.phase == RuntimePhase::Running ||
+      runtimeStatus.phase == RuntimePhase::PausedAfterError ||
+      runtimeStatus.phase == RuntimePhase::ChoosingApplication;
+  const bool canReload = !preparationFailed && !runtimeFinished &&
+      launch.initialBundlesLoaded && reloadablePhase;
+  const bool canAct = canRetry || canReload;
+  ImGui::BeginDisabled(!canAct);
   if (imgui_theme::button(
-          "Reload", imgui_theme::ButtonKind::Ghost, {72.0f, 0.0f})) {
-    engine.requestReload();
+          canRetry ? "Retry" : "Reload",
+          canRetry ? imgui_theme::ButtonKind::Primary
+                   : imgui_theme::ButtonKind::Ghost,
+          {72.0f, 0.0f})) {
+    if (canRetry) {
+      requestPreparationRetry(state);
+    } else {
+      engine.requestReload();
+    }
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+    if (canRetry) {
+      ImGui::SetTooltip("⌘R  Retry runtime preparation");
+    } else if (canReload) {
+      ImGui::SetTooltip("⌘R  Reload JavaScript and restart the app");
+    } else {
+      ImGui::SetTooltip("Reload is available after the initial bundle loads");
+    }
   }
   ImGui::EndDisabled();
-  {
-    if (launch.runningAppKey) {
-      ImGui::SameLine(0.0f, 14.0f);
-      ImGui::AlignTextToFramePadding();
-      ImGui::TextDisabled("%s", launch.runningAppKey->c_str());
-    }
-    if (!launch.lastError.empty()) {
-      appendDiagnostic(
-          diagnosticLog,
-          lastLoggedAppError,
-          "AppRegistry",
-          launch.lastError);
-    }
+  ImGui::SameLine(0.0f, 8.0f);
+  char appLabel[192];
+  const auto limitations = capabilityLimitationCount(runtimeStatus);
+  if (launch.runningAppKey && limitations > 0) {
+    std::snprintf(
+        appLabel,
+        sizeof(appLabel),
+        "App  ·  %s  ·  %zu limited",
+        launch.runningAppKey->c_str(),
+        limitations);
+  } else if (launch.runningAppKey) {
+    std::snprintf(
+        appLabel, sizeof(appLabel), "App  ·  %s", launch.runningAppKey->c_str());
+  } else if (limitations > 0) {
+    std::snprintf(
+        appLabel, sizeof(appLabel), "App  ·  %zu limited", limitations);
+  } else {
+    std::snprintf(appLabel, sizeof(appLabel), "App");
+  }
+  if (imgui_theme::button(
+          appLabel,
+          appPanelVisible ? imgui_theme::ButtonKind::Neutral
+                          : imgui_theme::ButtonKind::Ghost) &&
+      !appPanelForced) {
+    appPanelOpen = !appPanelVisible;
   }
   ImGui::EndChild();
   ImGui::PopStyleVar(3);
@@ -1477,6 +1883,7 @@ EngineResult runInteractiveFrontend(
   engine.setSceneUpdateCallback(
       [state](std::shared_ptr<const SceneSnapshot> scene) {
         std::lock_guard lock(state->mutex);
+        state->sceneRuntimeGeneration = scene->runtimeGeneration;
         state->scene = std::move(scene);
       });
   engine.setActionResultCallback([state](const InteractionResult& result) {
@@ -1526,37 +1933,78 @@ EngineResult runInteractiveFrontend(
 
   std::thread runtimeThread(
       [state, &engine, prepareRuntime = std::move(prepareRuntime)] {
-    EngineResult result;
-    try {
-      if (prepareRuntime) {
-        prepareRuntime([state] { return state->cancelRequested.load(); });
+    for (;;) {
+      EngineResult result;
+      bool preparationFailed = false;
+      try {
+        if (prepareRuntime) {
+          prepareRuntime([state] { return state->cancelRequested.load(); });
+        }
+      } catch (const std::exception& error) {
+        result.exitCode = 1;
+        result.error = error.what();
+        preparationFailed = true;
+      } catch (...) {
+        result.exitCode = 1;
+        result.error = "Unknown interactive runtime preparation error";
+        preparationFailed = true;
       }
+
+      if (preparationFailed) {
+        {
+          std::lock_guard lock(state->mutex);
+          state->result = result;
+        }
+        state->preparationFailures.fetch_add(1);
+        state->preparationRetrying.store(false);
+        state->preparationFailed.store(true);
+        while (!state->cancelRequested.load() &&
+               !state->retryRequested.load()) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+        if (state->retryRequested.exchange(false) &&
+            !state->cancelRequested.load()) {
+          state->preparationRetries.fetch_add(1);
+          state->preparationFailed.store(false);
+          {
+            std::lock_guard lock(state->mutex);
+            state->result.reset();
+          }
+          continue;
+        }
+        break;
+      }
+
+      state->preparationRetrying.store(false);
+      state->preparationFailed.store(false);
       if (state->cancelRequested.load()) {
         result.exitCode = 0;
       } else {
         result = engine.run();
       }
-    } catch (const std::exception& error) {
-      result.exitCode = 1;
-      result.error = error.what();
-    } catch (...) {
-      result.exitCode = 1;
-      result.error = "Unknown interactive runtime preparation error";
-    }
-    {
-      std::lock_guard lock(state->mutex);
-      state->result = std::move(result);
+      {
+        std::lock_guard lock(state->mutex);
+        state->result = std::move(result);
+      }
+      break;
     }
     state->runtimeFinished.store(true);
   });
 
   SkiaMountedTreeRenderer sceneRenderer(fontDirectory);
   SDL_Texture* texture = nullptr;
+  std::uint64_t renderedRuntimeGeneration = 0;
   std::int64_t renderedRevision = -1;
+  std::uint64_t activeRenderRuntimeGeneration = 0;
   std::string renderError;
   std::string diagnosticLog;
-  std::string lastLoggedError;
+  std::string lastLoggedRuntimeError;
+  std::string lastLoggedRenderError;
   std::string lastLoggedAppError;
+  std::string lastLoggedHmrError;
+  std::uint64_t lastLoggedActionSequence = 0;
+  std::uint64_t loggedRuntimeGeneration = 0;
+  std::unordered_set<std::string> loggedRuntimeDiagnostics;
   PagesUi pages;
   char pageFilter[64] = {};
   bool blockCanvasInput = false;
@@ -1564,13 +2012,22 @@ EngineResult runInteractiveFrontend(
   char shadowFilter[64] = {};
   bool scrollToSelected = false;
   bool selectOverlay = false;
+  bool appPanelOpen = false;
+  std::uint64_t compatibilityGeneration = 0;
+  std::size_t seenCompatibilityDiagnostics = 0;
   CanvasMapping mapping;
   int buttons = 0;
   SDL_Cursor* arrowCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_DEFAULT);
   SDL_Cursor* selectCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_CROSSHAIR);
   std::optional<std::pair<float, float>> lastPoint;
   std::shared_ptr<const SceneSnapshot> scene;
+  std::uint64_t sceneRuntimeGeneration = 0;
   const char* smokeOutput = std::getenv("RNS_INTERACTIVE_SMOKE_OUTPUT");
+  const char* smokeRetryValue =
+      std::getenv("RNS_INTERACTIVE_SMOKE_RETRY_PREPARATION");
+  const bool smokeRetryPreparation = smokeOutput != nullptr &&
+      smokeRetryValue != nullptr && std::string_view(smokeRetryValue) == "1";
+  bool smokeRetryTriggered = false;
   auto smokeTimeout = std::chrono::milliseconds(20000);
   if (smokeOutput != nullptr) {
     if (const char* value =
@@ -1584,11 +2041,41 @@ EngineResult runInteractiveFrontend(
   }
   const auto smokeDeadline = std::chrono::steady_clock::now() +
       smokeTimeout;
-  bool smokeFrameReady = false;
+  std::uint64_t smokeFrameRuntimeGeneration = 0;
+  std::int64_t smokeFrameRevision = -1;
   int smokeFrameWidth = 0;
   int smokeFrameHeight = 0;
+  bool pointerCancelPending = false;
+  const auto clearActivePointer = [&] {
+    buttons = 0;
+    lastPoint.reset();
+    pointerCancelPending = false;
+  };
+  const auto cancelActivePointer = [&] {
+    if (buttons == 0) {
+      pointerCancelPending = false;
+      return;
+    }
+    pointerCancelPending = true;
+    const auto point = lastPoint.value_or(std::pair{0.0f, 0.0f});
+    const auto enqueueResult = enqueueActionSafely(engine, {
+        .type = InteractionActionType::PointerCancel,
+        .x = point.first,
+        .y = point.second,
+        .buttons = 0});
+    if (enqueueResult != EnqueueActionResult::QueueFull) {
+      clearActivePointer();
+    }
+  };
+  const auto runtimeAcceptsInput = [&] {
+    return !state->runtimeFinished.load() &&
+        engine.runtimeStatus().phase == RuntimePhase::Running;
+  };
   bool done = false;
   while (!done) {
+    if (pointerCancelPending || !runtimeAcceptsInput()) {
+      cancelActivePointer();
+    }
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
       ImGui_ImplSDL3_ProcessEvent(&event);
@@ -1598,19 +2085,35 @@ EngineResult runInteractiveFrontend(
         done = true;
         continue;
       }
+      if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+        cancelActivePointer();
+      }
+      if (buttons != 0 && !runtimeAcceptsInput()) {
+        cancelActivePointer();
+      }
       const bool mouseEvent =
           !blockCanvasInput &&
           (event.type == SDL_EVENT_MOUSE_MOTION ||
            event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
            event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
            event.type == SDL_EVENT_MOUSE_WHEEL);
-      const auto point = mouseEvent
-          ? mapping.map(io.MousePos.x, io.MousePos.y, buttons == 0)
+      const auto mousePosition = mouseEvent
+          ? mouseEventPosition(event)
           : std::nullopt;
-      if (point) {
-        lastPoint = point;
+      const bool activePointerEvent = buttons != 0 &&
+          (event.type == SDL_EVENT_MOUSE_MOTION ||
+           event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+           event.type == SDL_EVENT_MOUSE_BUTTON_UP);
+      const bool insideDevice = mousePosition &&
+          mapping.contains(mousePosition->x, mousePosition->y);
+      if (activePointerEvent && !insideDevice) {
+        cancelActivePointer();
       }
-      const bool altHeld = (SDL_GetModState() & SDL_KMOD_ALT) != 0;
+      const auto point = insideDevice
+          ? mapping.map(mousePosition->x, mousePosition->y, false)
+          : std::nullopt;
+      const bool canDispatchRuntimeInput =
+          runtimeAcceptsInput() && !pointerCancelPending;
       if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && point) {
         const int button = event.button.button == SDL_BUTTON_LEFT ? 0 :
             event.button.button == SDL_BUTTON_RIGHT ? 2 : 1;
@@ -1623,38 +2126,56 @@ EngineResult runInteractiveFrontend(
             }
           }
         }
-        if (!(selectOverlay && altHeld)) {
-          buttons |= 1 << button;
-          enqueueIgnoringStopped(engine, {
+        // Inspect behaves like an element picker: selecting a node must not
+        // accidentally press the application underneath it.
+        if (!selectOverlay && canDispatchRuntimeInput) {
+          const int nextButtons = buttons | pointerButtonMask(button);
+          if (enqueueActionSafely(engine, {
               .type = InteractionActionType::PointerDown,
               .x = point->first,
               .y = point->second,
               .button = button,
-              .buttons = buttons});
+              .buttons = nextButtons}) == EnqueueActionResult::Enqueued) {
+            buttons = nextButtons;
+            lastPoint = point;
+          }
         }
       } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
         const int button = event.button.button == SDL_BUTTON_LEFT ? 0 :
             event.button.button == SDL_BUTTON_RIGHT ? 2 : 1;
-        if (buttons != 0) {
-          buttons &= ~(1 << button);
-          const auto upPoint = point ? point : lastPoint;
-          if (upPoint) {
-            enqueueIgnoringStopped(engine, {
+        if (buttons != 0 && !selectOverlay && canDispatchRuntimeInput && point) {
+          const int nextButtons = buttons & ~pointerButtonMask(button);
+          const auto enqueueResult = enqueueActionSafely(engine, {
                 .type = InteractionActionType::PointerUp,
-                .x = upPoint->first,
-                .y = upPoint->second,
+                .x = point->first,
+                .y = point->second,
                 .button = button,
-                .buttons = buttons});
+                .buttons = nextButtons});
+          if (enqueueResult == EnqueueActionResult::Enqueued) {
+            buttons = nextButtons;
+            if (buttons == 0) {
+              lastPoint.reset();
+            } else {
+              lastPoint = point;
+            }
+          } else if (enqueueResult == EnqueueActionResult::QueueFull) {
+            cancelActivePointer();
+          } else {
+            clearActivePointer();
           }
         }
-      } else if (event.type == SDL_EVENT_MOUSE_MOTION && point && buttons != 0) {
-        enqueueIgnoringStopped(engine, {
+      } else if (event.type == SDL_EVENT_MOUSE_MOTION && point &&
+                 buttons != 0 && !selectOverlay &&
+                 canDispatchRuntimeInput) {
+        lastPoint = point;
+        enqueueActionSafely(engine, {
             .type = InteractionActionType::PointerMove,
             .x = point->first,
             .y = point->second,
             .buttons = buttons});
-      } else if (event.type == SDL_EVENT_MOUSE_WHEEL && point) {
-        enqueueIgnoringStopped(engine, {
+      } else if (event.type == SDL_EVENT_MOUSE_WHEEL && point &&
+                 !selectOverlay && canDispatchRuntimeInput) {
+        enqueueActionSafely(engine, {
             .type = InteractionActionType::Scroll,
             .x = point->first,
             .y = point->second,
@@ -1662,20 +2183,51 @@ EngineResult runInteractiveFrontend(
             .deltaY = -event.wheel.y * 40.0f});
       } else if (
           event.type == SDL_EVENT_TEXT_INPUT && event.text.text[0] &&
-          !blockCanvasInput && !io.WantTextInput) {
-        enqueueIgnoringStopped(engine, {
+          !blockCanvasInput && !selectOverlay && !io.WantTextInput &&
+          canDispatchRuntimeInput &&
+          (SDL_GetModState() & SDL_KMOD_GUI) == 0) {
+        enqueueActionSafely(engine, {
             .type = InteractionActionType::TextInput,
             .text = event.text.text});
-      } else if (
-          event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
-          !blockCanvasInput && !io.WantTextInput) {
-        if (event.key.key == SDLK_1 || event.key.key == SDLK_2) {
-          selectOverlay = event.key.key == SDLK_2;
-        } else {
+      } else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
+                 !blockCanvasInput) {
+        const bool commandHeld = (event.key.mod & SDL_KMOD_GUI) != 0;
+        if (commandHeld &&
+            (event.key.key == SDLK_1 || event.key.key == SDLK_2)) {
+          const bool inspect = event.key.key == SDLK_2;
+          if (inspect && !selectOverlay) {
+            cancelActivePointer();
+          }
+          selectOverlay = inspect;
+        } else if (commandHeld && event.key.key == SDLK_R) {
+          cancelActivePointer();
+          if (state->preparationFailed.load() &&
+              !state->runtimeFinished.load()) {
+            requestPreparationRetry(*state);
+          } else {
+            const auto launch = engine.applicationLaunchState();
+            const auto runtimeStatus = engine.runtimeStatus();
+            const bool reloadablePhase =
+                runtimeStatus.phase == RuntimePhase::Running ||
+                runtimeStatus.phase == RuntimePhase::PausedAfterError ||
+                runtimeStatus.phase == RuntimePhase::ChoosingApplication;
+            if (launch.initialBundlesLoaded &&
+                !state->runtimeFinished.load() && reloadablePhase) {
+              engine.requestReload();
+            }
+          }
+        } else if (
+            selectOverlay &&
+            (event.key.key == SDLK_ESCAPE ||
+             event.key.key == SDLK_AC_BACK)) {
+          selectOverlay = false;
+        } else if (
+            !selectOverlay && !io.WantTextInput &&
+            !io.WantCaptureKeyboard && canDispatchRuntimeInput) {
           std::string key;
           if (event.key.key == SDLK_ESCAPE ||
               event.key.key == SDLK_AC_BACK) {
-            enqueueIgnoringStopped(engine, {
+            enqueueActionSafely(engine, {
                 .type = InteractionActionType::HardwareBackPress});
           } else if (event.key.key == SDLK_BACKSPACE) {
             key = "Backspace";
@@ -1686,7 +2238,7 @@ EngineResult runInteractiveFrontend(
             key = "Tab";
           }
           if (!key.empty()) {
-            enqueueIgnoringStopped(engine, {
+            enqueueActionSafely(engine, {
                 .type = InteractionActionType::KeyDown,
                 .ctrlKey = (event.key.mod & SDL_KMOD_CTRL) != 0,
                 .shiftKey = (event.key.mod & SDL_KMOD_SHIFT) != 0,
@@ -1698,18 +2250,51 @@ EngineResult runInteractiveFrontend(
       }
     }
 
+    if (smokeRetryPreparation && !smokeRetryTriggered &&
+        state->preparationFailed.load() &&
+        !state->runtimeFinished.load()) {
+      smokeRetryTriggered = true;
+      requestPreparationRetry(*state);
+    }
+
     std::optional<InteractionResult> action;
     std::optional<EngineResult> result;
     {
       std::lock_guard lock(state->mutex);
       scene = state->scene;
+      sceneRuntimeGeneration = state->sceneRuntimeGeneration;
       action = state->action;
       result = state->result;
     }
-    if (scene &&
-        (scene->revision != renderedRevision ||
-         sceneHasAnimatingIndicator(*scene))) {
-      const auto frame = sceneRenderer.render(*scene);
+    const auto launch = engine.applicationLaunchState();
+    const auto runtimeStatus = engine.runtimeStatus();
+    if (runtimeStatus.phase != RuntimePhase::Running) {
+      cancelActivePointer();
+    }
+    if (activeRenderRuntimeGeneration != runtimeStatus.runtimeGeneration) {
+      activeRenderRuntimeGeneration = runtimeStatus.runtimeGeneration;
+      if (texture != nullptr) {
+        SDL_DestroyTexture(texture);
+        texture = nullptr;
+      }
+      renderedRuntimeGeneration = 0;
+      renderedRevision = -1;
+      smokeFrameRuntimeGeneration = 0;
+      smokeFrameRevision = -1;
+      smokeFrameWidth = 0;
+      smokeFrameHeight = 0;
+      renderError.clear();
+      lastLoggedRenderError.clear();
+    }
+    const bool sceneIsCurrentGeneration = scene &&
+        sceneRuntimeGeneration == runtimeStatus.runtimeGeneration;
+    const auto* currentScene =
+        sceneIsCurrentGeneration ? scene.get() : nullptr;
+    if (currentScene &&
+        (renderedRuntimeGeneration != runtimeStatus.runtimeGeneration ||
+         currentScene->revision != renderedRevision ||
+         sceneHasAnimatingIndicator(*currentScene))) {
+      const auto frame = sceneRenderer.render(*currentScene);
       renderError = frame.error;
       if (frame) {
         if (texture == nullptr) {
@@ -1734,13 +2319,106 @@ EngineResult runInteractiveFrontend(
           renderError = std::string("SDL texture upload failed: ") +
               SDL_GetError();
         } else {
-          smokeFrameReady = true;
+          renderedRuntimeGeneration = runtimeStatus.runtimeGeneration;
+          renderedRevision = currentScene->revision;
+          smokeFrameRuntimeGeneration = runtimeStatus.runtimeGeneration;
+          smokeFrameRevision = currentScene->revision;
           smokeFrameWidth = frame.width;
           smokeFrameHeight = frame.height;
         }
       }
-      renderedRevision = scene->revision;
     }
+    SDL_Texture* currentTexture =
+        texture != nullptr && currentScene != nullptr &&
+            renderedRuntimeGeneration == runtimeStatus.runtimeGeneration &&
+            renderedRevision == currentScene->revision
+        ? texture
+        : nullptr;
+
+    const bool preparationFailed = state->preparationFailed.load();
+    const bool runtimeFinished = state->runtimeFinished.load();
+    if (loggedRuntimeGeneration != runtimeStatus.runtimeGeneration) {
+      loggedRuntimeGeneration = runtimeStatus.runtimeGeneration;
+      loggedRuntimeDiagnostics.clear();
+    }
+    appendRuntimeDiagnostics(
+        diagnosticLog, runtimeStatus, loggedRuntimeDiagnostics);
+    const bool launchErrorIsStructured = std::any_of(
+        runtimeStatus.diagnostics.begin(),
+        runtimeStatus.diagnostics.end(),
+        [&](const auto& diagnostic) {
+          return diagnostic.message == launch.lastError;
+        });
+    if (!launch.lastError.empty() && !launchErrorIsStructured) {
+      appendDiagnostic(
+          diagnosticLog,
+          lastLoggedAppError,
+          "AppRegistry",
+          launch.lastError);
+    }
+    if (runtimeStatus.hmr == HMRStatus::Failed &&
+        !runtimeStatus.hmrError.empty()) {
+      appendDiagnostic(
+          diagnosticLog,
+          lastLoggedHmrError,
+          "Fast Refresh",
+          runtimeStatus.hmrError);
+    }
+    if (result && !result->error.empty()) {
+      appendDiagnostic(
+          diagnosticLog,
+          lastLoggedRuntimeError,
+          "Runtime error",
+          result->error);
+    } else {
+      lastLoggedRuntimeError.clear();
+    }
+    if (!renderError.empty()) {
+      appendDiagnostic(
+          diagnosticLog,
+          lastLoggedRenderError,
+          "Render error",
+          renderError);
+    } else {
+      lastLoggedRenderError.clear();
+    }
+    const bool actionError = action && !action->error.empty();
+    if (actionError && action->sequence != lastLoggedActionSequence) {
+      lastLoggedActionSequence = action->sequence;
+      std::string ignored;
+      appendDiagnostic(
+          diagnosticLog, ignored, "Input error", action->error);
+    }
+    trimDiagnosticLog(diagnosticLog);
+    const auto appKeys =
+        selectableAppKeys(launch.appKeys, launch.configuredAppKey);
+    const bool reloadInProgress =
+        runtimeStatus.phase == RuntimePhase::Reloading;
+    const bool missingApp = !reloadInProgress && launch.initialBundlesLoaded &&
+        (!launch.appRegistryReady || appKeys.empty());
+    const bool runtimeError =
+        runtimeStatus.phase == RuntimePhase::PausedAfterError;
+    const auto compatibilityAttentionCount = static_cast<std::size_t>(
+        std::count_if(
+            runtimeStatus.diagnostics.begin(),
+            runtimeStatus.diagnostics.end(),
+            needsCompatibilityAttention));
+    if (compatibilityGeneration != runtimeStatus.runtimeGeneration) {
+      compatibilityGeneration = runtimeStatus.runtimeGeneration;
+      seenCompatibilityDiagnostics = 0;
+    }
+    if (compatibilityAttentionCount > seenCompatibilityDiagnostics) {
+      seenCompatibilityDiagnostics = compatibilityAttentionCount;
+      appPanelOpen = true;
+    }
+    const bool currentError = preparationFailed || runtimeError ||
+        (!reloadInProgress && !launch.lastError.empty()) ||
+        !pages.localError.empty() || !renderError.empty() ||
+        (result && !result->error.empty()) || missingApp;
+    const bool appSelectionRequired =
+        !reloadInProgress && appKeys.size() > 1 && !launch.runningAppKey;
+    const bool appPanelForced = appSelectionRequired || currentError;
+    const bool showAppPanel = appPanelOpen || appPanelForced;
 
     ImGui_ImplSDLRenderer3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
@@ -1755,23 +2433,22 @@ EngineResult runInteractiveFrontend(
         "simulator", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings);
+    const bool wasInspecting = selectOverlay;
     drawToolbar(
         engine,
+        *state,
         chrome,
-        diagnosticLog,
-        lastLoggedAppError,
-        state->runtimeFinished.load(),
-        selectOverlay);
-    if (renderError.empty() && result && !result->error.empty()) {
-      appendDiagnostic(
-          diagnosticLog, lastLoggedError, "Runtime error", result->error);
-    } else if (!renderError.empty()) {
-      appendDiagnostic(
-          diagnosticLog, lastLoggedError, "Render error", renderError);
-    }
-    if (action && !action->error.empty()) {
-      appendDiagnostic(
-          diagnosticLog, lastLoggedError, "Input error", action->error);
+        launch,
+        runtimeStatus,
+        preparationFailed,
+        runtimeFinished,
+        currentError,
+        showAppPanel,
+        appPanelForced,
+        selectOverlay,
+        appPanelOpen);
+    if (!wasInspecting && selectOverlay) {
+      cancelActivePointer();
     }
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {8.0f, 8.0f});
     ImGui::BeginChild(
@@ -1781,26 +2458,36 @@ EngineResult runInteractiveFrontend(
         ImGuiWindowFlags_NoScrollbar);
     const ImVec2 available = ImGui::GetContentRegionAvail();
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    const float treeWidth = std::clamp(available.x * 0.21f, 220.0f, 268.0f);
-    const float pagesWidth = std::clamp(available.x * 0.21f, 244.0f, 292.0f);
+    const float treeWidth = selectOverlay
+        ? std::clamp(available.x * 0.21f, 220.0f, 268.0f)
+        : 0.0f;
+    const float pagesWidth = showAppPanel
+        ? std::clamp(available.x * 0.21f, 244.0f, 292.0f)
+        : 0.0f;
+    const int sidePanelCount = static_cast<int>(selectOverlay) +
+        static_cast<int>(showAppPanel);
     const float canvasWidth = std::max(
-        160.0f, available.x - treeWidth - pagesWidth - spacing * 2.0f);
+        160.0f,
+        available.x - treeWidth - pagesWidth -
+            spacing * static_cast<float>(sidePanelCount));
     int hoveredTag = 0;
-    imgui_theme::beginPanel(
-        "shadow-tree",
-        ImVec2(treeWidth, 0),
-        imgui_theme::palette().panel,
-        ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
-        ImGuiWindowFlags_NoScrollbar);
-    drawShadowTree(
-        scene.get(),
-        selectedShadowTag,
-        hoveredTag,
-        scrollToSelected,
-        shadowFilter,
-        sizeof(shadowFilter));
-    imgui_theme::endPanel();
-    ImGui::SameLine();
+    if (selectOverlay) {
+      imgui_theme::beginPanel(
+          "shadow-tree",
+          ImVec2(treeWidth, 0),
+          imgui_theme::palette().panel,
+          ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
+          ImGuiWindowFlags_NoScrollbar);
+      drawShadowTree(
+          currentScene,
+          selectedShadowTag,
+          hoveredTag,
+          scrollToSelected,
+          shadowFilter,
+          sizeof(shadowFilter));
+      imgui_theme::endPanel();
+      ImGui::SameLine();
+    }
     imgui_theme::beginPanel(
         "device-canvas",
         ImVec2(canvasWidth, 0),
@@ -1808,45 +2495,58 @@ EngineResult runInteractiveFrontend(
         ImGuiChildFlags_AlwaysUseWindowPadding,
         ImGuiWindowFlags_NoScrollbar);
     drawDeviceCanvas(
-        texture,
-        scene.get(),
+        currentTexture,
+        currentScene,
         mapping,
         selectedShadowTag,
         hoveredTag,
         selectOverlay,
         engine,
-        !blockCanvasInput);
+        !blockCanvasInput && !selectOverlay &&
+            runtimeStatus.phase == RuntimePhase::Running,
+        emptyDeviceMessage(
+            launch,
+            runtimeStatus,
+            preparationFailed,
+            runtimeFinished,
+            currentError,
+            missingApp));
     if (selectCursor != nullptr && arrowCursor != nullptr) {
       SDL_SetCursor(
-          selectOverlay && mapping.hovered &&
-                  (SDL_GetModState() & SDL_KMOD_ALT) != 0
+          selectOverlay && mapping.hovered
               ? selectCursor
               : arrowCursor);
     }
     imgui_theme::endPanel();
-    ImGui::SameLine();
-    imgui_theme::beginPanel(
-        "pages",
-        ImVec2(pagesWidth, 0),
-        imgui_theme::palette().panel,
-        ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
-        ImGuiWindowFlags_NoScrollbar);
-    drawPages(
-        engine,
-        pages,
-        diagnosticLog,
-        state->runtimeFinished.load(),
-        pageFilter,
-        sizeof(pageFilter));
-    imgui_theme::endPanel();
+    if (showAppPanel) {
+      ImGui::SameLine();
+      imgui_theme::beginPanel(
+          "pages",
+          ImVec2(pagesWidth, 0),
+          imgui_theme::palette().panel,
+          ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+      drawPages(
+          engine,
+          pages,
+          diagnosticLog,
+          runtimeStatus,
+          runtimeFinished,
+          pageFilter,
+          sizeof(pageFilter));
+      imgui_theme::endPanel();
+    }
     ImGui::EndChild();
     ImGui::PopStyleVar();
     ImGui::End();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor();
     drawHostUi();
-    blockCanvasInput = ImGui::IsPopupOpen(
+    const bool nextBlockCanvasInput = ImGui::IsPopupOpen(
         "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    if (!blockCanvasInput && nextBlockCanvasInput) {
+      cancelActivePointer();
+    }
+    blockCanvasInput = nextBlockCanvasInput;
 
     ImGui::Render();
     SDL_SetRenderScale(
@@ -1862,27 +2562,46 @@ EngineResult runInteractiveFrontend(
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
     SDL_RenderPresent(renderer);
     if (smokeOutput != nullptr) {
-      const bool sceneReady = scene && scene->revision >= 0 &&
-          (!scene->nodes.empty() || !scene->shadowNodes.empty());
-      if (sceneReady && smokeFrameReady) {
+      const bool sceneReady = currentScene != nullptr &&
+          runtimeStatus.phase == RuntimePhase::Running &&
+          currentScene->revision >= 0 &&
+          (!currentScene->nodes.empty() || !currentScene->shadowNodes.empty());
+      const bool frameReady = sceneReady && currentTexture != nullptr &&
+          smokeFrameRuntimeGeneration == runtimeStatus.runtimeGeneration &&
+          smokeFrameRevision == currentScene->revision;
+      if (frameReady) {
         std::ofstream output(smokeOutput, std::ios::binary);
         if (!output) {
           renderError = std::string("Cannot write interactive smoke result: ") +
               smokeOutput;
         } else {
-          output << "{\"ready\":true,\"window\":true,\"sceneRevision\":"
-                 << scene->revision << ",\"sceneNodes\":"
-                 << scene->nodes.size() << ",\"shadowNodes\":"
-                 << scene->shadowNodes.size() << ",\"frameWidth\":"
+          output << "{\"ready\":true,\"window\":true,\"runtimeGeneration\":"
+                 << runtimeStatus.runtimeGeneration << ",\"sceneRevision\":"
+                 << currentScene->revision << ",\"sceneNodes\":"
+                 << currentScene->nodes.size() << ",\"shadowNodes\":"
+                 << currentScene->shadowNodes.size() << ",\"frameWidth\":"
                  << smokeFrameWidth << ",\"frameHeight\":"
-                 << smokeFrameHeight << "}\n";
+                 << smokeFrameHeight << ",\"preparationFailures\":"
+                 << state->preparationFailures.load()
+                 << ",\"preparationRetries\":"
+                 << state->preparationRetries.load()
+                 << ",\"capabilityUsages\":"
+                 << runtimeStatus.capabilityUsages.size()
+                 << ",\"componentCapabilityUsages\":"
+                 << componentCapabilityUsageCount(runtimeStatus)
+                 << ",\"capabilityLimitations\":"
+                 << capabilityLimitationCount(runtimeStatus) << "}\n";
         }
         done = true;
       } else if (std::chrono::steady_clock::now() >= smokeDeadline) {
         std::ofstream output(smokeOutput, std::ios::binary);
         if (output) {
           output << "{\"ready\":false,\"window\":true,\"error\":"
-                    "\"timed out waiting for a non-empty Skia frame\"}\n";
+                    "\"timed out waiting for a non-empty Skia frame\","
+                    "\"preparationFailures\":"
+                 << state->preparationFailures.load()
+                 << ",\"preparationRetries\":"
+                 << state->preparationRetries.load() << "}\n";
         }
         done = true;
       }

@@ -60,6 +60,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -149,6 +150,104 @@ struct QueuedInteractionAction {
   std::size_t batchIndex{0};
 };
 
+rns::RuntimeCapabilityClass classifyRuntimeCapability(
+    std::string_view type,
+    std::string_view name,
+    std::string_view fidelity) {
+  if (fidelity.find("unavailable") != std::string_view::npos) {
+    return rns::RuntimeCapabilityClass::Unavailable;
+  }
+  if (type == "component" &&
+      (fidelity.find("fallback") != std::string_view::npos ||
+       fidelity.find("layout-only") != std::string_view::npos)) {
+    return rns::RuntimeCapabilityClass::LayoutOnly;
+  }
+  static const std::unordered_set<std::string_view> kMockedModules{
+      "SoundManager",
+      "HeadlessJsTaskSupport",
+      "FrameRateLogger",
+      "ModalManager",
+  };
+  if (fidelity.find("mock") != std::string_view::npos ||
+      fidelity.find("descriptor-only") != std::string_view::npos ||
+      fidelity.find("tester-stub") != std::string_view::npos ||
+      fidelity.find("fixed-fixture") != std::string_view::npos ||
+      (type == "module" && kMockedModules.contains(name))) {
+    return rns::RuntimeCapabilityClass::Mocked;
+  }
+  if (fidelity == "real-headless") {
+    return rns::RuntimeCapabilityClass::Implemented;
+  }
+  static const std::unordered_set<std::string_view> kHostAdaptedModules{
+      "NativePerformanceCxx",
+      "DevSettings",
+      "DeviceInfo",
+      "SourceCode",
+      "AppState",
+      "Appearance",
+      "WebSocketModule",
+      "BlobModule",
+      "FileReaderModule",
+      "ImageLoader",
+      "ImageEditingManager",
+      "ImageStoreManager",
+      "Clipboard",
+      "KeyboardObserver",
+      "AccessibilityInfo",
+      "I18nManager",
+      "Networking",
+      "SegmentFetcher",
+      "PlatformConstants",
+      "StatusBarManager",
+      "ToastAndroid",
+      "DeviceEventManager",
+      "ExceptionsManager",
+      "LogBox",
+      "DevLoadingView",
+      "RedBox",
+      "PushNotificationManager",
+      "SettingsManager",
+      "ReactDevToolsSettingsManager",
+      "ReactDevToolsRuntimeSettingsModule",
+  };
+  if ((type == "module" && kHostAdaptedModules.contains(name)) ||
+      fidelity.find("adapter") != std::string_view::npos ||
+      fidelity.find("headless") != std::string_view::npos ||
+      fidelity.find("host-") != std::string_view::npos ||
+      fidelity.find("urlsession") != std::string_view::npos ||
+      fidelity.find("nspasteboard") != std::string_view::npos ||
+      fidelity.find("imageio") != std::string_view::npos ||
+      fidelity.find("partial") != std::string_view::npos) {
+    return rns::RuntimeCapabilityClass::HostAdapted;
+  }
+  return rns::RuntimeCapabilityClass::Implemented;
+}
+
+std::string componentFidelityForBuild(std::string_view fidelity) {
+#if RNS_ENABLE_SKIA
+  return std::string(fidelity);
+#else
+  if (fidelity.starts_with("skia-")) {
+    return "unavailable-without-skia";
+  }
+  return std::string(fidelity);
+#endif
+}
+
+rns::RuntimeCapabilityUsage makeRuntimeCapabilityUsage(
+    std::string type,
+    std::string name,
+    std::string fidelity) {
+  const auto classification =
+      classifyRuntimeCapability(type, name, fidelity);
+  return {
+      .type = std::move(type),
+      .name = std::move(name),
+      .fidelity = std::move(fidelity),
+      .classification = classification,
+  };
+}
+
 class rns::Engine::Impl {
  public:
   explicit Impl(rns::EngineConfig configValue)
@@ -178,12 +277,89 @@ class rns::Engine::Impl {
   std::uint64_t nextActionSequence{1};
   mutable std::mutex applicationMutex;
   rns::ApplicationLaunchState launchState;
+  mutable std::mutex runtimeStatusMutex;
+  rns::RuntimeStatus runtimeStatus;
   struct PendingApplication {
     std::string appKey;
     std::string initialPropsJson;
   };
   std::optional<PendingApplication> pendingApplication;
   std::optional<int> runningRootTag;
+
+  void beginRuntimeGeneration(
+      std::uint64_t generation,
+      rns::RuntimePhase phase) {
+    std::lock_guard lock(runtimeStatusMutex);
+    runtimeStatus.runtimeGeneration = generation;
+    runtimeStatus.phase = phase;
+    runtimeStatus.hmr = rns::HMRStatus::Disabled;
+    runtimeStatus.hmrError.clear();
+    runtimeStatus.diagnostics.clear();
+    runtimeStatus.capabilityUsages.clear();
+  }
+
+  void setRuntimePhase(rns::RuntimePhase phase) {
+    std::lock_guard lock(runtimeStatusMutex);
+    runtimeStatus.phase = phase;
+  }
+
+  void beginApplicationLaunch() {
+    std::lock_guard lock(runtimeStatusMutex);
+    if (runtimeStatus.phase != rns::RuntimePhase::Running &&
+        runtimeStatus.phase != rns::RuntimePhase::ChoosingApplication) {
+      throw std::logic_error(
+          "runApplication requires runtime phase Running or "
+          "ChoosingApplication");
+    }
+    runtimeStatus.phase = rns::RuntimePhase::StartingApplication;
+  }
+
+  void setHMRStatus(rns::HMRStatus status, std::string error = {}) {
+    std::lock_guard lock(runtimeStatusMutex);
+    runtimeStatus.hmr = status;
+    runtimeStatus.hmrError = std::move(error);
+  }
+
+  void recordRuntimeDiagnostic(rns::RuntimeDiagnostic diagnostic) {
+    std::lock_guard lock(runtimeStatusMutex);
+    const auto duplicate = std::find_if(
+        runtimeStatus.diagnostics.begin(),
+        runtimeStatus.diagnostics.end(),
+        [&](const auto& current) {
+          return current.kind == diagnostic.kind &&
+              current.name == diagnostic.name &&
+              current.message == diagnostic.message;
+        });
+    if (duplicate == runtimeStatus.diagnostics.end()) {
+      constexpr std::size_t kMaximumDiagnostics = 256;
+      if (runtimeStatus.diagnostics.size() == kMaximumDiagnostics) {
+        runtimeStatus.diagnostics.erase(runtimeStatus.diagnostics.begin());
+      }
+      runtimeStatus.diagnostics.push_back(std::move(diagnostic));
+    }
+  }
+
+  void recordCapabilityUsage(rns::RuntimeCapabilityUsage usage) {
+    std::lock_guard lock(runtimeStatusMutex);
+    const auto duplicate = std::find_if(
+        runtimeStatus.capabilityUsages.begin(),
+        runtimeStatus.capabilityUsages.end(),
+        [&](const auto& current) {
+          return current.type == usage.type && current.name == usage.name;
+        });
+    if (duplicate == runtimeStatus.capabilityUsages.end()) {
+      runtimeStatus.capabilityUsages.push_back(std::move(usage));
+    }
+  }
+
+  std::uint64_t enqueueRunningAction(rns::InteractionAction action) {
+    std::lock_guard lock(runtimeStatusMutex);
+    if (runtimeStatus.phase != rns::RuntimePhase::Running) {
+      throw std::logic_error(
+          "interaction actions require runtime phase Running");
+    }
+    return enqueueAction(std::move(action));
+  }
 
   std::uint64_t enqueueAction(
       rns::InteractionAction action,
@@ -254,8 +430,6 @@ class rns::Engine::Impl {
 
   void requestRunApplication(std::string appKey, std::string initialPropsJson) {
     std::lock_guard lock(applicationMutex);
-    lastInitialPropsJson =
-        initialPropsJson.empty() ? "{}" : initialPropsJson;
     pendingApplication = PendingApplication{
         .appKey = std::move(appKey),
         .initialPropsJson = std::move(initialPropsJson),
@@ -284,7 +458,8 @@ class rns::Engine::Impl {
   void applyHostApplication(
       jsi::Runtime& runtime,
       const std::string& appKey,
-      const folly::dynamic& initialProps);
+      const folly::dynamic& initialProps,
+      std::string_view initialPropsJson);
 };
 
 namespace {
@@ -352,7 +527,9 @@ std::optional<std::string> resolveAutoRunAppKey(
     const std::vector<std::string>& keys,
     const std::optional<std::string>& configured) {
   if (configured) {
-    return *configured;
+    const auto match = std::find(keys.begin(), keys.end(), *configured);
+    return match == keys.end() ? std::nullopt
+                               : std::optional<std::string>(*match);
   }
   std::vector<std::string> candidates;
   for (const auto& key : keys) {
@@ -552,7 +729,8 @@ void rns::Engine::Impl::refreshAppRegistry(jsi::Runtime& runtime) {
 void rns::Engine::Impl::applyHostApplication(
     jsi::Runtime& runtime,
     const std::string& appKey,
-    const folly::dynamic& initialProps) {
+    const folly::dynamic& initialProps,
+    std::string_view initialPropsJson) {
   refreshAppRegistry(runtime);
   std::optional<int> previousRootTag;
   {
@@ -572,6 +750,8 @@ void rns::Engine::Impl::applyHostApplication(
   std::lock_guard lock(applicationMutex);
   runningRootTag = kHostRootTag;
   launchState.runningAppKey = appKey;
+  lastInitialPropsJson =
+      initialPropsJson.empty() ? "{}" : std::string(initialPropsJson);
   launchState.lastError.clear();
   launchState.pending = false;
 }
@@ -1136,8 +1316,10 @@ static folly::dynamic makeFabricTreeMetadata(
 
 static std::shared_ptr<const rns::SceneSnapshot> makeSceneSnapshot(
     const rns::EngineConfig& options,
-    const HeadlessReactFabricResult& fabric) {
+    const HeadlessReactFabricResult& fabric,
+    std::uint64_t runtimeGeneration) {
   auto scene = std::make_shared<rns::SceneSnapshot>();
+  scene->runtimeGeneration = runtimeGeneration;
   scene->surfaceId = fabric.shadowTreeSurfaceId;
   scene->revision = fabric.mountingRevision;
   scene->rootTag = fabric.mountedRootTag;
@@ -1643,12 +1825,17 @@ std::uint64_t rns::Engine::enqueueAction(rns::InteractionAction action) {
   if (!impl_->running || impl_->finished) {
     throw std::logic_error("interaction actions require a running Engine");
   }
-  return impl_->enqueueAction(std::move(action));
+  return impl_->enqueueRunningAction(std::move(action));
 }
 
 rns::ApplicationLaunchState rns::Engine::applicationLaunchState() const {
   std::lock_guard lock(impl_->applicationMutex);
   return impl_->launchState;
+}
+
+rns::RuntimeStatus rns::Engine::runtimeStatus() const {
+  std::lock_guard lock(impl_->runtimeStatusMutex);
+  return impl_->runtimeStatus;
 }
 
 void rns::Engine::runApplication(
@@ -1661,6 +1848,7 @@ void rns::Engine::runApplication(
     throw std::invalid_argument("appKey must not be empty");
   }
   parseInitialPropsJson(initialPropsJson);
+  impl_->beginApplicationLaunch();
   impl_->requestRunApplication(std::move(appKey), std::move(initialPropsJson));
 }
 
@@ -1680,10 +1868,12 @@ rns::EngineResult rns::Engine::run() {
     return {.exitCode = 1, .error = "Engine can only run once"};
   }
   impl_->running.store(true);
+  impl_->setRuntimePhase(rns::RuntimePhase::Initializing);
   struct RunState final {
     rns::Engine::Impl& impl;
     ~RunState() {
       setDevSettingsReloadHandler(nullptr);
+      impl.setRuntimePhase(rns::RuntimePhase::Stopped);
       impl.running.store(false);
       impl.finished.store(true);
     }
@@ -1808,6 +1998,10 @@ rns::EngineResult rns::Engine::run() {
     for (;;) {
       ++sessionGeneration;
       impl_->reloadRequested.store(false);
+      impl_->beginRuntimeGeneration(
+          static_cast<std::uint64_t>(sessionGeneration),
+          sessionGeneration > 1 ? rns::RuntimePhase::Reloading
+                                : rns::RuntimePhase::Initializing);
       {
         std::lock_guard lock(impl_->applicationMutex);
         impl_->launchState.runtimeGeneration =
@@ -1816,17 +2010,48 @@ rns::EngineResult rns::Engine::run() {
       if (sessionGeneration > 1) {
         std::cerr << "reloading ReactInstance (generation "
                   << sessionGeneration << ")\n";
+        std::string reloadFetchError;
         for (auto& bundle : impl_->bundles) {
           if (!bundle.http) {
             continue;
           }
           try {
-            bundle.bytes = fetchHttpBundle(bundle.sourceUrl);
+            bundle.bytes = fetchHttpBundle(
+                bundle.sourceUrl,
+                60000,
+                [impl = impl_.get()] { return impl->stopRequested.load(); });
+          } catch (const HttpRequestCancelled&) {
+            if (impl_->stopRequested.load()) {
+              return {.exitCode = 0};
+            }
+            throw;
           } catch (const std::exception& error) {
-            throw std::runtime_error(
-                "Cannot reload bundle from " + bundle.sourceUrl + ": " +
-                error.what());
+            reloadFetchError = "Cannot reload bundle from " +
+                bundle.sourceUrl + ": " + error.what();
+            break;
           }
+        }
+        if (!reloadFetchError.empty()) {
+          {
+            std::lock_guard lock(impl_->applicationMutex);
+            impl_->launchState.lastError = reloadFetchError;
+            impl_->launchState.pending = false;
+          }
+          impl_->recordRuntimeDiagnostic({
+              .kind = rns::RuntimeDiagnosticKind::ApplicationError,
+              .message = reloadFetchError,
+          });
+          impl_->setRuntimePhase(rns::RuntimePhase::PausedAfterError);
+          std::cerr << reloadFetchError << '\n'
+                    << "fix Metro, then use Reload to retry\n";
+          while (!impl_->stopRequested.load() &&
+                 !impl_->reloadRequested.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+          }
+          if (impl_->stopRequested.load()) {
+            return {.exitCode = 1, .error = reloadFetchError};
+          }
+          continue;
         }
         {
           std::lock_guard lock(impl_->applicationMutex);
@@ -1925,6 +2150,42 @@ rns::EngineResult rns::Engine::run() {
         .assetDirectory = options.assetDirectory.value_or(std::filesystem::path{}),
     };
     auto runtimeProfile = createRuntimeProfile(options.profile, moduleHost);
+    std::unordered_map<std::string, std::string> moduleFidelities;
+    for (const auto& capability : runtimeProfile->moduleCapabilities()) {
+      moduleFidelities.emplace(capability.name, capability.fidelity);
+    }
+    for (const auto& capability : addonRegistry.moduleCapabilities()) {
+      moduleFidelities[capability.name] = capability.fidelity;
+    }
+    std::unordered_map<std::string, std::string> componentFidelities{
+        {"Root", "real-fabric-root"},
+        {"RootView", "real-fabric-root"},
+        {"View", "real-fabric-yoga"},
+        {"RawText", "real-fabric-virtual-text"},
+        {"Text", "real-fabric-virtual-text"},
+#if RNS_ENABLE_SKIA
+        {"Paragraph", "skia-prepared-text"},
+#else
+        {"Paragraph", "unavailable-without-skia"},
+#endif
+        {"ScrollView", "headless-viewport-state"},
+#if RNS_ENABLE_SKIA
+        {"Image", "skia-local-and-http-image"},
+#else
+        {"Image", "unavailable-without-skia"},
+#endif
+    };
+    for (const auto& spec : react::kHeadlessOfficialComponents) {
+      componentFidelities[spec.name] =
+          componentFidelityForBuild(spec.fidelity);
+    }
+    componentFidelities[
+        runtimeProfile->platform() == "ios" ? "TextInput"
+                                             : "AndroidTextInput"] =
+        "rn-fabric-headless-platform-adapter";
+    for (const auto& capability : addonRegistry.componentCapabilities()) {
+      componentFidelities[capability.name] = capability.fidelity;
+    }
     auto instance = std::make_unique<react::ReactInstance>(
         std::make_unique<SimulatorHermesRuntime>(std::move(hermesRuntime)),
         eventLoop,
@@ -1944,6 +2205,22 @@ rns::EngineResult rns::Engine::run() {
               impl->launchState.lastError = error.message;
               impl->launchState.pending = false;
             }
+            rns::RuntimeDiagnostic diagnostic{
+                .kind = rns::RuntimeDiagnosticKind::JavaScriptError,
+                .message = error.message,
+                .fatal = error.isFatal,
+            };
+            diagnostic.stack.reserve(error.stack.size());
+            for (const auto& frame : error.stack) {
+              diagnostic.stack.push_back({
+                  .file = frame.file,
+                  .method = frame.methodName,
+                  .line = frame.lineNumber,
+                  .column = frame.column,
+              });
+            }
+            impl->recordRuntimeDiagnostic(std::move(diagnostic));
+            impl->setRuntimePhase(rns::RuntimePhase::PausedAfterError);
             std::cerr << "RN JS error: " << error.message << '\n';
             if (error.message.find(
                     "TurboModuleRegistry.getEnforcing") !=
@@ -2209,7 +2486,7 @@ rns::EngineResult rns::Engine::run() {
                       runtime, "cancelAnimationFrame"),
                   1,
                   [eventLoop](
-                      jsi::Runtime& runtime,
+                      jsi::Runtime&,
                       const jsi::Value&,
                       const jsi::Value* args,
                       size_t count) -> jsi::Value {
@@ -2237,18 +2514,44 @@ rns::EngineResult rns::Engine::run() {
                profile = runtimeProfile.get(),
                &addonRegistry,
                &turboModuleCache,
+               &moduleFidelities,
+               impl = impl_.get(),
+               profileName = options.profile,
                eventLoop](
                   jsi::Runtime& runtime,
                   const std::string& name)
                   -> std::shared_ptr<react::TurboModule> {
+            // React and Metro probe objects for metadata. These are property
+            // reads on nativeModuleProxy, not native-module requests.
+            if (name == "$$typeof" || name == "__esModule") {
+              return nullptr;
+            }
             if (const auto found = turboModuleCache.find(name);
                 found != turboModuleCache.end()) {
               return found->second;
             }
             auto module = getHeadlessTurboModule(
                 runtime, name, *profile, addonRegistry, jsInvoker, eventLoop);
+            const auto fidelity = moduleFidelities.find(name);
             if (module) {
               turboModuleCache.emplace(name, module);
+              impl->recordCapabilityUsage(makeRuntimeCapabilityUsage(
+                  "module",
+                  name,
+                  fidelity == moduleFidelities.end()
+                      ? "available"
+                      : fidelity->second));
+            } else {
+              impl->recordCapabilityUsage(makeRuntimeCapabilityUsage(
+                  "module", name, "unavailable"));
+              impl->recordRuntimeDiagnostic({
+                  .kind = rns::RuntimeDiagnosticKind::MissingNativeModule,
+                  .name = name,
+                  .message = "NativeModule '" + name +
+                      "' is unavailable for " + profileName +
+                      "; provide an explicit addon or continue this flow on "
+                      "Android Emulator.",
+              });
             }
             return module;
           };
@@ -2408,16 +2711,42 @@ rns::EngineResult rns::Engine::run() {
                   options.assetDirectory.value_or(std::filesystem::path{}),
                   runtimeProfile->platform(),
                   addonRegistry.componentCapabilities(),
-                  [inspectorTransport,
+                  [impl = impl_.get(),
+                   componentFidelities = std::move(componentFidelities),
+                   inspectorTransport,
                    &options,
                    platform = runtimeProfile->platform(),
+                   runtimeGeneration =
+                       static_cast<std::uint64_t>(sessionGeneration),
                    &inspectorSequence,
                    &lastPublishedSceneRevision,
                    lastFabric](
                       const HeadlessReactFabricResult& result) mutable {
                     *lastFabric = result;
+                    for (const auto& node : result.mountedViewNodes) {
+                      const auto capability =
+                          componentFidelities.find(node.componentName);
+                      if (capability != componentFidelities.end()) {
+                        impl->recordCapabilityUsage(makeRuntimeCapabilityUsage(
+                            "component",
+                            capability->first,
+                            capability->second));
+                      }
+                    }
+                    for (const auto& name : result.fallbackComponentNames) {
+                      impl->recordCapabilityUsage(makeRuntimeCapabilityUsage(
+                          "component", name, "fallback-descriptor"));
+                      impl->recordRuntimeDiagnostic({
+                          .kind = rns::RuntimeDiagnosticKind::FallbackComponent,
+                          .name = name,
+                          .message = "Fabric component '" + name +
+                              "' is using a fallback descriptor; its pixels "
+                              "and behavior are not Android-equivalent.",
+                      });
+                    }
                     if (options.onSceneUpdate) {
-                      options.onSceneUpdate(makeSceneSnapshot(options, result));
+                      options.onSceneUpdate(makeSceneSnapshot(
+                          options, result, runtimeGeneration));
                       lastPublishedSceneRevision = result.mountingRevision;
                     }
                     if (inspectorTransport) {
@@ -2436,10 +2765,17 @@ rns::EngineResult rns::Engine::run() {
                               ("scene", makeSceneWireSnapshot(options, result))));
                     }
                   });
-          hostChrome().onInvalidate = [eventLoop, lastFabric, &options]() {
-            eventLoop->runOnQueue([lastFabric, &options]() {
+          hostChrome().onInvalidate = [
+              eventLoop,
+              lastFabric,
+              &options,
+              runtimeGeneration =
+                  static_cast<std::uint64_t>(sessionGeneration)]() {
+            eventLoop->runOnQueue([
+                lastFabric, &options, runtimeGeneration]() {
               if (options.onSceneUpdate) {
-                options.onSceneUpdate(makeSceneSnapshot(options, *lastFabric));
+                options.onSceneUpdate(makeSceneSnapshot(
+                    options, *lastFabric, runtimeGeneration));
               }
             });
           };
@@ -2451,6 +2787,7 @@ rns::EngineResult rns::Engine::run() {
     if (!runtimeInitialized) {
       throw std::runtime_error("ReactInstance initialization timed out");
     }
+    impl_->setRuntimePhase(rns::RuntimePhase::LoadingBundle);
     if (inspectorTransport) {
       inspectorTransport->sendJson(folly::toJson(folly::dynamic::object
           ("type", "status")
@@ -2515,6 +2852,11 @@ rns::EngineResult rns::Engine::run() {
           impl_->launchState.lastError = record.error;
           impl_->launchState.pending = false;
         }
+        impl_->recordRuntimeDiagnostic({
+            .kind = rns::RuntimeDiagnosticKind::ApplicationError,
+            .message = record.error,
+        });
+        impl_->setRuntimePhase(rns::RuntimePhase::PausedAfterError);
         bundleRecords.push_back(std::move(record));
         if (promise) {
           const auto message = bundleRecords.back().error;
@@ -2554,6 +2896,13 @@ rns::EngineResult rns::Engine::run() {
           std::lock_guard lock(impl_->applicationMutex);
           impl_->launchState.lastError = record.error;
           impl_->launchState.pending = false;
+        }
+        if (jsErrorCount == errorsBeforeLoad) {
+          impl_->recordRuntimeDiagnostic({
+              .kind = rns::RuntimeDiagnosticKind::ApplicationError,
+              .message = record.error,
+          });
+          impl_->setRuntimePhase(rns::RuntimePhase::PausedAfterError);
         }
       } else {
         combinedBundleData.append(contents);
@@ -2661,17 +3010,37 @@ rns::EngineResult rns::Engine::run() {
           const auto initialProps =
               parseInitialPropsJson(request->initialPropsJson);
           impl_->applyHostApplication(
-              runtime, request->appKey, initialProps);
+              runtime,
+              request->appKey,
+              initialProps,
+              request->initialPropsJson);
+          impl_->setRuntimePhase(rns::RuntimePhase::Running);
           std::cerr << "running AppRegistry application " << request->appKey
                     << '\n';
         } catch (const jsi::JSError& error) {
-          std::lock_guard lock(impl_->applicationMutex);
-          impl_->launchState.lastError = error.getMessage();
-          impl_->launchState.pending = false;
+          const auto message = error.getMessage();
+          {
+            std::lock_guard lock(impl_->applicationMutex);
+            impl_->launchState.lastError = message;
+            impl_->launchState.pending = false;
+          }
+          impl_->recordRuntimeDiagnostic({
+              .kind = rns::RuntimeDiagnosticKind::ApplicationError,
+              .message = message,
+          });
+          impl_->setRuntimePhase(rns::RuntimePhase::ChoosingApplication);
         } catch (const std::exception& error) {
-          std::lock_guard lock(impl_->applicationMutex);
-          impl_->launchState.lastError = error.what();
-          impl_->launchState.pending = false;
+          const std::string message = error.what();
+          {
+            std::lock_guard lock(impl_->applicationMutex);
+            impl_->launchState.lastError = message;
+            impl_->launchState.pending = false;
+          }
+          impl_->recordRuntimeDiagnostic({
+              .kind = rns::RuntimeDiagnosticKind::ApplicationError,
+              .message = message,
+          });
+          impl_->setRuntimePhase(rns::RuntimePhase::ChoosingApplication);
         }
         done = true;
       });
@@ -2704,12 +3073,24 @@ rns::EngineResult rns::Engine::run() {
         break;
       }
       if (metro) {
+        impl_->setHMRStatus(rns::HMRStatus::Enabling);
+        const auto errorsBeforeHMRSetup = jsErrorCount;
         try {
           setupHMRClient(*instance, *metro);
           eventLoopTasks += eventLoop->drainUntilIdle();
-          std::cerr << "Fast Refresh listening on "
-                    << metro->host << ":" << metro->port << '\n';
+          if (jsErrorCount != errorsBeforeHMRSetup) {
+            const auto message = jsErrors.empty()
+                ? std::string{"HMRClient.setup raised a JavaScript error"}
+                : jsErrors.back().message;
+            impl_->setHMRStatus(rns::HMRStatus::Failed, message);
+            std::cerr << "HMRClient.setup failed: " << message << '\n';
+          } else {
+            impl_->setHMRStatus(rns::HMRStatus::Enabled);
+            std::cerr << "Fast Refresh client enabled for "
+                      << metro->host << ":" << metro->port << '\n';
+          }
         } catch (const std::exception& error) {
+          impl_->setHMRStatus(rns::HMRStatus::Failed, error.what());
           std::cerr << "HMRClient.setup failed: " << error.what() << '\n';
         }
       }
@@ -2720,8 +3101,9 @@ rns::EngineResult rns::Engine::run() {
       std::lock_guard lock(impl_->applicationMutex);
       impl_->launchState.initialBundlesLoaded = true;
     }
-    if (developmentMode && options.autoRunApplication && !bundleLoadFailed &&
-        jsErrorCount == 0) {
+    if (developmentMode && !rerunAppKey && options.autoRunApplication &&
+        !bundleLoadFailed && jsErrorCount == 0) {
+      impl_->setRuntimePhase(rns::RuntimePhase::StartingApplication);
       bool applicationStarted = false;
       bool applicationSelectionRequired = false;
       std::string applicationStartError;
@@ -2736,17 +3118,24 @@ rns::EngineResult rns::Engine::run() {
           const auto appKey = resolveAutoRunAppKey(keys, options.appKey);
           if (!appKey) {
             applicationSelectionRequired = true;
+            if (options.appKey) {
+              std::ostringstream message;
+              message << "Configured AppRegistry key '" << *options.appKey
+                      << "' is not registered";
+              if (!keys.empty()) {
+                message << "; registered keys:";
+                for (const auto& key : keys) {
+                  message << ' ' << key;
+                }
+              }
+              applicationStartError = message.str();
+            }
             return;
           }
           const auto initialProps =
               parseInitialPropsJson(options.initialPropsJson);
-          {
-            std::lock_guard lock(impl_->applicationMutex);
-            impl_->lastInitialPropsJson = options.initialPropsJson.empty()
-                ? "{}"
-                : options.initialPropsJson;
-          }
-          impl_->applyHostApplication(runtime, *appKey, initialProps);
+          impl_->applyHostApplication(
+              runtime, *appKey, initialProps, options.initialPropsJson);
           applicationStarted = true;
           std::cerr << "running AppRegistry application " << *appKey << '\n';
         } catch (const jsi::JSError& error) {
@@ -2762,18 +3151,42 @@ rns::EngineResult rns::Engine::run() {
           },
           remainingTimeout());
       if (applicationSelectionRequired) {
+        impl_->setRuntimePhase(rns::RuntimePhase::ChoosingApplication);
+        if (!applicationStartError.empty()) {
+          {
+            std::lock_guard lock(impl_->applicationMutex);
+            impl_->launchState.lastError = applicationStartError;
+          }
+          impl_->recordRuntimeDiagnostic({
+              .kind = rns::RuntimeDiagnosticKind::ApplicationError,
+              .message = applicationStartError,
+          });
+        }
         std::cerr
             << "multiple or no AppRegistry applications are available; "
-               "select one from Pages\n";
+               "select one from the App panel\n";
       } else if (!applicationStarted) {
-        throw std::runtime_error(
-            applicationStartError.empty()
-                ? "AppRegistry.runApplication timed out"
-                : applicationStartError);
+        applicationStartError = applicationStartError.empty()
+            ? "AppRegistry.runApplication timed out"
+            : applicationStartError;
+        {
+          std::lock_guard lock(impl_->applicationMutex);
+          impl_->launchState.lastError = applicationStartError;
+          impl_->launchState.pending = false;
+        }
+        impl_->recordRuntimeDiagnostic({
+            .kind = rns::RuntimeDiagnosticKind::ApplicationError,
+            .message = applicationStartError,
+        });
+        impl_->setRuntimePhase(rns::RuntimePhase::PausedAfterError);
+        bundleLoadFailed = true;
+      } else {
+        impl_->setRuntimePhase(rns::RuntimePhase::Running);
       }
     } else if (
         developmentMode && rerunAppKey && !bundleLoadFailed &&
         jsErrorCount == 0) {
+      impl_->setRuntimePhase(rns::RuntimePhase::StartingApplication);
       bool applicationStarted = false;
       std::string applicationStartError;
       runtimeExecutor([&](jsi::Runtime& runtime) {
@@ -2781,7 +3194,10 @@ rns::EngineResult rns::Engine::run() {
           const auto initialProps =
               parseInitialPropsJson(rerunInitialPropsJson);
           impl_->applyHostApplication(
-              runtime, *rerunAppKey, initialProps);
+              runtime,
+              *rerunAppKey,
+              initialProps,
+              rerunInitialPropsJson);
           applicationStarted = true;
           std::cerr << "re-running AppRegistry application " << *rerunAppKey
                     << '\n';
@@ -2795,12 +3211,29 @@ rns::EngineResult rns::Engine::run() {
           [&] { return applicationStarted || !applicationStartError.empty(); },
           remainingTimeout());
       if (!applicationStarted) {
+        applicationStartError = applicationStartError.empty()
+            ? "AppRegistry.runApplication timed out"
+            : applicationStartError;
         std::cerr << "reload did not restore "
                   << *rerunAppKey << ": "
-                  << (applicationStartError.empty() ? "timed out"
-                                                    : applicationStartError)
+                  << applicationStartError
                   << '\n';
+        {
+          std::lock_guard lock(impl_->applicationMutex);
+          impl_->launchState.lastError = applicationStartError;
+          impl_->launchState.pending = false;
+        }
+        impl_->recordRuntimeDiagnostic({
+            .kind = rns::RuntimeDiagnosticKind::ApplicationError,
+            .message = applicationStartError,
+        });
+        impl_->setRuntimePhase(rns::RuntimePhase::PausedAfterError);
+        bundleLoadFailed = true;
+      } else {
+        impl_->setRuntimePhase(rns::RuntimePhase::Running);
       }
+    } else if (developmentMode && !bundleLoadFailed && jsErrorCount == 0) {
+      impl_->setRuntimePhase(rns::RuntimePhase::ChoosingApplication);
     }
     while (!bundleLoadFailed && jsErrorCount == 0) {
       processQueuedActions();
@@ -2844,6 +3277,7 @@ rns::EngineResult rns::Engine::run() {
     }
     if (developmentMode && (bundleLoadFailed || jsErrorCount > 0) &&
         !impl_->stopRequested.load() && !impl_->reloadRequested.load()) {
+      impl_->setRuntimePhase(rns::RuntimePhase::PausedAfterError);
       std::cerr
           << "interactive runtime paused after an error; fix the bundle, then "
              "use Reload or Metro's r command\n";
@@ -2855,6 +3289,7 @@ rns::EngineResult rns::Engine::run() {
     const bool shouldReload = developmentMode &&
         impl_->reloadRequested.load() && !impl_->stopRequested.load();
     if (shouldReload) {
+      impl_->setRuntimePhase(rns::RuntimePhase::Reloading);
       std::optional<int> rootTag;
       {
         std::lock_guard lock(impl_->applicationMutex);
@@ -3038,9 +3473,14 @@ rns::EngineResult rns::Engine::run() {
         ("Paragraph", "unavailable-without-skia")
 #endif
         ("ScrollView", "headless-viewport-state")
+#if RNS_ENABLE_SKIA
         ("Image", "skia-local-and-http-image");
+#else
+        ("Image", "unavailable-without-skia");
+#endif
     for (const auto& spec : react::kHeadlessOfficialComponents) {
-      frameworkComponentCapabilities[spec.name] = spec.fidelity;
+      frameworkComponentCapabilities[spec.name] =
+          componentFidelityForBuild(spec.fidelity);
     }
     if (runtimeProfile->platform() == "ios") {
       frameworkComponentCapabilities["TextInput"] =
@@ -3518,7 +3958,10 @@ rns::EngineResult rns::Engine::run() {
               << "\"jsErrorDetails\":"
               << folly::toJson(jsErrorMetadata) << "}\n";
     const auto metricsJson = metrics.str();
-    auto scene = makeSceneSnapshot(options, reactFabric);
+    auto scene = makeSceneSnapshot(
+        options,
+        reactFabric,
+        static_cast<std::uint64_t>(sessionGeneration));
     if (options.onSceneUpdate &&
         lastPublishedSceneRevision != scene->revision) {
       options.onSceneUpdate(scene);

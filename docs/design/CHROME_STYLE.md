@@ -162,7 +162,7 @@ Quiet dark instrument. The shell recedes; the Skia device does the talking.
 |---|---|---|
 | `{colors.canvas}` | `#07080A` | Window floor, toolbar, SDL clear, macOS titlebar fill |
 | `{colors.window}` | `#0C0D10` | Unused outer chrome; keep one step above canvas |
-| `{colors.panel}` | `#101114` | ShadowTree + Pages side panels |
+| `{colors.panel}` | `#101114` | ShadowTree + App side panels |
 | `{colors.panel-alt}` | `#0D0E11` | Device column — darker so the raster pops |
 | `{colors.elevated}` | `#16171C` | Dialogs, selected segment, bezel, keycaps |
 | `{colors.frame}` | `#1C1E26` | Inputs, segmented track, neutral buttons |
@@ -202,7 +202,7 @@ fallback. Do not bundle Inter, Geist, or JetBrains Mono for host chrome.
 |---|---|---|---|
 | `{typography.ui}` | 14px | 400 | Default ImGui text |
 | `{typography.ui-strong}` | 14px | 500 | Buttons, selected rows |
-| `{typography.panel-title}` | 14px | 600 | Device / Pages / ShadowTree headers |
+| `{typography.panel-title}` | 14px | 600 | Device / App / ShadowTree headers |
 | `{typography.caption}` | 12px | 400 | Viewport subtitle, running app key, hints |
 | `{typography.keycap}` | 11px | 500 | Shortcut glyphs |
 | `{typography.mono}` | 12px | 400 | Logs and JSON if a mono face is present |
@@ -215,22 +215,22 @@ No display sizes. This is not a marketing surface.
 
 - **Primary** — `{colors.accent}` fill, `{colors.on-accent}` text,
   `{rounded.sm}` 6px, ~32–36px tall. One visible primary per region
-  (`Run` / `Re-run`, dialog confirm). Not a pill.
+  (`Run` / `Restart App`, dialog confirm). Not a pill.
 - **Neutral** — `{colors.frame}` fill, ink text. Secondary dialog actions.
 - **Ghost** — transparent, muted text. Dismiss / Copy / Clear.
 - **Danger** — danger-tinted fill, `{colors.danger}` text. Deny / negative.
 
-Never use the accent fill for Interact/Select. That control is a segmented
+Never use the accent fill for Interact/Inspect. That control is a segmented
 track, not a CTA.
 
-### Segmented control (Interact / Select)
+### Segmented control (Interact / Inspect)
 
 Raycast surface-lift:
 
 - Track: `{colors.frame}` + hairline, `{rounded.sm}`.
 - Selected: `{colors.elevated}` + `{colors.ink}`.
 - Unselected: transparent + `{colors.muted}`.
-- Shortcut keycaps `1` / `2` sit inside each segment.
+- Shortcut keycaps `⌘1` / `⌘2` sit inside each segment.
 
 ### Keycap
 
@@ -254,8 +254,9 @@ The Skia texture is the product screenshot.
   radius `{rounded.device}` 16px, 12px inset.
 - At most one soft product shadow under the bezel
   (`rgba(0,0,0,0.28)`). No stacked glow rings.
-- Empty well: `{colors.canvas}` + hairline + centered muted
-  “Select a page, then Run”.
+- Empty well: `{colors.canvas}` + hairline + a centered, muted lifecycle
+  message such as “Waiting for Metro…”, “Starting the application…”, or the
+  current recovery action.
 - Hover overlay: lavender wash + `{colors.accent-hover}` stroke.
 - Selected overlay: amber wash + `{colors.inspect}` stroke and label.
 
@@ -264,8 +265,24 @@ Do not round, tint, or re-composite RN pixels in ImGui.
 ### Status chips
 
 Pill, 3×8px padding, 28-alpha wash of the semantic color, matching
-foreground, optional 3.4px live dot. `live` / `stopped` / `PASS` /
-`CHECK` / `replay`.
+foreground, optional 3.4px live dot. The primary interactive lifecycle states
+are `preparing`, `prepare failed`, `starting runtime`, `loading`, `starting app`,
+`choose app`, `live`, `reloading`, `error`, and `stopped`. A second chip may show
+`Enabling Fast Refresh…`, `Fast Refresh enabled`, or `Fast Refresh failed`.
+Enabling and enabled use the Info tone; this reflects RN HMR client setup, not
+continuous Metro WebSocket health. Offline Inspector uses `PASS` / `CHECK` /
+`replay`.
+
+### Reload and recovery
+
+Use **Reload** after the initial bundle has loaded into an active Engine. For a
+Metro timeout, bundle-fetch error, or another transactional preparation failure
+before the Engine starts, switch that toolbar action to **Retry**.
+`⌘R` invokes the currently visible recovery action. Keep the App panel open so
+the user can correct the diagnostic before retrying. Retry is the primary
+accent action in that recovery state; normal Reload remains a ghost action.
+Suppress another Retry while preparation is already in flight. Enable Reload
+only for Running, PausedAfterError, and ChoosingApplication.
 
 ### Inputs
 
@@ -288,15 +305,23 @@ selection uses accent wash, not amber. Amber is device-overlay only.
 ## 5. Layout Principles
 
 ```text
-[ traffic lights | live | Interact 1 | Select 2 | appKey ]
-----------------------------------------------------------
-[ ShadowTree 220–268 ] [ Device (flex) ] [ Pages 244–292 ]
+[ traffic lights | status | Interact ⌘1 | Inspect ⌘2 | Reload | App ]
+---------------------------------------------------------------------
+[                         Device (flex)                              ]
+
+Inspect: [ ShadowTree 220–268 ] [ Device (flex) ]
+App chooser/error: [ Device (flex) ] [ App 244–292 ]
 ```
 
 - Base unit 4px. Panel padding 12px. Workspace gutter 8px.
 - Toolbar shares the Dark Aqua titlebar row. No second window title.
-- Device column is optically centered; side panels are tools, not peers
-  of the raster.
+- Device is the default protagonist. ShadowTree appears only in Inspect;
+  ambiguous AppRegistry keys and blocking errors force App visible. A newly
+  observed compatibility warning opens it once. Closing the panel keeps it
+  closed until another warning appears; an explicit request can always open it.
+- Entering Inspect cancels an active application pointer and isolates normal
+  pointer, keyboard, and TextInput dispatch. `⌘1`, `⌘2`, `⌘R`, and Inspect Escape
+  remain available.
 - Minimum window 960×640. Comfortable default 1280×860.
 
 ## 6. Depth & Elevation
@@ -319,14 +344,14 @@ No gradients, no glass, no neon.
 - Spend `{colors.accent}` on Run, focus, and hover-inspect only.
 - Use surface lift for selection in lists and segmented controls.
 - Load SF Pro from the OS. Keep CJK fallback.
-- Put shortcuts in keycaps (`1` / `2`).
+- Put shortcuts in keycaps (`⌘1` / `⌘2`).
 - Fail closed: missing Skia/fonts still must not invent a fake renderer.
 
 ### Don't
 
 - Don’t ship light mode.
 - Don’t fill Interact with accent — Run is the only filled CTA in the
-  toolbar/pages column.
+  toolbar/App panel.
 - Don’t restyle RN components with ImGui. Dear ImGui is host chrome.
 - Don’t copy Expo’s white canvas or Apple’s pill CTAs into this tool.
 - Don’t add a second brand hue, decorative gradient, or Inter/Geist.
@@ -338,8 +363,8 @@ ImGui desktop window, not a website.
 
 | Width | Layout |
 |---|---|
-| ≥ 1280 | Three columns at the clamps above |
-| 960–1279 | Same three columns, device flex shrinks first |
+| ≥ 1280 | Device-first; requested side panels use the clamps above |
+| 960–1279 | Same conditional panels; device flex uses the remaining width |
 | < 960 | Window minimum; do not stack into a mobile marketing layout |
 
 Hit targets: buttons ≥ 32px tall, segmented ≥ frame height, keycaps are

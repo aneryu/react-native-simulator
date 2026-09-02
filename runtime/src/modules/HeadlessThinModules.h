@@ -13,3 +13,9 @@ std::shared_ptr<facebook::react::TurboModule> createHeadlessDevLoadingView(
     std::shared_ptr<facebook::react::CallInvoker> jsInvoker);
 std::shared_ptr<facebook::react::TurboModule> createHeadlessRedBox(
     std::shared_ptr<facebook::react::CallInvoker> jsInvoker);
+std::shared_ptr<facebook::react::TurboModule>
+createHeadlessReactDevToolsSettingsManager(
+    std::shared_ptr<facebook::react::CallInvoker> jsInvoker);
+std::shared_ptr<facebook::react::TurboModule>
+createHeadlessReactDevToolsRuntimeSettingsModule(
+    std::shared_ptr<facebook::react::CallInvoker> jsInvoker);

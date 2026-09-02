@@ -16,6 +16,15 @@ runtime scheduler, Fabric/Yoga, Android-facing framework TurboModules, the
 official component descriptor set, host environment events, and the Skia-backed
 visual adapters documented in the capability baseline.
 
+RN 0.87 deprecates official `SafeAreaView` in favor of
+`react-native-safe-area-context`. The current addon ABI cannot emit the Fabric
+`topInsetsChange` event that `SafeAreaProvider` needs before it renders
+children, so `android-rn87` and `ios-rn87` temporarily host-adapt
+`RNCSafeAreaContext`, `RNCSafeAreaProvider`, and `RNCSafeAreaView`. Insets are
+window-relative: the host draws notch/status and nav chrome around the RN
+window, so a root provider reports no overlap. This is a transitional exception
+to the addon boundary, not Android 15 edge-to-edge certification.
+
 `ios-rn87` selects the iOS-facing module surface while keeping the same macOS
 semantic engine. `android-rn73` is retained for explicit external RN 0.73 bundle
 conformance. A profile mismatch is reported; the host does not pretend that one

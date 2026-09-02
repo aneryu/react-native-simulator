@@ -4,16 +4,17 @@
 
 # React Native Simulator
 
-**This project is implemented entirely by AI.** Its purpose is to run React
-Native applications without Android or iOS physical devices, emulators, or
-simulators. Removing that dependency reduces friction in the React Native AI
-agent loop, so development and optimization iterations can run faster and more
-smoothly.
+**This project is implemented entirely by AI.** React Native Simulator shortens
+the React Native developer and AI-agent loop by providing a native macOS target
+for caller-owned applications. Within its documented React Native 0.87 Android
+capability baseline, it can replace part of the edit, run, inspect, and diagnose
+workflow that normally requires an Android Emulator.
 
-React Native Simulator is an experimental native React Native runtime and
-renderer for macOS. It runs caller-provided React Native applications with
-Hermes, ReactInstance, RuntimeScheduler, Fabric, Yoga, and Skia, without an iOS
-Simulator, Android Emulator, or mobile client process.
+It is not an Android OS emulator or a drop-in replacement for every device
+workflow. Unsupported components, native modules, device services, OEM behavior,
+and release validation still require an explicit addon or a real Android target.
+The supported path runs Hermes, ReactInstance, RuntimeScheduler, Fabric, Yoga,
+and Skia directly on macOS without an Android client process.
 
 ![React Native Simulator running RN Tester interactively](docs/assets/rnsim-interactive.png)
 
@@ -60,11 +61,12 @@ export PATH="$HOME/.local/bin:$PATH"
 rnsim --version
 ```
 
-The installer removes quarantine after confirmation, copies the complete tree
-to `~/.local/lib/react-native-simulator/0.1.0`, and links `rnsim` into
-`~/.local/bin`. It does not use sudo or edit shell configuration. The runtime is
-self-contained and does not require a React Native checkout, Node.js, npm, or
-Homebrew.
+When Gatekeeper assessment requires it, the installer removes quarantine after
+confirmation. It copies the complete tree to
+`~/.local/lib/react-native-simulator/0.1.0` and links `rnsim` into
+`~/.local/bin`. It does not use sudo or edit shell configuration. The runtime
+itself is self-contained and does not require a React Native checkout, Node.js,
+npm, or Homebrew.
 
 ### Run your React Native app
 
@@ -82,14 +84,31 @@ rnsim
 ```
 
 The default target is Android. `rnsim` opens the host window immediately while
-it connects to Metro on localhost:8081; closing the window cancels the wait. It
-reads the standard project entry and `app.json`, and automatically runs the
-configured or only registered AppRegistry application. It opens the Pages
-chooser only when multiple application keys require a decision. Save a
-component to exercise Fast Refresh; Metro's `r` command requests an in-process
-reload while the interactive window stays open. If initial evaluation fails,
-the error appears in the Pages log and the session remains recoverable: fix the
-bundle, then click **Reload** or press `r` in Metro.
+it connects to Metro on localhost:8081; closing the window cancels the wait.
+The selected Metro source owns the bundle regardless of the directory where
+`rnsim` was launched. `rnsim doctor` reports a detected project-root mismatch or
+probe failure as diagnostic evidence without blocking launch.
+
+The live workspace is application-first: Device is the default view, the
+standard project entry and `app.json` are discovered, and the configured or
+only registered AppRegistry application runs automatically. Several application
+keys or a blocking error force the App panel open. A newly observed compatibility
+warning opens it once and remains dismissible; you can also request it from the
+toolbar. **Inspect** (`⌘2`) opens the ShadowTree element picker, cancels any
+active application pointer, and isolates normal pointer, keyboard, and TextInput
+dispatch while inspection is active. `⌘1`, `⌘2`, `⌘R`, and Inspect Escape remain
+available.
+
+Save a component to exercise Fast Refresh. Metro's `r` command, **Reload**, or
+`⌘R` requests an in-process reload while the interactive window stays open. If
+JavaScript evaluation fails after the initial bundle loads, fix the source and
+reload. Reload is available while the Engine is running, paused after an error,
+or waiting for an application choice. If preparation fails before a bundle
+reaches the Engine, correct the reported Metro or bundle problem and use
+**Retry** or `⌘R`; another Retry is ignored while that attempt is in flight.
+Preparation is transactional for remote sources, so it can fetch and validate
+them again without queueing any fetched remote bundle until all remote sources
+succeed, and without closing the window.
 
 `rnsim` deliberately does not launch Metro or own the caller's Babel,
 TypeScript, or bundle configuration. See
@@ -160,7 +179,13 @@ cmake --install build/release \
 External CMake projects can use
 `find_package(ReactNativeSimulator 0.1.0 EXACT CONFIG REQUIRED)` and link
 `ReactNativeSimulator::Engine`.
-The installed CMake package supports the embedding Engine API. Native addon
+The installed CMake package supports the embedding Engine API. Embedders can
+query `Engine::runtimeStatus()` for the runtime generation and phase, HMR state,
+structured JavaScript/application diagnostics, and observed native-module plus
+mounted official, addon, or fallback-component capability usage. The live
+interface consumes this status: the toolbar shows lifecycle and HMR state, while
+the App panel shows structured errors, JavaScript stack frames, and capabilities
+or degradations actually observed by the current generation. Native addon
 authoring still requires the exact source checkout and pinned RN/Hermes headers;
 the compact archive is not a standalone addon SDK.
 
@@ -273,6 +298,8 @@ reproducible archives.
 
 - owning Metro, Babel, TypeScript, or an application bundle pipeline;
 - replacing the caller's application with a repository sample;
+- replacing Android Emulator or real-device workflows outside the documented
+  capability baseline, including OEM behavior and release validation;
 - claiming mocks, placeholders, or macOS adapters are Android/iOS equivalent;
 - maintaining separate semantic engines for GUI, headless, and conformance;
 - becoming a standalone Hermes runner or benchmark-only product.

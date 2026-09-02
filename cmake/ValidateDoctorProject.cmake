@@ -34,15 +34,23 @@ if(NOT detected OR NOT compatible OR NOT preflight_passed OR
    NOT profile STREQUAL "android-rn87" OR
    NOT app_key STREQUAL "DoctorFixture" OR
    NOT first_entry STREQUAL "index.js" OR
-   NOT metro_required OR metro_project_verified)
+   NOT metro_required)
   message(FATAL_ERROR "Unexpected project doctor report: ${report}")
 endif()
 
-# /status only proves reachability, never that Metro serves this fixture.
+# Metro project identity is diagnostic only. A reachable Metro is launch-ready
+# even when its reported root differs from this fixture or cannot be verified.
 if(metro_running)
-  if(NOT status STREQUAL "compatible-metro-reachable" OR
-     NOT ready_to_launch)
-    message(FATAL_ERROR "Doctor overclaimed Metro project ownership: ${report}")
+  if(metro_project_verified)
+    if(NOT status STREQUAL "compatible-metro-verified" OR
+       NOT ready_to_launch)
+      message(FATAL_ERROR "Doctor omitted verified Metro readiness: ${report}")
+    endif()
+  elseif(NOT ready_to_launch OR
+         (NOT status STREQUAL "metro-project-mismatch" AND
+          NOT status STREQUAL "metro-project-unverified") OR
+         next_action STREQUAL "")
+    message(FATAL_ERROR "Doctor blocked on Metro project identity: ${report}")
   endif()
 elseif(ready_to_launch OR
        NOT status STREQUAL "compatible-metro-not-running" OR
