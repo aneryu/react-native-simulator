@@ -1445,6 +1445,13 @@ void validateSkiaFontDirectory(
   }
 }
 
+float snapPlaceholderExtent(float value) {
+  // SkParagraph placeholder rects can land 1 ulp below the requested size on
+  // FreeType/FontConfig. Yoga and retained-scene consumers need the size that
+  // was passed to PlaceholderStyle.
+  return std::round(value * 64.0f) / 64.0f;
+}
+
 struct PreparedWavySpan {
   std::size_t utf16Start{0};
   std::size_t utf16End{0};
@@ -1526,8 +1533,8 @@ class SkiaPreparedParagraph::Impl {
       attachments.push_back({
           .x = box.rect.x(),
           .y = box.rect.y(),
-          .width = box.rect.width(),
-          .height = box.rect.height(),
+          .width = snapPlaceholderExtent(box.rect.width()),
+          .height = snapPlaceholderExtent(box.rect.height()),
           .clipped = false});
     }
     // SkParagraph keeps U+FFFC placeholders in logical order inside an LTR
