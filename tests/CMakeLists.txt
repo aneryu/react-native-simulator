@@ -1,6 +1,8 @@
 find_package(Boost CONFIG REQUIRED)
-find_package(Python3 COMPONENTS Interpreter REQUIRED)
 find_package(Threads REQUIRED)
+if(RNS_ENABLE_IMGUI)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+endif()
 
 set(RNS_TEST_FIXTURES_DIR "${CMAKE_CURRENT_LIST_DIR}/fixtures")
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
@@ -79,6 +81,13 @@ if(RNS_ENABLE_SKIA AND RNS_ENABLE_IMGUI)
       --output
         "${CMAKE_BINARY_DIR}/tests/interactive-preparation-cancel.json")
   set_tests_properties(interactive-preparation-cancel PROPERTIES TIMEOUT 10)
+  add_test(NAME cli-doctor-metro-project
+    COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_LIST_DIR}/metro-project-identity.py"
+      --rnsim $<TARGET_FILE:react-native-simulator>
+      --project-root "${RNS_TEST_FIXTURES_DIR}/doctor-project"
+      --other-root "${RNS_TEST_FIXTURES_DIR}")
+  set_tests_properties(cli-doctor-metro-project PROPERTIES TIMEOUT 10)
 endif()
 
 add_test(NAME runtime-embedding-api COMMAND runtime-api-smoke)
@@ -109,12 +118,6 @@ add_test(NAME cli-doctor-project
     -DRNSIM=$<TARGET_FILE:react-native-simulator>
     -DPROJECT_DIR=${RNS_TEST_FIXTURES_DIR}/doctor-project
     -P "${PROJECT_SOURCE_DIR}/cmake/ValidateDoctorProject.cmake")
-add_test(NAME cli-doctor-metro-project
-  COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_LIST_DIR}/metro-project-identity.py"
-    --rnsim $<TARGET_FILE:react-native-simulator>
-    --project-root "${RNS_TEST_FIXTURES_DIR}/doctor-project"
-    --other-root "${RNS_TEST_FIXTURES_DIR}")
 add_test(NAME cli-conformance-unavailable
   COMMAND $<TARGET_FILE:react-native-simulator> test
     --bundle "${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js")
@@ -293,7 +296,7 @@ endif()
 set_tests_properties(runtime-source runtime-bytecode runtime-multi-bundle
   runtime-trace validate-runtime-trace rn73-profile rn87-profile
   runtime-embedding-api local-config cli-no-legacy-command
-  cli-version cli-doctor cli-doctor-project cli-doctor-metro-project
+  cli-version cli-doctor cli-doctor-project
   cli-conformance-unavailable
   cli-profile-platform-conflict
   metro-http-source cli-help
