@@ -18,10 +18,19 @@ modes.
 ## Build and test
 
 ```sh
+# macOS
 cmake/bootstrap-skia-macos.sh
 cmake --preset release
 cmake --build --preset release
 ctest --preset release
+
+# Linux headless core
+cmake -S . -B build/release -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DRNS_ENABLE_SKIA=OFF \
+  -DRNS_ENABLE_IMGUI=OFF
+cmake --build build/release
+ctest --test-dir build/release --output-on-failure
 ```
 
 Run the narrowest relevant smoke first. Runtime changes should normally include

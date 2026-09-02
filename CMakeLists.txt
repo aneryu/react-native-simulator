@@ -144,9 +144,6 @@ if(NOT RNS_GLOG_COMMIT_RESULT EQUAL 0 OR
 endif()
 
 if(RNS_ENABLE_SKIA)
-  if(NOT APPLE)
-    message(FATAL_ERROR "The current Skia renderer bootstrap requires macOS")
-  endif()
   foreach(required_skia_path
       "${RNS_SKIA_DIR}/include/core/SkCanvas.h"
       "${RNS_SKIA_DIR}/modules/skparagraph/include/Paragraph.h"
@@ -279,6 +276,7 @@ endif()
 set(RN_ROOT "${RNS_REACT_NATIVE_DIR}")
 set(HERMES_SOURCE "${RNS_HERMES_DIR}")
 set(HERMES_BINARY_DIR "${CMAKE_BINARY_DIR}/hermes")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/HostDependencies.cmake")
 add_subdirectory(runtime)
 
 include(CTest)

@@ -34,6 +34,7 @@
 #include "HeadlessRNModules.h"
 #include "HeadlessTurboModules.h"
 #include "RuntimeProfile.h"
+#include "HostPlatform.h"
 #include <react/featureflags/ReactNativeFeatureFlags.h>
 #include <react/featureflags/ReactNativeFeatureFlagsDynamicProvider.h>
 #if RNS_ENABLE_SKIA
@@ -65,7 +66,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include <mach/mach.h>
 #include <sys/resource.h>
 #include <unistd.h>
 
@@ -1595,18 +1595,11 @@ static RuntimeMetrics readRuntimeMetrics(jsi::Runtime& runtime) {
     }
   }
 
-  mach_task_basic_info_data_t taskInfo{};
-  mach_msg_type_number_t taskInfoCount = MACH_TASK_BASIC_INFO_COUNT;
-  if (task_info(
-          mach_task_self(),
-          MACH_TASK_BASIC_INFO,
-          reinterpret_cast<task_info_t>(&taskInfo),
-          &taskInfoCount) == KERN_SUCCESS) {
-    result.residentBytes = taskInfo.resident_size;
-  }
+  const auto memory = sampleHostMemory();
+  result.residentBytes = memory.residentBytes;
+  result.peakResidentBytes = memory.peakResidentBytes;
   rusage usage{};
   if (getrusage(RUSAGE_SELF, &usage) == 0) {
-    result.peakResidentBytes = static_cast<uint64_t>(usage.ru_maxrss);
     result.processUserCpuMs =
         usage.ru_utime.tv_sec * 1000.0 + usage.ru_utime.tv_usec / 1000.0;
     result.processSystemCpuMs =
@@ -2231,7 +2224,7 @@ rns::EngineResult rns::Engine::run() {
                   << "rnsim: a required native module is missing. "
                      "RN 0.73 Metro bundles need --profile android-rn73; "
                      "application and third-party modules need an explicit "
-                     "--addon path/to/addon.dylib.\n";
+                     "--addon path/to/addon library.\n";
             }
         },
         devTools ? devTools->target() : nullptr);
@@ -3500,10 +3493,13 @@ rns::EngineResult rns::Engine::run() {
     const auto textFontProfile = options.fontDirectory
         ? "configured-font-directory"
         : runtimeProfile->platform() == "ios"
-        ? "ios-coretext-system"
+        ? (hostOsName() == "macos" ? "ios-coretext-system" : "ios-host-fonts-unverified")
         : runtimeProfile->platform() == "android"
-        ? "android-macos-coretext-fallback-unverified"
-        : "macos-coretext-system";
+        ? (hostOsName() == "macos"
+               ? "android-macos-coretext-fallback-unverified"
+               : "android-linux-fontconfig-fallback-unverified")
+        : (hostOsName() == "macos" ? "macos-coretext-system"
+                                   : "linux-system-fonts");
     const folly::dynamic textCapabilities = folly::dynamic::object
         ("engine", "skia-skparagraph")
         ("fontProfile", textFontProfile)

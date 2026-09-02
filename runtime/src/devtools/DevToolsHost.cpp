@@ -1,4 +1,5 @@
 #include "DevToolsHost.h"
+#include "HostPlatform.h"
 
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core.hpp>
@@ -8,7 +9,6 @@
 #include <jsinspector-modern/InspectorInterfaces.h>
 #include <react/threading/TaskDispatchThread.h>
 
-#include <mach-o/dyld.h>
 #include <poll.h>
 #include <spawn.h>
 #include <unistd.h>
@@ -44,12 +44,7 @@ using tcp = asio::ip::tcp;
 namespace {
 
 std::filesystem::path executablePath() {
-  std::vector<char> buffer(1024);
-  uint32_t size = static_cast<uint32_t>(buffer.size());
-  while (_NSGetExecutablePath(buffer.data(), &size) != 0) {
-    buffer.resize(size);
-  }
-  return std::filesystem::weakly_canonical(buffer.data());
+  return hostExecutablePath();
 }
 
 std::filesystem::path resolveFrontendDirectory(
@@ -695,7 +690,7 @@ inspector::HostTargetMetadata DevToolsHost::getMetadata() {
       .appIdentifier = config_.appName,
       .deviceName = config_.deviceName,
       .integrationName = "RNHOST",
-      .platform = "macos",
+      .platform = hostOsName(),
       .reactNativeVersion = RNS_REACT_NATIVE_VERSION,
   };
 }

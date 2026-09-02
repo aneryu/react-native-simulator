@@ -12,6 +12,7 @@
 #include "HeadlessKeyboard.h"
 #include "HeadlessThinModules.h"
 #include "HeadlessWebSocket.h"
+#include "HostPlatform.h"
 
 #include <react/nativemodule/core/ReactCommon/TurboModuleUtils.h>
 
@@ -89,10 +90,13 @@ class PlatformConstantsAndroidRN73 final : public react::TurboModule {
           constants.setProperty(
               runtime,
               "Fingerprint",
-              jsi::String::createFromAscii(
-                  runtime, "react-native-simulator/macos"));
+              jsi::String::createFromUtf8(
+                  runtime, "react-native-simulator/" + hostOsName()));
           constants.setProperty(
-              runtime, "Model", jsi::String::createFromAscii(runtime, "macOS"));
+              runtime,
+              "Model",
+              jsi::String::createFromUtf8(
+                  runtime, hostOsName() == "linux" ? "Linux" : "macOS"));
           constants.setProperty(
               runtime, "uiMode", jsi::String::createFromAscii(runtime, "normal"));
           constants.setProperty(
@@ -147,9 +151,13 @@ class PlatformConstantsAndroidRN87 final : public react::TurboModule {
     constants.setProperty(
         runtime,
         "Fingerprint",
-        jsi::String::createFromAscii(runtime, "react-native-simulator/macos"));
+        jsi::String::createFromUtf8(
+            runtime, "react-native-simulator/" + hostOsName()));
     constants.setProperty(
-        runtime, "Model", jsi::String::createFromAscii(runtime, "macOS"));
+        runtime,
+        "Model",
+        jsi::String::createFromUtf8(
+            runtime, hostOsName() == "linux" ? "Linux" : "macOS"));
     constants.setProperty(
         runtime, "uiMode", jsi::String::createFromAscii(runtime, "normal"));
     constants.setProperty(
@@ -196,7 +204,8 @@ class PlatformConstantsIOSRN87 final : public react::TurboModule {
     constants.setProperty(runtime, "reactNativeVersion", std::move(version));
     constants.setProperty(runtime, "forceTouchAvailable", false);
     constants.setProperty(
-        runtime, "osVersion", jsi::String::createFromAscii(runtime, "macOS"));
+        runtime, "osVersion", jsi::String::createFromUtf8(
+            runtime, hostOsName() == "linux" ? "Linux" : "macOS"));
     constants.setProperty(
         runtime, "systemName", jsi::String::createFromAscii(runtime, "iOS"));
     constants.setProperty(

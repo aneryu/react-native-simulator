@@ -1,0 +1,82 @@
+name: Linux
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out pinned sources
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+      - name: Initialize core submodules
+        run: |-
+          git submodule sync -- \
+            third_party/hermes \
+            third_party/react-native \
+            third_party/fast_float \
+            third_party/glog
+          git submodule update --init --depth 1 -- \
+            third_party/hermes \
+            third_party/react-native \
+            third_party/fast_float \
+            third_party/glog
+          hermes_tag=$(sed -n \
+            's/^set(RNS_EXPECTED_HERMES_TAG "\([^"]*\)").*/\1/p' \
+            cmake/DependencyVersions.cmake)
+          test -n "$hermes_tag"
+          git -C third_party/hermes fetch --depth 1 origin tag "$hermes_tag"
+          git -C third_party/hermes checkout --detach "$hermes_tag"
+          fast_float_tag=$(sed -n \
+            's/^set(RNS_EXPECTED_FAST_FLOAT_TAG "\([^"]*\)").*/\1/p' \
+            cmake/DependencyVersions.cmake)
+          test -n "$fast_float_tag"
+          git -C third_party/fast_float fetch --depth 1 origin tag "$fast_float_tag"
+          git -C third_party/fast_float checkout --detach "$fast_float_tag"
+          glog_commit=$(sed -n \
+            's/^set(RNS_EXPECTED_GLOG_COMMIT "\([^"]*\)").*/\1/p' \
+            cmake/DependencyVersions.cmake)
+          test -n "$glog_commit"
+          git -C third_party/glog fetch --depth 1 origin "$glog_commit"
+          git -C third_party/glog checkout --detach "$glog_commit"
+      - name: Install native dependencies
+        run: |-
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ninja-build \
+            g++ \
+            libstdc++-14-dev \
+            libboost-all-dev \
+            libfmt-dev \
+            libdouble-conversion-dev \
+            libssl-dev \
+            libcurl4-openssl-dev \
+            libpng-dev \
+            zlib1g-dev \
+            uuid-dev \
+            libevent-dev \
+            libicu-dev \
+            pkg-config \
+            python3
+      - name: Build and test core release
+        run: |-
+          cmake -S . -B build/ci-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DRNS_ENABLE_SKIA=OFF \
+            -DRNS_ENABLE_IMGUI=OFF \
+            -DRNS_ENABLE_SOURCE_DEVTOOLS_FRONTEND=OFF
+          cmake --build build/ci-release --parallel
+          ctest --test-dir build/ci-release --output-on-failure

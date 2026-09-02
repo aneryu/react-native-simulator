@@ -124,6 +124,8 @@ Gatekeeper details, DevTools usage, and dependency provenance are covered by the
 
 ## Build from source
 
+### macOS
+
 Requirements:
 
 - Apple Silicon Mac running macOS 15 or newer, with current Xcode Command Line Tools
@@ -144,9 +146,57 @@ cmake --build --preset release
 ctest --preset release
 ```
 
+The Skia bootstrap on macOS supports Apple Silicon only.
+
+### Linux
+
+Linux is a source-build host for the same engine. The Nightly binary remains
+macOS arm64. Headless core tests do not require Skia or a display.
+
+Requirements:
+
+- Ubuntu 24.04 or equivalent, x86_64 or aarch64
+- CMake 3.22+, Ninja, Python 3, Git, and Git LFS
+- Packages: `g++`, `libstdc++-14-dev`, `libboost-all-dev`, `libfmt-dev`,
+  `libdouble-conversion-dev`, `libssl-dev`, `libcurl4-openssl-dev`,
+  `libpng-dev`, `zlib1g-dev`, `uuid-dev`, `libevent-dev`, `libicu-dev`,
+  `pkg-config`
+
+CMake fetches RN's pinned Folly `2024.11.18.00` subset during configure. There
+is no Ubuntu `libfolly-dev` package on 24.04.
+
+```sh
+git clone --recurse-submodules REPOSITORY_URL react-native-simulator
+cd react-native-simulator
+git lfs pull
+
+sudo apt-get install -y ninja-build g++ libstdc++-14-dev libboost-all-dev \
+  libfmt-dev libdouble-conversion-dev libssl-dev libcurl4-openssl-dev \
+  libpng-dev zlib1g-dev uuid-dev libevent-dev libicu-dev pkg-config python3
+
+cmake -S . -B build/release -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DRNS_ENABLE_SKIA=OFF \
+  -DRNS_ENABLE_IMGUI=OFF
+cmake --build build/release
+ctest --test-dir build/release --output-on-failure
+```
+
+Interactive and screenshot builds also need Skia:
+
+```sh
+git submodule update --init third_party/skia
+cmake/bootstrap-skia-linux.sh
+cmake --preset release
+cmake --build --preset release
+```
+
+SDL/ImGui interactive mode needs a working display, Fontconfig
+(`libfontconfig-dev`), and the usual SDL3 Linux window-system packages
+(X11 or Wayland).
+
 Notes:
 
-- The Skia bootstrap supports Apple Silicon only.
 - A complete checkout and build needs about 16 GB for the pinned RN/Skia
   dependency trees. The Release tree measures about 0.4 GB; the instrumented
   sanitizer tree about 4.9 GB.

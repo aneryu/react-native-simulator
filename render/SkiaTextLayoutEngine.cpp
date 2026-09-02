@@ -13,7 +13,12 @@
 #include "include/core/SkTypeface.h"
 #include "include/ports/SkFontMgr_directory.h"
 #include "include/ports/SkFontMgr_empty.h"
+#if defined(SK_BUILD_FOR_MAC) || defined(SK_BUILD_FOR_IOS)
 #include "include/ports/SkFontMgr_mac_ct.h"
+#endif
+#if defined(SK_FONTMGR_FONTCONFIG_AVAILABLE) || defined(__linux__)
+#include "include/ports/SkFontMgr_fontconfig.h"
+#endif
 #include "modules/skparagraph/include/FontCollection.h"
 #include "modules/skparagraph/include/TypefaceFontProvider.h"
 #include "modules/skparagraph/include/Paragraph.h"
@@ -1833,7 +1838,13 @@ class SkiaTextLayoutEngine::Impl {
       fonts->setAssetFontManager(fontMgr);
       fonts->setDefaultFontManager(fontMgr, defaultFontFamilies(platform));
     } else {
+#if defined(SK_BUILD_FOR_MAC) || defined(SK_BUILD_FOR_IOS)
       fontMgr = SkFontMgr_New_CoreText(nullptr);
+#elif defined(__linux__)
+      fontMgr = SkFontMgr_New_FontConfig(nullptr);
+#else
+      fontMgr = SkFontMgr_New_Custom_Empty();
+#endif
       fonts->setDefaultFontManager(fontMgr, defaultFontFamilies(platform));
     }
     fonts->enableFontFallback();

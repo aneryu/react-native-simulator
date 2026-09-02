@@ -9,7 +9,7 @@
 set(RNS_SKIA_ARCHIVES
   "${RNS_SKIA_OUT_DIR}/libskparagraph.a"
   "${RNS_SKIA_OUT_DIR}/libskshaper.a")
-# Release builds require the compact archive from bootstrap-skia-macos.sh.
+# Release builds require the compact archive from the host Skia bootstrap.
 # Keep the full upstream archive as an explicit development fallback so an old
 # local Skia tree can still configure, but never let release packaging silently
 # regain the ~9 MiB data payload.
@@ -18,10 +18,10 @@ if(EXISTS "${RNS_SKIA_OUT_DIR}/libskunicode_icu_rnsim.a")
 elseif(EXISTS "${RNS_SKIA_OUT_DIR}/libskunicode_icu.a")
   if(CMAKE_BUILD_TYPE STREQUAL "Release")
     message(FATAL_ERROR
-      "Release requires filtered Skia ICU data. Run cmake/bootstrap-skia-macos.sh")
+      "Release requires filtered Skia ICU data. Run cmake/bootstrap-skia-macos.sh or cmake/bootstrap-skia-linux.sh")
   endif()
   message(WARNING
-    "Using Skia's full ICU data; run cmake/bootstrap-skia-macos.sh for compact output")
+    "Using Skia's full ICU data; run the host Skia bootstrap for compact output")
   list(APPEND RNS_SKIA_ARCHIVES "${RNS_SKIA_OUT_DIR}/libskunicode_icu.a")
 else()
   message(FATAL_ERROR
@@ -55,10 +55,19 @@ target_include_directories(react-native-simulator-skia-text
     "${RNS_SKIA_DIR}/third_party/externals/icu/source/common")
 target_link_libraries(react-native-simulator-skia-text
   PUBLIC
-    ${RNS_SKIA_ARCHIVES}
+    ${RNS_SKIA_ARCHIVES})
+if(APPLE)
+  target_link_libraries(react-native-simulator-skia-text PUBLIC
     "-framework CoreText"
     "-framework CoreGraphics"
     "-framework Foundation")
+else()
+  find_package(Fontconfig REQUIRED)
+  target_link_libraries(react-native-simulator-skia-text PUBLIC
+    Fontconfig::Fontconfig
+    ${CMAKE_DL_LIBS}
+    m)
+endif()
 target_compile_options(react-native-simulator-skia-text PRIVATE
   -Wall -Wextra -Wpedantic)
 target_compile_definitions(react-native-simulator-skia-text PRIVATE
@@ -80,11 +89,13 @@ target_include_directories(react-native-simulator-skia-renderer
     "${FOLLY_INCLUDE_DIR}")
 target_link_libraries(react-native-simulator-skia-renderer
   PUBLIC react-native-simulator-skia-text
-  PRIVATE
-    rns_folly
+  PRIVATE rns_folly)
+if(APPLE)
+  target_link_libraries(react-native-simulator-skia-renderer PRIVATE
     "-framework Foundation"
     "-framework ImageIO"
     "-framework CoreGraphics")
+endif()
 target_compile_options(react-native-simulator-skia-renderer PRIVATE
   -Wall -Wextra -Wpedantic)
 rns_enable_sanitizers(react-native-simulator-skia-renderer)

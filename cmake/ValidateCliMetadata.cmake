@@ -27,6 +27,11 @@ string(JSON channel GET "${metadata}" channel)
 string(JSON transport_version GET "${metadata}" transportVersion)
 string(JSON react_native GET "${metadata}" reactNative)
 string(JSON addon_abi GET "${metadata}" addonAbi)
+string(JSON host_os GET "${metadata}" hostOs)
+if(NOT host_os STREQUAL "macos" AND NOT host_os STREQUAL "linux")
+  message(FATAL_ERROR "Unexpected ${MODE} hostOs: ${metadata}")
+endif()
+
 if(NOT version STREQUAL "nightly" OR
    NOT channel STREQUAL "nightly" OR
    NOT transport_version STREQUAL "0.0.0" OR
