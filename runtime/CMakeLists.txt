@@ -317,6 +317,11 @@ endif()
 
 target_compile_options(
   react-native-simulator-engine PRIVATE -Wall -Wextra -Wpedantic)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  # RN ConcreteShadowNode::Props() collides with the nested Props type.
+  target_compile_options(react-native-simulator-engine PRIVATE
+    -Wno-changes-meaning)
+endif()
 if(NOT APPLE)
   target_compile_options(react-native-simulator-engine PRIVATE
     -include "${CMAKE_CURRENT_LIST_DIR}/shims/compat/ForceStdint.h")
@@ -370,6 +375,9 @@ function(rns_add_simulator_addon target_name output_name source)
       "$<$<CONFIG:Release>:-Wl,--gc-sections>")
   endif()
   target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(${target_name} PRIVATE -Wno-changes-meaning)
+  endif()
   if(RNS_ENABLE_SANITIZERS)
     target_compile_options(${target_name} PRIVATE
       -fsanitize=address,undefined -fno-sanitize=vptr
@@ -446,6 +454,9 @@ target_compile_definitions(react-native-simulator PRIVATE
   RNS_BUILD_DIRTY="${RNS_BUILD_DIRTY}"
   RNS_BUILD_MIN_MACOS="${_rnsim_min_macos}")
 target_compile_options(react-native-simulator PRIVATE -Wall -Wextra -Wpedantic)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(react-native-simulator PRIVATE -Wno-changes-meaning)
+endif()
 if(RNS_ENABLE_SANITIZERS)
   target_compile_options(react-native-simulator PRIVATE
     -fsanitize=address,undefined -fno-sanitize=vptr

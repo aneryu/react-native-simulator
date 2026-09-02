@@ -40,6 +40,20 @@ list(APPEND RNS_SKIA_ARCHIVES
   "${RNS_SKIA_OUT_DIR}/liballocator_base.a"
   "${RNS_SKIA_OUT_DIR}/libzlib.a"
   "${RNS_SKIA_OUT_DIR}/libpng.a")
+if(NOT APPLE)
+  list(APPEND RNS_SKIA_ARCHIVES
+    "${RNS_SKIA_OUT_DIR}/libfontmgr_fontconfig.a")
+  foreach(linux_skia_archive
+      "${RNS_SKIA_OUT_DIR}/libfontmgr_custom_directory.a"
+      "${RNS_SKIA_OUT_DIR}/libjpeg.a"
+      "${RNS_SKIA_OUT_DIR}/libwebp.a"
+      "${RNS_SKIA_OUT_DIR}/libwebp_sse41.a"
+      "${RNS_SKIA_OUT_DIR}/libwebp_sse42.a")
+    if(EXISTS "${linux_skia_archive}")
+      list(APPEND RNS_SKIA_ARCHIVES "${linux_skia_archive}")
+    endif()
+  endforeach()
+endif()
 foreach(skia_archive IN LISTS RNS_SKIA_ARCHIVES)
   if(NOT EXISTS "${skia_archive}")
     message(FATAL_ERROR "Missing Skia archive: ${skia_archive}")

@@ -92,16 +92,18 @@ What you get in the window:
   application keys or a blocking error open the App panel; a newly observed
   compatibility warning opens it once and stays dismissible. You can also open
   it from the toolbar.
-- **Inspect** (`⌘2`) opens the ShadowTree element picker. It cancels any active
-  application pointer and isolates normal pointer, keyboard, and TextInput
-  dispatch while active. `⌘1`, `⌘2`, `⌘R`, and Escape keep working.
+- **Inspect** (`⌘2`, or `Ctrl+2` on Linux) opens the ShadowTree element picker.
+  It cancels any active application pointer and isolates normal pointer,
+  keyboard, and TextInput dispatch while active. Host chords `⌘1`/`Ctrl+1`,
+  `⌘2`/`Ctrl+2`, `⌘R`/`Ctrl+R`, and Escape keep working.
 - **Fast Refresh and Reload.** Save a component to Fast Refresh. Metro's `r`,
-  the **Reload** button, or `⌘R` reloads in-process while the window stays open,
-  whether the Engine is running, paused after an error, or waiting for an
-  application choice. If JavaScript evaluation fails after the initial bundle
-  loads, fix the source and reload.
+  the **Reload** button, or `⌘R`/`Ctrl+R` reloads in-process while the window
+  stays open, whether the Engine is running, paused after an error, or waiting
+  for an application choice. If JavaScript evaluation fails after the initial
+  bundle loads, fix the source and reload.
 - **Retry.** If preparation fails before a bundle reaches the Engine, fix the
-  reported Metro or bundle problem and use **Retry** or `⌘R`. Repeat Retries
+  reported Metro or bundle problem and use **Retry** or `⌘R`/`Ctrl+R`. Repeat
+  Retries
   are ignored while an attempt is in flight. Remote preparation is
   transactional: nothing fetched is queued until every remote source succeeds,
   and the window never closes.
@@ -150,20 +152,26 @@ The Skia bootstrap on macOS supports Apple Silicon only.
 
 ### Linux
 
-Linux is a source-build host for the same engine. The Nightly binary remains
-macOS arm64. Headless core tests do not require Skia or a display.
+Linux is a source-build host for the same engine, including the SDL/ImGui
+interactive frontend and Skia device painter. The Nightly binary remains
+macOS arm64.
 
 Requirements:
 
 - Ubuntu 24.04 or equivalent, x86_64 or aarch64
-- CMake 3.22+, Ninja, Python 3, Git, and Git LFS
-- Packages: `g++`, `libstdc++-14-dev`, `libboost-all-dev`, `libfmt-dev`,
+- CMake 3.22+, Ninja, Python 3, Git, Git LFS, and `xxd`
+- Engine packages: `g++`, `libstdc++-14-dev`, `libboost-all-dev`, `libfmt-dev`,
   `libdouble-conversion-dev`, `libssl-dev`, `libcurl4-openssl-dev`,
   `libpng-dev`, `zlib1g-dev`, `uuid-dev`, `libevent-dev`, `libicu-dev`,
   `pkg-config`
+- Interactive packages: `libfontconfig-dev`, `fonts-dejavu-core`, X11/Wayland
+  SDL3 headers (`libx11-dev`, `libxext-dev`, `libxrandr-dev`, `libxcursor-dev`,
+  `libxi-dev`, `libxkbcommon-dev`, `libwayland-dev`, `libgl1-mesa-dev`,
+  `libvulkan-dev`), and a display (`xvfb` is enough for tests)
 
 CMake fetches RN's pinned Folly `2024.11.18.00` subset during configure. There
-is no Ubuntu `libfolly-dev` package on 24.04.
+is no Ubuntu `libfolly-dev` package on 24.04. Host chords in the interactive
+shell are `Ctrl+1` / `Ctrl+2` / `Ctrl+R`.
 
 ```sh
 git clone --recurse-submodules REPOSITORY_URL react-native-simulator
@@ -172,28 +180,28 @@ git lfs pull
 
 sudo apt-get install -y ninja-build g++ libstdc++-14-dev libboost-all-dev \
   libfmt-dev libdouble-conversion-dev libssl-dev libcurl4-openssl-dev \
-  libpng-dev zlib1g-dev uuid-dev libevent-dev libicu-dev pkg-config python3
+  libpng-dev zlib1g-dev uuid-dev libevent-dev libicu-dev pkg-config python3 \
+  xxd libfontconfig-dev fonts-dejavu-core libx11-dev libxext-dev \
+  libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxkbcommon-dev \
+  libwayland-dev libgl1-mesa-dev libegl1-mesa-dev libvulkan-dev xvfb
 
-cmake -S . -B build/release -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DRNS_ENABLE_SKIA=OFF \
-  -DRNS_ENABLE_IMGUI=OFF
-cmake --build build/release
-ctest --test-dir build/release --output-on-failure
-```
-
-Interactive and screenshot builds also need Skia:
-
-```sh
-git submodule update --init third_party/skia
+git submodule update --init third_party/skia third_party/imgui third_party/sdl
 cmake/bootstrap-skia-linux.sh
 cmake --preset release
 cmake --build --preset release
+xvfb-run --auto-servernum ctest --test-dir build/release --output-on-failure
 ```
 
-SDL/ImGui interactive mode needs a working display, Fontconfig
-(`libfontconfig-dev`), and the usual SDL3 Linux window-system packages
-(X11 or Wayland).
+Headless core tests can omit Skia, SDL, and a display:
+
+```sh
+cmake -S . -B build/ci-release -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DRNS_ENABLE_SKIA=OFF \
+  -DRNS_ENABLE_IMGUI=OFF
+cmake --build build/ci-release
+ctest --test-dir build/ci-release --output-on-failure
+```
 
 Notes:
 

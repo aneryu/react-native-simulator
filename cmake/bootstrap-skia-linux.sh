@@ -15,24 +15,45 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   exit 1
 fi
 
-skia_dependencies=(harfbuzz icu freetype)
-missing_skia_dependency=false
-for dependency in "${skia_dependencies[@]}"; do
-  if [[ ! -d "${skia_dir}/third_party/externals/${dependency}" ]]; then
-    missing_skia_dependency=true
-  fi
-done
-if [[ "${missing_skia_dependency}" == true ]]; then
-  if ! (cd "${skia_dir}" && python3 tools/git-sync-deps); then
-    for dependency in "${skia_dependencies[@]}"; do
-      if [[ ! -d "${skia_dir}/third_party/externals/${dependency}" ]]; then
-        echo "Skia dependency sync failed before ${dependency} was available." >&2
-        exit 1
-      fi
-    done
-    echo "Required dependency sources are present; continuing after sync failure." >&2
-  fi
-fi
+# Do not run Skia's full tools/git-sync-deps. That also fetches Dawn, Vulkan,
+# Emscripten, and other GPU toolchains this CPU renderer never links. Ubuntu CI
+# cannot hold that tree. Checkout only the DEPS pins Skia actually compiles.
+python3 - "${skia_dir}" <<'PY'
+import os
+import subprocess
+import sys
+
+skia_dir = sys.argv[1]
+needed = (
+    "third_party/externals/freetype",
+    "third_party/externals/harfbuzz",
+    "third_party/externals/icu",
+    "third_party/externals/libjpeg-turbo",
+    "third_party/externals/libpng",
+    "third_party/externals/libwebp",
+)
+ns = {}
+with open(os.path.join(skia_dir, "DEPS"), encoding="utf-8") as handle:
+    exec("def Var(x): return vars[x]\n" + handle.read(), ns)
+deps = ns["deps"]
+for path in needed:
+    spec = deps[path]
+    repo, commit = spec.split("@", 1)
+    dest = os.path.join(skia_dir, path)
+    if not os.path.isdir(os.path.join(dest, ".git")):
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        subprocess.check_call(
+            ["git", "clone", "--quiet", "--depth=1", "--no-checkout", repo, dest])
+    if subprocess.call(
+            ["git", "rev-parse", "--verify", "--quiet", commit],
+            cwd=dest,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL) != 0:
+        subprocess.check_call(
+            ["git", "fetch", "--quiet", "--depth=1", repo, commit], cwd=dest)
+    subprocess.check_call(["git", "checkout", "--quiet", commit], cwd=dest)
+    print(f"synced {path} @ {commit[:12]}")
+PY
 
 host_cpu="$(uname -m)"
 case "${host_cpu}" in
