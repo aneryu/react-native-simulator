@@ -155,21 +155,28 @@ class FabricProbeAddon final : public SimulatorAddon {
                   runtime, "updated", static_cast<int>(updated->load()));
               return object;
             }));
-    std::thread([executor = context.executor]() {
+    if (worker_.joinable()) {
+      worker_.join();
+    }
+    worker_ = std::thread([executor = context.executor]() {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       executor.post([](jsi::Runtime& runtime) {
         runtime.global().setProperty(
             runtime, "__rnsProbeExecutorPosted", true);
       });
-    }).detach();
+    });
   }
   void hostSnapshotChanged(const AddonHostSnapshot&) override {}
   void quiesceGeneration(std::uint64_t) noexcept override {
     executor_ = {};
+    if (worker_.joinable()) {
+      worker_.join();
+    }
   }
 
  private:
   AddonRuntimeExecutor executor_{};
+  std::thread worker_{};
   std::shared_ptr<std::atomic<int>> mounted_{std::make_shared<std::atomic<int>>(0)};
   std::shared_ptr<std::atomic<int>> unmounted_{std::make_shared<std::atomic<int>>(0)};
   std::shared_ptr<std::atomic<int>> updated_{std::make_shared<std::atomic<int>>(0)};

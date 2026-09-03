@@ -29,8 +29,15 @@ option(RNS_ENABLE_SOURCE_DEVTOOLS_FRONTEND
 
 function(rns_enable_sanitizers target)
   if(RNS_ENABLE_SANITIZERS)
+    set(_rns_sanitize -fsanitize=address,undefined)
+    if(APPLE)
+      # AppleClang 17's vptr sanitizer reports invalid std::stringbuf vptrs
+      # across the macOS libc++ boundary. Linux GCC needs vptr instrumentation
+      # so LayoutConformance typeinfo COMDAT is not discarded at link time.
+      list(APPEND _rns_sanitize -fno-sanitize=vptr)
+    endif()
     target_compile_options(${target} PRIVATE
-      -fsanitize=address,undefined -fno-sanitize=vptr
+      ${_rns_sanitize}
       -fno-omit-frame-pointer)
     target_link_options(${target} PRIVATE -fsanitize=address,undefined)
   endif()
@@ -260,7 +267,8 @@ if(RNS_ENABLE_SANITIZERS)
   # symbols into the test/CLI image.
   foreach(glog_target glog_internal glog)
     target_compile_options(${glog_target} PRIVATE
-      -fsanitize=address,undefined -fno-sanitize=vptr
+      -fsanitize=address,undefined
+      $<$<BOOL:${APPLE}>:-fno-sanitize=vptr>
       -fno-omit-frame-pointer)
   endforeach()
   target_link_options(glog PRIVATE -fsanitize=address,undefined)

@@ -143,7 +143,8 @@ else()
     Threads::Threads)
   if(RNS_ENABLE_SANITIZERS)
     target_compile_options(rns_folly_runtime PRIVATE
-      -fsanitize=address,undefined -fno-sanitize=vptr
+      -fsanitize=address,undefined
+      $<$<BOOL:${APPLE}>:-fno-sanitize=vptr>
       -fno-omit-frame-pointer)
     target_link_options(rns_folly_runtime PUBLIC -fsanitize=address,undefined)
     # ASan intercepts recvmmsg/sendmmsg, so Folly's address static_asserts
