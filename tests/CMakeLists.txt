@@ -46,12 +46,16 @@ target_link_libraries(addon-planner-smoke PRIVATE react-native-simulator-engine)
 add_executable(addon-abi-lifecycle-smoke addon-abi-lifecycle-smoke.cpp)
 target_link_libraries(addon-abi-lifecycle-smoke PRIVATE
   react-native-simulator-engine ${CMAKE_DL_LIBS})
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(addon-abi-lifecycle-smoke PRIVATE -Wno-changes-meaning)
+endif()
 
 add_executable(fabric-module-host fabric-module-host.cpp)
 target_link_libraries(fabric-module-host PRIVATE react-native-simulator-engine)
 rns_enable_addon_module_host(addon-planner-smoke)
 rns_enable_addon_module_host(addon-abi-lifecycle-smoke)
 rns_enable_addon_module_host(fabric-module-host)
+rns_enable_addon_module_host(reload-engine-smoke)
 add_dependencies(addon-planner-smoke react-native-simulator-addon-fabric_probe)
 add_dependencies(addon-abi-lifecycle-smoke react-native-simulator-addon-fabric_probe)
 add_dependencies(fabric-module-host react-native-simulator-addon-fabric_probe)
@@ -70,6 +74,25 @@ add_library(wrong-fingerprint-addon MODULE wrong-fingerprint-addon.cpp)
 set_target_properties(wrong-fingerprint-addon PROPERTIES
   PREFIX ""
   OUTPUT_NAME "wrong-fingerprint-addon")
+
+function(rns_add_abi_test_module name)
+  add_library(${name} MODULE ${name}.cpp)
+  set_target_properties(${name} PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME "${name}"
+    CXX_VISIBILITY_PRESET hidden)
+  target_compile_definitions(${name} PRIVATE
+    RNS_REACT_NATIVE_VERSION="${RNS_REACT_NATIVE_VERSION}"
+    RNS_HERMES_VERSION="${RNS_HERMES_VERSION}")
+  rns_addon_common_includes(${name})
+  target_link_libraries(${name} PRIVATE rns_folly_headers)
+  rns_enable_sanitizers(${name})
+endfunction()
+rns_add_abi_test_module(null-create-addon)
+rns_add_abi_test_module(throwing-create-addon)
+rns_add_abi_test_module(name-mismatch-addon)
+rns_add_abi_test_module(safe-area-slot-addon)
+add_dependencies(addon-planner-smoke safe-area-slot-addon)
 
 foreach(test_target
     runtime-api-smoke
@@ -130,7 +153,8 @@ endif()
 add_test(NAME runtime-embedding-api COMMAND runtime-api-smoke)
 add_test(NAME addon-planner
   COMMAND addon-planner-smoke
-    $<TARGET_FILE:react-native-simulator-addon-fabric_probe>)
+    $<TARGET_FILE:react-native-simulator-addon-fabric_probe>
+    $<TARGET_FILE:safe-area-slot-addon>)
 add_test(NAME addon-abi-lifecycle
   COMMAND addon-abi-lifecycle-smoke
     $<TARGET_FILE:react-native-simulator-addon-fabric_probe>)
@@ -159,10 +183,35 @@ add_test(NAME addon-rejects-fingerprint
     -DADDON=$<TARGET_FILE:wrong-fingerprint-addon>
     "-DEXPECTED=Addon API fingerprint mismatch"
     -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliAddonFailure.cmake")
+add_test(NAME addon-rejects-null-create
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    -DBUNDLE=${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js
+    -DADDON=$<TARGET_FILE:null-create-addon>
+    "-DEXPECTED=Addon factory returned null"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliAddonFailure.cmake")
+add_test(NAME addon-rejects-throwing-create
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    -DBUNDLE=${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js
+    -DADDON=$<TARGET_FILE:throwing-create-addon>
+    "-DEXPECTED=Addon create\\(\\) failed"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliAddonFailure.cmake")
+add_test(NAME addon-rejects-name-mismatch
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    -DBUNDLE=${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js
+    -DADDON=$<TARGET_FILE:name-mismatch-addon>
+    "-DEXPECTED=does not equal descriptor name"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliAddonFailure.cmake")
 add_test(NAME headless-api-modules COMMAND headless-api-modules-smoke)
 add_test(NAME metro-http-source COMMAND http-bundle-loader-smoke)
 add_test(NAME interactive-reload
   COMMAND reload-engine-smoke "${RNS_TEST_FIXTURES_DIR}/reload-smoke.js")
+add_test(NAME interactive-reload-module
+  COMMAND reload-engine-smoke
+    "${RNS_TEST_FIXTURES_DIR}/reload-smoke.js"
+    $<TARGET_FILE:react-native-simulator-addon-fabric_probe>)
 add_test(NAME interactive-error-recovery COMMAND reload-error-recovery-smoke)
 add_test(NAME hmr-protocol COMMAND hmr-protocol-smoke)
 set_tests_properties(hmr-protocol PROPERTIES
@@ -332,6 +381,34 @@ add_test(NAME local-config-tagged-compat
 set_tests_properties(local-config-tagged-compat PROPERTIES
   PASS_REGULAR_EXPRESSION
     "\"compatAddon\":\"compat-rn73\".*\"targetFamily\":\"0.73.x\"")
+add_test(NAME local-config-addon-origin
+  COMMAND $<TARGET_FILE:react-native-simulator> headless
+    --config "${RNS_TEST_FIXTURES_DIR}/rnsim-tagged-compat.json"
+    --timeout-ms 1000)
+set_tests_properties(local-config-addon-origin PROPERTIES
+  PASS_REGULAR_EXPRESSION
+    "\"origins\":\\[\"config\"\\],\"source\":\"built-in\",\"name\":\"compat-rn73\"")
+add_test(NAME local-config-cli-addon-append
+  COMMAND $<TARGET_FILE:react-native-simulator> headless
+    --config "${RNS_TEST_FIXTURES_DIR}/rnsim-tagged-compat.json"
+    --addon expo
+    --timeout-ms 1000)
+set_tests_properties(local-config-cli-addon-append PROPERTIES
+  PASS_REGULAR_EXPRESSION
+    "\"origins\":\\[\"config\"\\],\"source\":\"built-in\",\"name\":\"compat-rn73\".*\"origins\":\\[\"cli\"\\],\"source\":\"built-in\",\"name\":\"expo\"")
+add_test(NAME local-config-cli-disable-explicit
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    "-DARGS=--config;${RNS_TEST_FIXTURES_DIR}/rnsim-tagged-compat.json;--no-addon;compat-rn73;--timeout-ms;1000"
+    "-DEXPECTED=also disabled"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliFailure.cmake")
+add_test(NAME cli-no-auto-addons
+  COMMAND $<TARGET_FILE:react-native-simulator> headless
+    --config "${RNS_TEST_FIXTURES_DIR}/rnsim.json"
+    --no-auto-addons
+    --timeout-ms 1000)
+set_tests_properties(cli-no-auto-addons PROPERTIES
+  PASS_REGULAR_EXPRESSION "\"addons\":\\[\\]")
 add_test(NAME cli-doctor-rn073
   COMMAND "${CMAKE_COMMAND}"
     -DRNSIM=$<TARGET_FILE:react-native-simulator>
@@ -483,12 +560,17 @@ set_tests_properties(runtime-source runtime-bytecode runtime-multi-bundle
   cli-conformance-unavailable
   cli-profile-platform-conflict
   metro-http-source cli-help
-  interactive-reload interactive-error-recovery
+  interactive-reload interactive-reload-module interactive-error-recovery
   addon-planner addon-abi-lifecycle fabric-module-so addon-rejects-abi3
   addon-rejects-short-descriptor addon-rejects-fingerprint
+  addon-rejects-null-create addon-rejects-throwing-create
+  addon-rejects-name-mismatch
   cli-list-addons cli-no-addon-safe-area cli-no-addon-safe-area-fallback
   compat-rn73-constants local-config-schema1 local-config-bare-addon
-  local-config-tagged-compat cli-doctor-rn073 cli-doctor-rn073-compat
+  local-config-tagged-compat local-config-addon-origin
+  local-config-cli-addon-append local-config-cli-disable-explicit
+  cli-no-auto-addons
+  cli-doctor-rn073 cli-doctor-rn073-compat
   PROPERTIES TIMEOUT 10)
 if(TEST interactive-window-before-metro)
   set_tests_properties(interactive-window-before-metro PROPERTIES TIMEOUT 10)
@@ -507,6 +589,8 @@ add_custom_target(verify
     addon-planner-smoke addon-abi-lifecycle-smoke fabric-module-host
     react-native-simulator-addon-fabric_probe
     not-an-abi4-addon invalid-addon-descriptor wrong-fingerprint-addon
+    null-create-addon throwing-create-addon name-mismatch-addon
+    safe-area-slot-addon
   USES_TERMINAL)
 if(TARGET react-native-simulator-addon-shopee)
   add_dependencies(verify react-native-simulator-addon-shopee)

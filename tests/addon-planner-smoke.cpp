@@ -4,11 +4,13 @@
 #include "EngineTestSupport.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -144,6 +146,56 @@ void expectThrows(const char* label, const std::function<void()>& fn, const char
     }
   }
 }
+
+bool uniqueContractNames(const std::string& metrics, const char* arrayKey) {
+  const std::string key = std::string("\"") + arrayKey + "\":[";
+  const auto start = metrics.find(key);
+  if (start == std::string::npos) {
+    return false;
+  }
+  size_t depth = 0;
+  size_t end = std::string::npos;
+  for (size_t i = start + key.size(); i < metrics.size(); ++i) {
+    if (metrics[i] == '[') {
+      ++depth;
+    } else if (metrics[i] == ']') {
+      if (depth == 0) {
+        end = i;
+        break;
+      }
+      --depth;
+    }
+  }
+  if (end == std::string::npos) {
+    return false;
+  }
+  std::unordered_set<std::string> names;
+  const std::string nameKey = "\"name\":\"";
+  auto cursor = start;
+  while (cursor < end) {
+    cursor = metrics.find(nameKey, cursor);
+    if (cursor == std::string::npos || cursor > end) {
+      break;
+    }
+    cursor += nameKey.size();
+    const auto close = metrics.find('"', cursor);
+    if (!names.insert(metrics.substr(cursor, close - cursor)).second) {
+      return false;
+    }
+    cursor = close + 1;
+  }
+  return !names.empty();
+}
+
+int countName(const std::string& metrics, const std::string& name) {
+  int count = 0;
+  const std::string needle = "\"name\":\"" + name + "\"";
+  for (size_t pos = 0; (pos = metrics.find(needle, pos)) != std::string::npos;
+       pos += needle.size()) {
+    ++count;
+  }
+  return count;
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -160,6 +212,14 @@ int main(int argc, char** argv) {
       if (result.exitCode != 0 || !containsName(names, "safe-area") ||
           containsName(names, "expo") || containsName(names, "compat-rn73")) {
         std::cerr << "auto-only plain embedder failed\n"
+                  << result.metricsJson << '\n';
+        return 1;
+      }
+      if (result.metricsJson.find("\"name\":\"RootView\"") == std::string::npos ||
+          !uniqueContractNames(result.metricsJson, "modules") ||
+          !uniqueContractNames(result.metricsJson, "components") ||
+          countName(result.metricsJson, "RootView") < 1) {
+        std::cerr << "inventory contract uniqueness / RootView failed\n"
                   << result.metricsJson << '\n';
         return 1;
       }
@@ -380,6 +440,49 @@ int main(int argc, char** argv) {
       if (result.exitCode != 0 || !containsName(names, "fabric-probe") ||
           result.metricsJson.find("\"source\":\"module\"") == std::string::npos) {
         std::cerr << "explicit MODULE path failed\n"
+                  << result.metricsJson << '\n';
+        return 1;
+      }
+
+      expectThrows(
+          "duplicate canonical path",
+          [&] {
+            rns::LaunchDraft dup(config);
+            dup.addAddonPath(argv[1], rns::AddonRequestOrigin::Test);
+            dup.addAddonPath(argv[1], rns::AddonRequestOrigin::Test);
+            (void)rns::prepareExplicitAddons(dup);
+          },
+          "Duplicate addon MODULE path");
+
+      const auto tmp = std::filesystem::temp_directory_path() /
+          "rns-addon-symlink-duplicate";
+      std::filesystem::remove_all(tmp);
+      std::filesystem::create_directories(tmp);
+      const auto link = tmp / "alias.so";
+      std::filesystem::create_symlink(
+          std::filesystem::absolute(argv[1]), link);
+      expectThrows(
+          "duplicate symlink path",
+          [&] {
+            rns::LaunchDraft dup(config);
+            dup.addAddonPath(argv[1], rns::AddonRequestOrigin::Test);
+            dup.addAddonPath(link, rns::AddonRequestOrigin::Test);
+            (void)rns::prepareExplicitAddons(dup);
+          },
+          "Duplicate addon MODULE path");
+      std::filesystem::remove_all(tmp);
+    }
+
+    if (argc > 2) {
+      rns::LaunchDraft draft(config);
+      draft.addAddonPath(argv[2], rns::AddonRequestOrigin::Test);
+      const auto result = runDraft(std::move(draft));
+      const auto names = addonNames(result.metricsJson);
+      const auto count = static_cast<int>(
+          std::count(names.begin(), names.end(), "safe-area"));
+      if (result.exitCode != 0 || count != 1 ||
+          result.metricsJson.find("\"source\":\"module\"") == std::string::npos) {
+        std::cerr << "auto + same-name MODULE slot failed\n"
                   << result.metricsJson << '\n';
         return 1;
       }
