@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <functional>
 #include <initializer_list>
 #include <memory>
@@ -60,64 +61,6 @@ jsi::Object makePhysicalDisplayMetrics(
   metrics.setProperty(runtime, "densityDpi", 160.0f * scale);
   return metrics;
 }
-
-class PlatformConstantsAndroidRN73 final : public react::TurboModule {
- public:
-  explicit PlatformConstantsAndroidRN73(
-      std::shared_ptr<react::CallInvoker> jsInvoker)
-      : TurboModule("PlatformConstants", std::move(jsInvoker)) {
-    methodMap_["getConstants"] = {
-        0,
-        [](jsi::Runtime& runtime,
-           react::TurboModule&,
-           const jsi::Value*,
-           size_t) -> jsi::Value {
-          jsi::Object version(runtime);
-          version.setProperty(runtime, "major", 0);
-          version.setProperty(runtime, "minor", 73);
-          version.setProperty(runtime, "patch", 10);
-          version.setProperty(runtime, "prerelease", jsi::Value::null());
-          jsi::Object constants(runtime);
-          constants.setProperty(runtime, "isTesting", false);
-          constants.setProperty(runtime, "isDisableAnimations", false);
-          constants.setProperty(
-              runtime, "reactNativeVersion", std::move(version));
-          constants.setProperty(runtime, "Version", 35);
-          constants.setProperty(
-              runtime, "Release", jsi::String::createFromAscii(runtime, "15"));
-          constants.setProperty(
-              runtime, "Serial", jsi::String::createFromAscii(runtime, "headless"));
-          constants.setProperty(
-              runtime,
-              "Fingerprint",
-              jsi::String::createFromUtf8(
-                  runtime, "react-native-simulator/" + hostOsName()));
-          constants.setProperty(
-              runtime,
-              "Model",
-              jsi::String::createFromUtf8(
-                  runtime, hostOsName() == "linux" ? "Linux" : "macOS"));
-          constants.setProperty(
-              runtime, "uiMode", jsi::String::createFromAscii(runtime, "normal"));
-          constants.setProperty(
-              runtime, "Brand", jsi::String::createFromAscii(runtime, "headless"));
-          constants.setProperty(
-              runtime,
-              "Manufacturer",
-              jsi::String::createFromAscii(runtime, "OpenAI"));
-          return constants;
-        }};
-    methodMap_["getAndroidID"] = {
-        0,
-        [](jsi::Runtime& runtime,
-           react::TurboModule&,
-           const jsi::Value*,
-           size_t) -> jsi::Value {
-          return jsi::String::createFromAscii(
-              runtime, "react-native-simulator");
-        }};
-  }
-};
 
 class PlatformConstantsAndroidRN87 final : public react::TurboModule {
  public:
@@ -280,54 +223,6 @@ class DeviceInfoModule final : public react::TurboModule {
 
   HeadlessRNModuleHost host_;
   bool androidShape_{false};
-};
-
-class RNCSafeAreaContextModule final : public react::TurboModule {
- public:
-  RNCSafeAreaContextModule(
-      std::shared_ptr<react::CallInvoker> jsInvoker,
-      HeadlessRNModuleHost host)
-      : TurboModule("RNCSafeAreaContext", std::move(jsInvoker)),
-        host_(std::move(host)) {
-    methodMap_["getConstants"] = {0, &getConstants};
-  }
-
- private:
-  static jsi::Value getConstants(
-      jsi::Runtime& runtime,
-      react::TurboModule& module,
-      const jsi::Value*,
-      size_t) {
-    const auto& self = static_cast<RNCSafeAreaContextModule&>(module);
-    const auto& environment = hostEnvironment().state;
-    const float width = environment.viewportWidth > 0
-        ? environment.viewportWidth
-        : self.host_.viewportWidth;
-    const float height = environment.viewportHeight > 0
-        ? environment.viewportHeight
-        : self.host_.viewportHeight;
-    jsi::Object insets(runtime);
-    // Host status/nav chrome is reserved around the Fabric window, not inside
-    // it. A root SafeAreaProvider therefore reports no notch/nav overlap.
-    insets.setProperty(runtime, "top", 0);
-    insets.setProperty(runtime, "right", 0);
-    insets.setProperty(runtime, "bottom", 0);
-    insets.setProperty(runtime, "left", 0);
-    jsi::Object frame(runtime);
-    frame.setProperty(runtime, "x", 0);
-    frame.setProperty(runtime, "y", 0);
-    frame.setProperty(runtime, "width", width);
-    frame.setProperty(runtime, "height", height);
-    jsi::Object metrics(runtime);
-    metrics.setProperty(runtime, "insets", std::move(insets));
-    metrics.setProperty(runtime, "frame", std::move(frame));
-    jsi::Object constants(runtime);
-    constants.setProperty(
-        runtime, "initialWindowMetrics", std::move(metrics));
-    return constants;
-  }
-
-  HeadlessRNModuleHost host_;
 };
 
 class SourceCodeModule final : public react::TurboModule {
@@ -1197,8 +1092,11 @@ void completeOpenUrlPromise(
 
 class IntentAndroidModule final : public react::TurboModule {
  public:
-  explicit IntentAndroidModule(std::shared_ptr<react::CallInvoker> jsInvoker)
-      : TurboModule("IntentAndroid", std::move(jsInvoker)) {
+  explicit IntentAndroidModule(
+      std::shared_ptr<react::CallInvoker> jsInvoker,
+      std::optional<std::string> initialUrl)
+      : TurboModule("IntentAndroid", std::move(jsInvoker)),
+        initialUrl_(std::move(initialUrl)) {
     methodMap_["getInitialURL"] = {0, &getInitialURL};
     methodMap_["canOpenURL"] = {1, &canOpenURL};
     methodMap_["openURL"] = {1, &openURL};
@@ -1207,16 +1105,20 @@ class IntentAndroidModule final : public react::TurboModule {
   }
 
  private:
+  std::optional<std::string> initialUrl_;
+
   static jsi::Value getInitialURL(
       jsi::Runtime& runtime,
-      react::TurboModule&,
+      react::TurboModule& module,
       const jsi::Value*,
       size_t) {
+    auto url = static_cast<IntentAndroidModule&>(module).initialUrl_;
     return react::createPromiseAsJSIValue(
         runtime,
-        [](jsi::Runtime& runtime, std::shared_ptr<react::Promise> promise) {
-          if (const char* url = std::getenv("RNSIM_INITIAL_URL")) {
-            promise->resolve(jsi::String::createFromUtf8(runtime, url));
+        [url = std::move(url)](
+            jsi::Runtime& runtime, std::shared_ptr<react::Promise> promise) {
+          if (url) {
+            promise->resolve(jsi::String::createFromUtf8(runtime, *url));
             return;
           }
           promise->resolve(jsi::Value::null());
@@ -1306,8 +1208,11 @@ class IntentAndroidModule final : public react::TurboModule {
 
 class LinkingManagerModule final : public react::TurboModule {
  public:
-  explicit LinkingManagerModule(std::shared_ptr<react::CallInvoker> jsInvoker)
-      : TurboModule("LinkingManager", std::move(jsInvoker)) {
+  explicit LinkingManagerModule(
+      std::shared_ptr<react::CallInvoker> jsInvoker,
+      std::optional<std::string> initialUrl)
+      : TurboModule("LinkingManager", std::move(jsInvoker)),
+        initialUrl_(std::move(initialUrl)) {
     methodMap_["getInitialURL"] = {0, &getInitialURL};
     methodMap_["canOpenURL"] = {1, &canOpenURL};
     methodMap_["openURL"] = {1, &openURL};
@@ -1317,16 +1222,20 @@ class LinkingManagerModule final : public react::TurboModule {
   }
 
  private:
+  std::optional<std::string> initialUrl_;
+
   static jsi::Value getInitialURL(
       jsi::Runtime& runtime,
-      react::TurboModule&,
+      react::TurboModule& module,
       const jsi::Value*,
       size_t) {
+    auto url = static_cast<LinkingManagerModule&>(module).initialUrl_;
     return react::createPromiseAsJSIValue(
         runtime,
-        [](jsi::Runtime& runtime, std::shared_ptr<react::Promise> promise) {
-          if (const char* url = std::getenv("RNSIM_INITIAL_URL")) {
-            promise->resolve(jsi::String::createFromUtf8(runtime, url));
+        [url = std::move(url)](
+            jsi::Runtime& runtime, std::shared_ptr<react::Promise> promise) {
+          if (url) {
+            promise->resolve(jsi::String::createFromUtf8(runtime, *url));
             return;
           }
           promise->resolve(jsi::Value::null());
@@ -1727,9 +1636,6 @@ std::shared_ptr<react::TurboModule> getHeadlessRNModule(
     const std::string& profile,
     const std::shared_ptr<react::CallInvoker>& jsInvoker,
     const HeadlessRNModuleHost& host) {
-  if (profile == "android-rn73" && name == "PlatformConstants") {
-    return std::make_shared<PlatformConstantsAndroidRN73>(jsInvoker);
-  }
   if (profile == "android-rn87" && name == "PlatformConstants") {
     return std::make_shared<PlatformConstantsAndroidRN87>(jsInvoker);
   }
@@ -1794,9 +1700,6 @@ std::shared_ptr<react::TurboModule> getHeadlessRNModule(
   if (name == "ReactDevToolsRuntimeSettingsModule") {
     return createHeadlessReactDevToolsRuntimeSettingsModule(jsInvoker);
   }
-  if (name == "RNCSafeAreaContext") {
-    return std::make_shared<RNCSafeAreaContextModule>(jsInvoker, host);
-  }
   if (isAndroidProfile(profile) && name == "StatusBarManager") {
     return std::make_shared<StatusBarManagerAndroid>(jsInvoker);
   }
@@ -1829,7 +1732,7 @@ std::shared_ptr<react::TurboModule> getHeadlessRNModule(
     return std::make_shared<HeadlessJsTaskSupportModule>(jsInvoker);
   }
   if (isAndroidProfile(profile) && name == "IntentAndroid") {
-    return std::make_shared<IntentAndroidModule>(jsInvoker);
+    return std::make_shared<IntentAndroidModule>(jsInvoker, host.initialUrl);
   }
   if (isAndroidProfile(profile) && name == "PermissionsAndroid") {
     return std::make_shared<PermissionsAndroidModule>(jsInvoker);
@@ -1852,7 +1755,7 @@ std::shared_ptr<react::TurboModule> getHeadlessRNModule(
   }
   if ((isAndroidProfile(profile) || profile == "ios-rn87") &&
       name == "LinkingManager") {
-    return std::make_shared<LinkingManagerModule>(jsInvoker);
+    return std::make_shared<LinkingManagerModule>(jsInvoker, host.initialUrl);
   }
   if (profile == "ios-rn87" && name == "AlertManager") {
     return createHeadlessAlertManagerModule(jsInvoker);
@@ -1911,22 +1814,8 @@ std::vector<std::string> getHeadlessRNModuleNames(const std::string& profile) {
       "ModalManager",
       "DevLoadingView",
       "RedBox",
-      "ReactDevToolsRuntimeSettingsModule",
-      "RNCSafeAreaContext"};
-  if (profile == "android-rn73") {
-    result.insert(
-        result.end(),
-        {"PlatformConstants",
-         "StatusBarManager",
-         "ToastAndroid",
-         "IntentAndroid",
-         "PermissionsAndroid",
-         "DialogManagerAndroid",
-         "ShareModule",
-         "DeviceEventManager",
-         "SoundManager",
-         "LinkingManager"});
-  } else if (profile == "android-rn87") {
+      "ReactDevToolsRuntimeSettingsModule"};
+  if (profile == "android-rn87") {
     result.insert(
         result.end(),
         {"PlatformConstants",
@@ -1993,22 +1882,8 @@ std::vector<HeadlessModuleCapability> getHeadlessRNModuleCapabilities(
       {"DevLoadingView", "headless-adapter"},
       {"RedBox", "headless-adapter"},
       {"ReactDevToolsRuntimeSettingsModule", "in-memory-dev-settings"},
-      {"RNCSafeAreaContext", "window-relative-insets"},
   };
-  if (profile == "android-rn73") {
-    result.insert(
-        result.end(),
-        {{"PlatformConstants", "fixed-fixture"},
-         {"StatusBarManager", "skia-status-bar"},
-         {"ToastAndroid", "skia-toast"},
-         {"IntentAndroid", "imgui-or-mock"},
-         {"PermissionsAndroid", "imgui-or-mock"},
-         {"DialogManagerAndroid", "imgui-or-mock"},
-         {"ShareModule", "imgui-or-mock"},
-         {"DeviceEventManager", "hardware-back-press"},
-         {"SoundManager", "headless-adapter"},
-         {"LinkingManager", "imgui-or-mock"}});
-  } else if (profile == "android-rn87") {
+  if (profile == "android-rn87") {
     result.insert(
         result.end(),
         {{"PlatformConstants", "headless-platform-adapter"},

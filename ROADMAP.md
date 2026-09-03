@@ -4,6 +4,15 @@ React Native Simulator follows the phased architecture in
 [SIMULATOR_DESIGN.md](docs/design/SIMULATOR_DESIGN.md). The rolling Nightly is
 experimental and Android-first.
 
+## Addon host ABI 4
+
+- The engine hosts addons through ABI 4, a generated catalog, and a
+  transactional launch planner. `safe-area` auto-loads; `compat-rn73` is the
+  only RN 0.73.x JS adapter on the RN 0.87 native engine.
+- Deferred: addon-painted Skia components, dynamic viewport/inset updates, and
+  addon-declared Fabric name aliases. See
+  [ADDON_HOST_ARCHITECTURE.md](docs/design/ADDON_HOST_ARCHITECTURE.md).
+
 ## Expo host-adapter
 
 - Expo project identity, AppEntry / expo-router entry discovery, and AppRegistry

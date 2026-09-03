@@ -20,8 +20,13 @@ struct SimulatorEnvironmentConfig {
   std::optional<std::string> orientation;
 };
 
+struct SimulatorAddonConfigEntry {
+  std::optional<std::string> name;
+  std::optional<std::filesystem::path> path;
+};
+
 struct SimulatorLocalConfig {
-  int schemaVersion{1};
+  int schemaVersion{2};
   std::string reactNative;
   std::string platform{"android"};
   std::optional<std::string> appKey;
@@ -31,7 +36,9 @@ struct SimulatorLocalConfig {
   std::optional<float> viewportHeight;
   std::optional<float> pointScaleFactor;
   std::optional<std::filesystem::path> fontDirectory;
-  std::vector<std::filesystem::path> addons;
+  std::vector<SimulatorAddonConfigEntry> addons;
+  std::vector<std::string> disabledAddons;
+  bool autoAddons{true};
   SimulatorEnvironmentConfig environment;
 };
 

@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://react-native-simulator.invalid/schema/rnsim-v1.json",
+  "$id": "https://react-native-simulator.invalid/schema/rnsim-v2.json",
   "title": "React Native Simulator local configuration",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "reactNative"],
   "properties": {
-    "schemaVersion": {"const": 1},
+    "schemaVersion": {"const": 2},
     "reactNative": {"const": "0.87.0"},
     "platform": {"enum": ["android", "ios"], "default": "android"},
     "appKey": {"type": "string", "minLength": 1},
@@ -30,8 +30,20 @@
     },
     "addons": {
       "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "oneOf": [
+          {"required": ["name"], "properties": {"name": {"type": "string", "minLength": 1}}},
+          {"required": ["path"], "properties": {"path": {"type": "string", "minLength": 1}}}
+        ]
+      }
+    },
+    "disabledAddons": {
+      "type": "array",
       "items": {"type": "string", "minLength": 1}
     },
+    "autoAddons": {"type": "boolean", "default": true},
     "environment": {
       "type": "object",
       "additionalProperties": false,

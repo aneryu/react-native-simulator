@@ -1156,11 +1156,12 @@ void drawRuntimeCapabilities(const RuntimeStatus& status) {
         limited ? imgui_theme::palette().danger
                 : imgui_theme::palette().muted);
     ImGui::TextWrapped(
-        "%s · %s · %s\n%s",
+        "%s · %s · %s · %s\n%s",
         capability.type.c_str(),
         capability.name.c_str(),
         capabilityClassLabel(capability.classification),
-        capability.fidelity.c_str());
+        capability.owner.c_str(),
+        capability.note.c_str());
     ImGui::PopStyleColor();
     ImGui::Dummy({0.0f, 2.0f});
   }
@@ -1956,14 +1957,34 @@ EngineResult runInteractiveFrontend(
         if (prepareRuntime) {
           prepareRuntime([state] { return state->cancelRequested.load(); });
         }
-      } catch (const std::exception& error) {
+      } catch (const RetryableNetworkError& error) {
         result.exitCode = 1;
         result.error = error.what();
         preparationFailed = true;
+      } catch (const TerminalLaunchPlanError& error) {
+        result.exitCode = 1;
+        result.error = error.what();
+        {
+          std::lock_guard lock(state->mutex);
+          state->result = result;
+        }
+        break;
+      } catch (const std::exception& error) {
+        result.exitCode = 1;
+        result.error = error.what();
+        {
+          std::lock_guard lock(state->mutex);
+          state->result = result;
+        }
+        break;
       } catch (...) {
         result.exitCode = 1;
         result.error = "Unknown interactive runtime preparation error";
-        preparationFailed = true;
+        {
+          std::lock_guard lock(state->mutex);
+          state->result = result;
+        }
+        break;
       }
 
       if (preparationFailed) {
