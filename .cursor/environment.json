@@ -1,0 +1,5 @@
+{
+  "name": "react-native-simulator (Linux source-build host)",
+  "user": "ubuntu",
+  "install": "./.cursor/install.sh"
+}
