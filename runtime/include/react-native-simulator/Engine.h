@@ -79,6 +79,17 @@ struct EngineResult {
   std::shared_ptr<const SceneSnapshot> scene;
 };
 
+struct AddonPreparationCounters {
+  std::uint64_t moduleOpens{0};
+  std::uint64_t moduleCreates{0};
+  std::uint64_t manifestReads{0};
+  std::uint64_t planFinalizations{0};
+  std::uint64_t planApplications{0};
+};
+
+AddonPreparationCounters& addonPreparationCounters();
+void resetAddonPreparationCounters();
+
 struct ApplicationLaunchState {
   std::uint64_t runtimeGeneration{0};
   bool initialBundlesLoaded{false};

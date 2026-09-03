@@ -34,7 +34,9 @@ int main(int argc, char** argv) {
       result.metricsJson.find("\"reactFabricInserts\"") == std::string::npos ||
       result.metricsJson.find("\"reactFabricUpdates\"") == std::string::npos ||
       result.metricsJson.find("\"reactFabricRemoves\"") == std::string::npos ||
-      result.metricsJson.find("\"reactFabricDeletes\"") == std::string::npos) {
+      result.metricsJson.find("\"reactFabricDeletes\"") == std::string::npos ||
+      result.metricsJson.find("\"unknownCommands\":") == std::string::npos ||
+      result.metricsJson.find("\"unknownCommands\":0") != std::string::npos) {
     std::cerr << result.error << '\n' << result.metricsJson << '\n';
     return 1;
   }

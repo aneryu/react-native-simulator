@@ -17,6 +17,22 @@
 namespace rns = ReactNativeSimulator;
 
 namespace {
+rns::AddonPreparationCounters gPreparationCounters;
+} // namespace
+
+namespace ReactNativeSimulator {
+
+AddonPreparationCounters& addonPreparationCounters() {
+  return gPreparationCounters;
+}
+
+void resetAddonPreparationCounters() {
+  gPreparationCounters = {};
+}
+
+} // namespace ReactNativeSimulator
+
+namespace {
 
 std::string joinOrigins(const std::vector<rns::AddonRequestOrigin>& origins) {
   std::string result;
@@ -181,6 +197,7 @@ rns::CommittedAddon loadBuiltIn(const rns::BuiltInAddonSpec& spec,
         "Built-in addon factory returned null: " + spec.catalogKey);
   }
   loaded.manifest = loaded.addon->manifest();
+  ++rns::addonPreparationCounters().manifestReads;
   if (loaded.manifest.name != spec.catalogKey) {
     throw rns::TerminalLaunchPlanError(
         "Built-in addon name '" + loaded.manifest.name +
@@ -201,6 +218,7 @@ rns::CommittedAddon loadModule(const rns::ModuleAddonSpec& spec,
         "Cannot load addon " + spec.path.string() + ": " +
         (error != nullptr ? error : "unknown dlopen error"));
   }
+  ++rns::addonPreparationCounters().moduleOpens;
   dlerror();
   auto getDescriptor = reinterpret_cast<rns::GetSimulatorAddonDescriptorV4>(
       dlsym(library->handle, rns::kSimulatorAddonEntryPoint));
@@ -253,6 +271,7 @@ rns::CommittedAddon loadModule(const rns::ModuleAddonSpec& spec,
     throw rns::TerminalLaunchPlanError(
         "Addon factory returned null: " + spec.path.string());
   }
+  ++rns::addonPreparationCounters().moduleCreates;
   rns::CommittedAddon loaded;
   loaded.origin = {
       .source = rns::AddonSource::Module,
@@ -262,6 +281,7 @@ rns::CommittedAddon loadModule(const rns::ModuleAddonSpec& spec,
   loaded.library = std::move(library);
   loaded.addon = rns::AddonPtr(raw, rns::AddonDeleter{descriptor->destroy});
   loaded.manifest = loaded.addon->manifest();
+  ++rns::addonPreparationCounters().manifestReads;
   if (loaded.manifest.name != descriptor->name) {
     throw rns::TerminalLaunchPlanError(
         "Addon manifest name '" + loaded.manifest.name +
@@ -284,6 +304,7 @@ rns::CommittedAddon loadInProcess(rns::InProcessAddonSpec spec,
   };
   loaded.addon = rns::AddonPtr(spec.addon.release(), rns::AddonDeleter{});
   loaded.manifest = loaded.addon->manifest();
+  ++rns::addonPreparationCounters().manifestReads;
   if (!rns::validAddonName(loaded.manifest.name)) {
     throw rns::TerminalLaunchPlanError(
         "Invalid InProcess addon name '" + loaded.manifest.name + "'");
@@ -805,6 +826,7 @@ PreparedLaunchPlan finalizeLaunchPlan(
   plan.impl_->frameworkModuleNames = std::move(frameworkModules);
   plan.impl_->frameworkComponentNames = std::move(frameworkComponents);
   draft.impl_.reset();
+  ++rns::addonPreparationCounters().planFinalizations;
   return plan;
 }
 
