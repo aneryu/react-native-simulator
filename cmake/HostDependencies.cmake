@@ -146,6 +146,11 @@ else()
       -fsanitize=address,undefined -fno-sanitize=vptr
       -fno-omit-frame-pointer)
     target_link_options(rns_folly_runtime PUBLIC -fsanitize=address,undefined)
+    # ASan intercepts recvmmsg/sendmmsg, so Folly's address static_asserts
+    # are no longer constant expressions. Keep the rest of Folly sanitized.
+    set_source_files_properties(
+      "${FOLLY_INCLUDE_DIR}/folly/net/NetOps.cpp"
+      PROPERTIES COMPILE_OPTIONS "-fno-sanitize=address,undefined")
   endif()
 
   add_library(rns_folly INTERFACE)
