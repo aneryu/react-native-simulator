@@ -11,52 +11,6 @@ if(NOT DEFINED RN_ROOT OR NOT DEFINED HERMES_SOURCE OR
   message(FATAL_ERROR
     "Configure from the repository root: cmake -S . -B build")
 endif()
-find_path(FOLLY_INCLUDE_DIR folly/dynamic.h
-  PATHS /opt/homebrew/include /usr/local/include)
-if(NOT FOLLY_INCLUDE_DIR)
-  message(FATAL_ERROR "folly headers are required (for example: brew install folly).")
-endif()
-
-find_package(fmt CONFIG REQUIRED)
-find_package(Boost CONFIG REQUIRED)
-find_package(Threads REQUIRED)
-find_file(FOLLY_STATIC_LIBRARY NAMES libfolly.a REQUIRED
-  PATHS /opt/homebrew/lib /usr/local/lib)
-find_file(RNS_DOUBLE_CONVERSION_STATIC_LIBRARY NAMES libdouble-conversion.a REQUIRED
-  PATHS /opt/homebrew/lib /usr/local/lib)
-find_file(RNS_FMT_STATIC_LIBRARY NAMES libfmt.a REQUIRED
-  PATHS /opt/homebrew/lib /usr/local/lib)
-if(RNS_ENABLE_SANITIZERS)
-  find_library(RNS_FOLLY_SHARED_LIBRARY NAMES folly REQUIRED
-    PATHS /opt/homebrew/lib /usr/local/lib)
-  find_library(RNS_DOUBLE_CONVERSION_SHARED_LIBRARY NAMES double-conversion REQUIRED
-    PATHS /opt/homebrew/lib /usr/local/lib)
-endif()
-
-# Homebrew's shared Folly records broad formula dependencies that this runtime
-# does not use, including Boost.Regex and its ICU dylibs. Link the matching
-# static archive so the linker extracts only referenced Folly objects. Keep its
-# actual link requirements target-scoped; consumers of our intermediate static
-# libraries need these dependencies too. ld64's load_hidden keeps Folly's
-# implementation and weak libc++ template symbols from interposing on Hermes.
-add_library(rns_folly INTERFACE)
-target_include_directories(rns_folly INTERFACE "${FOLLY_INCLUDE_DIR}")
-if(RNS_ENABLE_SANITIZERS)
-  # Homebrew's static Folly contains uninstrumented weak libc++ std::regex
-  # instantiations. Letting ld coalesce those into an ASan executable breaks
-  # libc++'s container annotations. Keeping Folly in a separate image preserves
-  # two-level namespace isolation for sanitizer builds; Release remains static.
-  target_link_libraries(rns_folly INTERFACE
-    "${RNS_FOLLY_SHARED_LIBRARY}"
-    glog::glog
-    "${RNS_DOUBLE_CONVERSION_SHARED_LIBRARY}")
-else()
-  target_link_libraries(rns_folly INTERFACE
-    "-Wl,-load_hidden,${FOLLY_STATIC_LIBRARY}"
-    glog::glog
-    "${RNS_FMT_STATIC_LIBRARY}"
-    "${RNS_DOUBLE_CONVERSION_STATIC_LIBRARY}")
-endif()
 
 foreach(required_path
     "${HERMES_SOURCE}/API/hermes/hermes.h"
@@ -182,8 +136,8 @@ add_library(react-native-simulator-engine STATIC
   src/core/SimulatorAddon.cpp
   src/core/SimulatorEventLoop.cpp
   src/core/HostEnvironment.cpp
+  src/core/HostPlatform.cpp
   src/core/HttpBundleLoader.cpp
-  src/core/PackagerConnection.mm
   src/core/SimulatorEngine.cpp
   src/core/react_native_simulator_shims.cpp
   src/devtools/InspectorTransport.cpp
@@ -202,10 +156,8 @@ add_library(react-native-simulator-engine STATIC
   src/modules/HeadlessAnimatedModule.cpp
   src/modules/HeadlessImageAssets.cpp
   src/modules/HeadlessImageManager.cpp
-  src/modules/HeadlessHttp.mm
+  src/modules/ImagePixelSize.cpp
   src/modules/HeadlessBlob.cpp
-  src/modules/HeadlessWebSocket.mm
-  src/modules/HeadlessImageEditing.mm
   src/modules/HeadlessIosModules.cpp
   src/modules/HeadlessKeyboard.cpp
   src/modules/HeadlessBackPress.cpp
@@ -248,14 +200,26 @@ add_library(react-native-simulator-engine STATIC
   ${ANIMATED_SOURCES}
 )
 add_library(ReactNativeSimulator::Engine ALIAS react-native-simulator-engine)
-set_source_files_properties(src/modules/HeadlessHttp.mm PROPERTIES
-  COMPILE_FLAGS "-fobjc-arc")
-set_source_files_properties(src/modules/HeadlessImageEditing.mm PROPERTIES
-  COMPILE_FLAGS "-fobjc-arc")
-set_source_files_properties(src/modules/HeadlessWebSocket.mm PROPERTIES
-  COMPILE_FLAGS "-fobjc-arc")
-set_source_files_properties(src/core/PackagerConnection.mm PROPERTIES
-  COMPILE_FLAGS "-fobjc-arc")
+if(APPLE)
+  target_sources(react-native-simulator-engine PRIVATE
+    src/core/PackagerConnection.mm
+    src/modules/HeadlessHttp.mm
+    src/modules/HeadlessWebSocket.mm
+    src/modules/HeadlessImageEditing.mm)
+  set_source_files_properties(
+    src/core/PackagerConnection.mm
+    src/modules/HeadlessHttp.mm
+    src/modules/HeadlessWebSocket.mm
+    src/modules/HeadlessImageEditing.mm
+    PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+else()
+  target_sources(react-native-simulator-engine PRIVATE
+    src/core/PackagerConnection.cpp
+    src/modules/HeadlessHttp.cpp
+    src/modules/HeadlessWebSocket.cpp
+    src/modules/HeadlessImageEditing.cpp
+    src/modules/ImageBuffer.cpp)
+endif()
 set_target_properties(react-native-simulator-engine PROPERTIES
   VERSION ${PROJECT_VERSION}
   SOVERSION 0
@@ -327,18 +291,41 @@ target_link_libraries(react-native-simulator-engine PRIVATE
   hermesvm_a
   yogacore
   Boost::boost
-  rns_folly
   FastFloat::fast_float
-  Threads::Threads
-  "-framework CoreFoundation"
-  "-framework Foundation"
-  "-framework AppKit"
-  "-framework CoreGraphics"
-  "-framework ImageIO"
-)
+  Threads::Threads)
+# Folly headers need FOLLY_NO_CONFIG on Linux. Keep this PUBLIC so the CLI,
+# tests, and frontend inherit the same include path and compile definitions.
+target_link_libraries(react-native-simulator-engine PUBLIC rns_folly)
+if(APPLE)
+  target_link_libraries(react-native-simulator-engine PRIVATE
+    "-framework CoreFoundation"
+    "-framework Foundation"
+    "-framework AppKit"
+    "-framework CoreGraphics"
+    "-framework ImageIO")
+else()
+  target_link_libraries(react-native-simulator-engine PRIVATE
+    CURL::libcurl
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    PNG::PNG
+    ZLIB::ZLIB
+    "${UUID_LIBRARY}"
+    ${CMAKE_DL_LIBS}
+    atomic)
+endif()
 
 target_compile_options(
   react-native-simulator-engine PRIVATE -Wall -Wextra -Wpedantic)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  # RN ConcreteShadowNode::Props() collides with the nested Props type.
+  target_compile_options(react-native-simulator-engine PRIVATE
+    -Wno-changes-meaning)
+endif()
+if(NOT APPLE)
+  target_compile_options(react-native-simulator-engine PRIVATE
+    -include "${CMAKE_CURRENT_LIST_DIR}/shims/compat/ForceStdint.h")
+endif()
 # AppleClang 17's vptr sanitizer reports invalid std::stringbuf vptrs while
 # crossing the macOS system libc++ boundary, before simulator application code
 # runs. Keep this disabled consistently for the engine, addons, and CLI; ASan
@@ -353,12 +340,21 @@ endif()
 
 function(rns_add_simulator_addon target_name output_name source)
   add_library(${target_name} MODULE ${source})
+  if(APPLE)
+    set(_addon_suffix ".dylib")
+    set(_addon_build_rpath "@loader_path")
+    set(_addon_install_rpath "@loader_path/..")
+  else()
+    set(_addon_suffix ".so")
+    set(_addon_build_rpath "\$ORIGIN")
+    set(_addon_install_rpath "\$ORIGIN/..")
+  endif()
   set_target_properties(${target_name} PROPERTIES
     PREFIX ""
     OUTPUT_NAME "${output_name}"
-    SUFFIX ".dylib"
-    BUILD_RPATH "@loader_path"
-    INSTALL_RPATH "@loader_path/..")
+    SUFFIX "${_addon_suffix}"
+    BUILD_RPATH "${_addon_build_rpath}"
+    INSTALL_RPATH "${_addon_install_rpath}")
   target_compile_definitions(${target_name} PRIVATE
     RNS_REACT_NATIVE_VERSION="${RNS_REACT_NATIVE_VERSION}"
     RNS_HERMES_VERSION="${RNS_HERMES_VERSION}")
@@ -368,12 +364,20 @@ function(rns_add_simulator_addon target_name output_name source)
     "${RN_ROOT}/ReactCommon/jsi"
     "${RN_ROOT}/ReactCommon/callinvoker"
     "${RN_ROOT}/ReactCommon/runtimeexecutor"
-    "${RN_ROOT}/ReactCommon/react/nativemodule/core"
-    "${FOLLY_INCLUDE_DIR}")
-  target_link_options(${target_name} PRIVATE
-    "-Wl,-undefined,dynamic_lookup"
-    "$<$<CONFIG:Release>:-Wl,-dead_strip>")
+    "${RN_ROOT}/ReactCommon/react/nativemodule/core")
+  target_link_libraries(${target_name} PRIVATE rns_folly_headers)
+  if(APPLE)
+    target_link_options(${target_name} PRIVATE
+      "-Wl,-undefined,dynamic_lookup"
+      "$<$<CONFIG:Release>:-Wl,-dead_strip>")
+  else()
+    target_link_options(${target_name} PRIVATE
+      "$<$<CONFIG:Release>:-Wl,--gc-sections>")
+  endif()
   target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(${target_name} PRIVATE -Wno-changes-meaning)
+  endif()
   if(RNS_ENABLE_SANITIZERS)
     target_compile_options(${target_name} PRIVATE
       -fsanitize=address,undefined -fno-sanitize=vptr
@@ -401,10 +405,17 @@ set_target_properties(react-native-simulator-addon-rntester PROPERTIES
 add_executable(react-native-simulator
   src/core/SimulatorConfig.cpp
   src/core/main.cpp)
+if(APPLE)
+  set(_rnsim_build_rpath "@loader_path")
+  set(_rnsim_install_rpath "@loader_path/../lib")
+else()
+  set(_rnsim_build_rpath "\$ORIGIN")
+  set(_rnsim_install_rpath "\$ORIGIN/../lib")
+endif()
 set_target_properties(react-native-simulator PROPERTIES
   OUTPUT_NAME "rnsim"
-  BUILD_RPATH "@loader_path"
-  INSTALL_RPATH "@loader_path/../lib")
+  BUILD_RPATH "${_rnsim_build_rpath}"
+  INSTALL_RPATH "${_rnsim_install_rpath}")
 target_include_directories(react-native-simulator PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/src/core"
   "${RN_ROOT}/ReactCommon"
@@ -416,13 +427,23 @@ target_include_directories(react-native-simulator PRIVATE
 target_link_libraries(react-native-simulator PRIVATE
   react-native-simulator-engine
   Boost::boost)
-target_link_options(react-native-simulator PRIVATE
-  "$<$<CONFIG:Release>:-Wl,-dead_strip>")
-if(NOT RNS_ENABLE_SANITIZERS)
+if(APPLE)
   target_link_options(react-native-simulator PRIVATE
-    "-Wl,-exported_symbols_list,${PROJECT_ROOT}/cmake/macos-engine-exported-symbols.txt")
-  set_property(TARGET react-native-simulator APPEND PROPERTY LINK_DEPENDS
-    "${PROJECT_ROOT}/cmake/macos-engine-exported-symbols.txt")
+    "$<$<CONFIG:Release>:-Wl,-dead_strip>")
+  if(NOT RNS_ENABLE_SANITIZERS)
+    target_link_options(react-native-simulator PRIVATE
+      "-Wl,-exported_symbols_list,${PROJECT_ROOT}/cmake/macos-engine-exported-symbols.txt")
+    set_property(TARGET react-native-simulator APPEND PROPERTY LINK_DEPENDS
+      "${PROJECT_ROOT}/cmake/macos-engine-exported-symbols.txt")
+  endif()
+else()
+  target_link_options(react-native-simulator PRIVATE
+    "-rdynamic")
+endif()
+if(APPLE)
+  set(_rnsim_min_macos "${CMAKE_OSX_DEPLOYMENT_TARGET}")
+else()
+  set(_rnsim_min_macos "")
 endif()
 target_compile_definitions(react-native-simulator PRIVATE
   RNS_PROJECT_VERSION="${RNS_RELEASE_CHANNEL}"
@@ -431,8 +452,11 @@ target_compile_definitions(react-native-simulator PRIVATE
   RNS_HERMES_VERSION="${RNS_HERMES_VERSION}"
   RNS_BUILD_COMMIT="${RNS_BUILD_COMMIT}"
   RNS_BUILD_DIRTY="${RNS_BUILD_DIRTY}"
-  RNS_BUILD_MIN_MACOS="${CMAKE_OSX_DEPLOYMENT_TARGET}")
+  RNS_BUILD_MIN_MACOS="${_rnsim_min_macos}")
 target_compile_options(react-native-simulator PRIVATE -Wall -Wextra -Wpedantic)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(react-native-simulator PRIVATE -Wno-changes-meaning)
+endif()
 if(RNS_ENABLE_SANITIZERS)
   target_compile_options(react-native-simulator PRIVATE
     -fsanitize=address,undefined -fno-sanitize=vptr
@@ -457,12 +481,18 @@ if(RNS_ENABLE_IMGUI)
   add_subdirectory("${PROJECT_ROOT}/frontend" "${CMAKE_BINARY_DIR}/frontend")
 
   if(RNS_ENABLE_SKIA)
-    target_sources(react-native-simulator PRIVATE
-      "${PROJECT_ROOT}/frontend/InteractiveFrontend.cpp"
-      "${PROJECT_ROOT}/frontend/MacWindowChrome.mm")
-    set_source_files_properties(
-      "${PROJECT_ROOT}/frontend/MacWindowChrome.mm" PROPERTIES
-      COMPILE_FLAGS "-fobjc-arc")
+    if(APPLE)
+      target_sources(react-native-simulator PRIVATE
+        "${PROJECT_ROOT}/frontend/InteractiveFrontend.cpp"
+        "${PROJECT_ROOT}/frontend/MacWindowChrome.mm")
+      set_source_files_properties(
+        "${PROJECT_ROOT}/frontend/MacWindowChrome.mm" PROPERTIES
+        COMPILE_FLAGS "-fobjc-arc")
+    else()
+      target_sources(react-native-simulator PRIVATE
+        "${PROJECT_ROOT}/frontend/InteractiveFrontend.cpp"
+        "${PROJECT_ROOT}/frontend/HostWindowChrome.cpp")
+    endif()
     target_include_directories(react-native-simulator PRIVATE
       "${PROJECT_ROOT}/frontend"
       "${CMAKE_BINARY_DIR}/frontend"
@@ -470,16 +500,20 @@ if(RNS_ENABLE_IMGUI)
     target_compile_definitions(react-native-simulator PRIVATE
       RNS_ENABLE_IMGUI=1)
     target_link_libraries(react-native-simulator PRIVATE
-      react-native-simulator-imgui
-      "-framework AppKit")
-    add_dependencies(react-native-simulator react-native-simulator-app-icon)
-    add_custom_command(TARGET react-native-simulator POST_BUILD
-      COMMAND osascript -l JavaScript
-              "${PROJECT_ROOT}/tools/macos/set-file-icon.js"
-              "${PROJECT_ROOT}/docs/assets/AppIcon.icns"
-              "$<TARGET_FILE:react-native-simulator>"
-      COMMENT "Setting rnsim file icon"
-      VERBATIM)
+      react-native-simulator-imgui)
+    if(APPLE)
+      target_link_libraries(react-native-simulator PRIVATE "-framework AppKit")
+      add_dependencies(react-native-simulator react-native-simulator-app-icon)
+      add_custom_command(TARGET react-native-simulator POST_BUILD
+        COMMAND osascript -l JavaScript
+                "${PROJECT_ROOT}/tools/macos/set-file-icon.js"
+                "${PROJECT_ROOT}/docs/assets/AppIcon.icns"
+                "$<TARGET_FILE:react-native-simulator>"
+        COMMENT "Setting rnsim file icon"
+        VERBATIM)
+    else()
+      add_dependencies(react-native-simulator react-native-simulator-app-icon)
+    endif()
   endif()
 endif()
 

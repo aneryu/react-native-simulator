@@ -2,9 +2,10 @@
 
 ## Project goal
 
-This project builds React Native Simulator, a native React Native runtime and renderer on macOS.
+This project builds React Native Simulator, a native React Native runtime and renderer.
 It runs caller-provided React Native applications without an iOS or Android client process and
 supports interactive, headless, and conformance modes through one semantic engine.
+The Nightly binary targets macOS arm64. Linux is a source-build host for the same engine.
 
 The target is `react-native-simulator`, not a standalone Hermes runner, benchmark tool, or a
 headless-only product. The completed engine must include Hermes/JSI, React Native runtime
@@ -48,7 +49,7 @@ See `docs/design/SIMULATOR_DESIGN.md` for the architecture contract and `ROADMAP
   and persisted JSON output. Workload names and result fields belong to the caller's bundle, not to a
   repository sample application. The benchmark runner launches isolated
   processes, discards warmups, preserves raw samples, and reports distribution statistics.
-  Hermes heap/GC, macOS current/peak RSS, and process CPU are sampled by the native host. Cross-
+  Hermes heap/GC, host current/peak RSS, and process CPU are sampled by the native host. Cross-
   version comparison uses complete binary+bundle pairs and independent-process ABBA/BAAB order.
   Pure-JavaScript benchmark features must not displace or redefine the simulator goal.
 - `rnsim.json` is the local configuration boundary. It is versioned, resolves paths relative to
@@ -81,7 +82,7 @@ See `docs/design/SIMULATOR_DESIGN.md` for the architecture contract and `ROADMAP
   a placeholder, mock, or unknown component/module as certified behavior.
 - Prefer small, observable milestones following `ROADMAP.md`: preserve the engine,
   replace the mounting/rendering boundary, add the interactive frontend, then certify Android and iOS.
-- Validate behavior with real macOS execution in addition to static checks. Tests cover startup,
+- Validate behavior on the host OS in addition to static checks. Tests cover startup,
   shutdown, exceptions, timers/microtasks, module loading, Fabric/EventDispatcher, and repeated
   isolated workloads.
 - Keep test fixtures narrow. Compiling a fixture to HBC may test the bytecode loader, but must not grow

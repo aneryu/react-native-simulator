@@ -88,6 +88,23 @@ Non-Skia migration builds no longer contain character-based approximate text
 metrics: an RN text measurement request fails with an explicit Skia-required
 error.
 
+## Build on Linux
+
+```bash
+git submodule update --init third_party/skia
+cmake/bootstrap-skia-linux.sh
+cmake --preset release
+cmake --build --preset release --target react-native-simulator
+```
+
+Linux uses Fontconfig for the missing-glyph fallback instead of CoreText, and
+enables Skia's PNG/JPEG/WebP decoders because the host has no ImageIO.
+`cmake/bootstrap-skia-linux.sh` checks out only the Skia DEPS pins required for
+that CPU renderer (FreeType, HarfBuzz, ICU, zlib, libpng, libjpeg-turbo,
+libwebp, Wuffs). It does not run Skia's full `tools/git-sync-deps`, which also
+fetches GPU toolchains this host never links. RAW (piex/dng), bundled expat,
+and Perfetto stay off.
+
 ## Build on Apple Silicon
 
 ```bash

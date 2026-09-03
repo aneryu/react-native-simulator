@@ -126,10 +126,11 @@ App panel open. A newly observed missing-module or fallback-component warning
 opens it once but does not prevent you from closing it; the toolbar can open it
 again. **Interact** sends normal input only while the Engine phase is `Running`;
 leaving that phase cancels an active pointer rather than queueing work into a
-paused or reloading runtime. **Inspect** (`⌘2`) opens the ShadowTree picker,
-cancels any active application pointer, and isolates normal canvas pointer,
-keyboard, and TextInput dispatch. `⌘1`, `⌘2`, `⌘R`, and Inspect Escape remain
-available. Toolbar lifecycle and Fast Refresh chips come from the Engine's
+paused or reloading runtime. **Inspect** (`⌘2`, or `Ctrl+2` on Linux) opens the
+ShadowTree picker, cancels any active application pointer, and isolates normal
+canvas pointer, keyboard, and TextInput dispatch. `⌘1`/`Ctrl+1`, `⌘2`/`Ctrl+2`,
+`⌘R`/`Ctrl+R`, and Inspect Escape remain available. Toolbar lifecycle and Fast
+Refresh chips come from the Engine's
 current structured status rather than an inferred `live` flag.
 
 Save a file in your app. Metro sends a Fast Refresh update over `/hot`. Component
@@ -145,10 +146,11 @@ project-root mismatch remains a non-blocking doctor diagnostic.
 
 JavaScript errors print to stderr and open the App log. The interactive
 runtime pauses instead of closing. Once the initial bundle has loaded, fix the
-source and use **Reload**, `⌘R`, or Metro's `r` to create a fresh
+source and use **Reload**, `⌘R`/`Ctrl+R`, or Metro's `r` to create a fresh
 Hermes/ReactInstance in the same window and restart the current application.
 If preparation failed before the Engine loaded its first bundle, **Reload** is
-replaced by **Retry**: correct the reported problem and click it or press `⌘R`.
+replaced by **Retry**: correct the reported problem and click it or press
+`⌘R`/`Ctrl+R`.
 Another Retry is ignored while that attempt is in flight. Preparation fetches
 and verifies every remote source before queuing any bundle, so a failed remote
 attempt can run again in the same window without leaving its fetched bundle in

@@ -1,4 +1,4 @@
-find_package(Boost CONFIG REQUIRED)
+find_package(Boost REQUIRED)
 find_package(Threads REQUIRED)
 if(RNS_ENABLE_IMGUI)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
@@ -51,11 +51,12 @@ endforeach()
 
 if(RNS_ENABLE_SKIA)
   add_executable(skia-scene-smoke skia-scene-smoke.cpp)
-  find_path(RNS_FOLLY_INCLUDE_DIR folly/dynamic.h REQUIRED)
   target_include_directories(skia-scene-smoke PRIVATE
-    "${RNS_FOLLY_INCLUDE_DIR}")
+    "${FOLLY_INCLUDE_DIR}")
   target_link_libraries(
-    skia-scene-smoke PRIVATE react-native-simulator-skia-renderer)
+    skia-scene-smoke PRIVATE
+    react-native-simulator-skia-renderer
+    rns_folly)
   rns_enable_sanitizers(skia-scene-smoke)
   add_test(NAME skia-typed-scene COMMAND skia-scene-smoke)
 

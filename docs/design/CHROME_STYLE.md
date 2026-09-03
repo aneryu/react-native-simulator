@@ -230,7 +230,8 @@ Raycast surface-lift:
 - Track: `{colors.frame}` + hairline, `{rounded.sm}`.
 - Selected: `{colors.elevated}` + `{colors.ink}`.
 - Unselected: transparent + `{colors.muted}`.
-- Shortcut keycaps `⌘1` / `⌘2` sit inside each segment.
+- Shortcut keycaps sit inside each segment (`⌘1` / `⌘2` on macOS,
+  `Ctrl+1` / `Ctrl+2` on Linux).
 
 ### Keycap
 
@@ -278,7 +279,8 @@ continuous Metro WebSocket health. Offline Inspector uses `PASS` / `CHECK` /
 Use **Reload** after the initial bundle has loaded into an active Engine. For a
 Metro timeout, bundle-fetch error, or another transactional preparation failure
 before the Engine starts, switch that toolbar action to **Retry**.
-`⌘R` invokes the currently visible recovery action. Keep the App panel open so
+`⌘R` (macOS) or `Ctrl+R` (Linux) invokes the currently visible recovery action.
+Keep the App panel open so
 the user can correct the diagnostic before retrying. Retry is the primary
 accent action in that recovery state; normal Reload remains a ghost action.
 Suppress another Retry while preparation is already in flight. Enable Reload

@@ -61,6 +61,16 @@ bool requestPreparationRetry(FrontendState& state) {
   return true;
 }
 
+#ifdef __APPLE__
+constexpr SDL_Keymod kHostCommandModifier = SDL_KMOD_GUI;
+#else
+constexpr SDL_Keymod kHostCommandModifier = SDL_KMOD_CTRL;
+#endif
+
+bool hostCommandHeld(SDL_Keymod mods) {
+  return (mods & kHostCommandModifier) != 0;
+}
+
 // Interact is the application input path. Inspect is an element picker drawn
 // over the live Skia frame; it consumes canvas pointer input so inspection
 // cannot accidentally trigger the application.
@@ -1798,7 +1808,13 @@ void drawToolbar(
   ImGui::SameLine(0.0f, 12.0f);
   int mode = selectOverlay ? 1 : 0;
   const char* modes[] = {"Interact", "Inspect"};
+#ifdef __APPLE__
   const char* shortcuts[] = {"⌘1", "⌘2"};
+  const char* reloadChord = "⌘R";
+#else
+  const char* shortcuts[] = {"Ctrl+1", "Ctrl+2"};
+  const char* reloadChord = "Ctrl+R";
+#endif
   if (imgui_theme::segmented("mode", modes, 2, &mode, shortcuts)) {
     selectOverlay = mode == 1;
   }
@@ -1826,9 +1842,9 @@ void drawToolbar(
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
     if (canRetry) {
-      ImGui::SetTooltip("⌘R  Retry runtime preparation");
+      ImGui::SetTooltip("%s  Retry runtime preparation", reloadChord);
     } else if (canReload) {
-      ImGui::SetTooltip("⌘R  Reload JavaScript and restart the app");
+      ImGui::SetTooltip("%s  Reload JavaScript and restart the app", reloadChord);
     } else {
       ImGui::SetTooltip("Reload is available after the initial bundle loads");
     }
@@ -2185,13 +2201,13 @@ EngineResult runInteractiveFrontend(
           event.type == SDL_EVENT_TEXT_INPUT && event.text.text[0] &&
           !blockCanvasInput && !selectOverlay && !io.WantTextInput &&
           canDispatchRuntimeInput &&
-          (SDL_GetModState() & SDL_KMOD_GUI) == 0) {
+          !hostCommandHeld(SDL_GetModState())) {
         enqueueActionSafely(engine, {
             .type = InteractionActionType::TextInput,
             .text = event.text.text});
       } else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
                  !blockCanvasInput) {
-        const bool commandHeld = (event.key.mod & SDL_KMOD_GUI) != 0;
+        const bool commandHeld = hostCommandHeld(event.key.mod);
         if (commandHeld &&
             (event.key.key == SDLK_1 || event.key.key == SDLK_2)) {
           const bool inspect = event.key.key == SDLK_2;

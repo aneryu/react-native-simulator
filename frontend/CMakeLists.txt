@@ -43,28 +43,39 @@ add_custom_target(react-native-simulator-app-icon
   DEPENDS "${RNS_APP_ICON_HEADER}")
 
 add_executable(react-native-simulator-inspector
-  "${CMAKE_CURRENT_LIST_DIR}/Inspector.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/MacWindowChrome.mm")
-set_source_files_properties(
-  "${CMAKE_CURRENT_LIST_DIR}/MacWindowChrome.mm" PROPERTIES
-  COMPILE_FLAGS "-fobjc-arc")
+  "${CMAKE_CURRENT_LIST_DIR}/Inspector.cpp")
+if(APPLE)
+  target_sources(react-native-simulator-inspector PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/MacWindowChrome.mm")
+  set_source_files_properties(
+    "${CMAKE_CURRENT_LIST_DIR}/MacWindowChrome.mm" PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc")
+else()
+  target_sources(react-native-simulator-inspector PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/HostWindowChrome.cpp")
+endif()
 target_include_directories(react-native-simulator-inspector PRIVATE
   "${FOLLY_INCLUDE_DIR}"
   "${CMAKE_CURRENT_LIST_DIR}"
   "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(react-native-simulator-inspector PRIVATE
   react-native-simulator-imgui
-  rns_folly
-  "-framework AppKit")
+  rns_folly)
+if(APPLE)
+  target_link_libraries(react-native-simulator-inspector PRIVATE
+    "-framework AppKit")
+endif()
 add_dependencies(react-native-simulator-inspector
   react-native-simulator-app-icon)
-add_custom_command(TARGET react-native-simulator-inspector POST_BUILD
-  COMMAND osascript -l JavaScript
-          "${PROJECT_ROOT}/tools/macos/set-file-icon.js"
-          "${PROJECT_ROOT}/docs/assets/AppIcon.icns"
-          "$<TARGET_FILE:react-native-simulator-inspector>"
-  COMMENT "Setting Inspector file icon"
-  VERBATIM)
+if(APPLE)
+  add_custom_command(TARGET react-native-simulator-inspector POST_BUILD
+    COMMAND osascript -l JavaScript
+            "${PROJECT_ROOT}/tools/macos/set-file-icon.js"
+            "${PROJECT_ROOT}/docs/assets/AppIcon.icns"
+            "$<TARGET_FILE:react-native-simulator-inspector>"
+    COMMENT "Setting Inspector file icon"
+    VERBATIM)
+endif()
 target_compile_options(react-native-simulator-inspector PRIVATE
   -Wall -Wextra -Wpedantic)
 rns_enable_sanitizers(react-native-simulator-inspector)
@@ -75,6 +86,13 @@ if(RNS_ENABLE_SKIA)
   target_link_libraries(react-native-simulator-inspector PRIVATE
     react-native-simulator-skia-renderer)
 endif()
+if(APPLE)
+  set(_inspector_build_rpath "@loader_path")
+  set(_inspector_install_rpath "@loader_path/../lib")
+else()
+  set(_inspector_build_rpath "\$ORIGIN")
+  set(_inspector_install_rpath "\$ORIGIN/../lib")
+endif()
 set_target_properties(react-native-simulator-inspector PROPERTIES
-  BUILD_RPATH "@loader_path"
-  INSTALL_RPATH "@loader_path/../lib")
+  BUILD_RPATH "${_inspector_build_rpath}"
+  INSTALL_RPATH "${_inspector_install_rpath}")

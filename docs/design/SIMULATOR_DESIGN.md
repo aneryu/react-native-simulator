@@ -5,10 +5,11 @@ experimental release.
 
 ## Product boundary
 
-React Native Simulator is a native React Native runtime and renderer for macOS.
+React Native Simulator is a native React Native runtime and renderer.
 It hosts Hermes/JSI, ReactInstance, RuntimeScheduler, TurboModules, Fabric,
 Yoga, a typed retained scene, and Skia without an iOS Simulator, Android
-Emulator, or mobile client process.
+Emulator, or mobile client process. The Nightly binary ships for macOS arm64;
+Linux is a source-build host for the same engine.
 
 The production entry point is the native `rnsim` executable. The embedding API
 is `ReactNativeSimulator::Engine`. A standalone Hermes shell is diagnostic
@@ -21,7 +22,7 @@ test, and runtime paths must not require Node.js or npm.
 
 ## Modes
 
-- `interactive` runs the same engine with an SDL/ImGui macOS shell, input,
+- `interactive` runs the same engine with an SDL/ImGui host shell, input,
   live Skia rendering, application selection, reload, and optional DevTools.
 - `headless` runs finite workloads, screenshots, metrics, traces, and CI jobs.
 - public `test` and `conformance` commands fail closed during Nightly. A future
@@ -130,7 +131,7 @@ includes SPDX and license inventories, and is reproducible from a clean commit.
    as explicit boundaries.
 3. Do not label a placeholder, approximation, stale test, or source inventory
    as platform certification.
-4. Validate native behavior on macOS in addition to static checks.
+4. Validate native behavior on the host OS in addition to static checks.
 5. Keep fixtures narrow; HBC fixtures test loading, not an application pipeline.
 6. Record exact dependency revisions and verify the runtime copy being built.
 

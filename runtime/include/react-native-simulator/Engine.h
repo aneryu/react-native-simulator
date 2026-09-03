@@ -82,8 +82,8 @@ struct EngineConfig {
 
 struct EngineResult {
   int exitCode{1};
-  std::string metricsJson;
   std::string error;
+  std::string metricsJson;
   std::shared_ptr<const SceneSnapshot> scene;
 };
 

@@ -11,6 +11,8 @@
 #include "InteractiveFrontend.h"
 #endif
 
+#include "HostPlatform.h"
+
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <folly/json.h>
@@ -453,6 +455,7 @@ folly::dynamic buildInformation() {
       ("reactNative", RNS_REACT_NATIVE_VERSION)
       ("hermes", RNS_HERMES_VERSION)
       ("addonAbi", rns::kSimulatorAddonAbiVersion)
+      ("hostOs", hostOsName())
       ("minimumMacOS", RNS_BUILD_MIN_MACOS)
       ("architecture", unameOk ? system.machine : "unknown")
       ("systemRelease", unameOk ? system.release : "unknown")
@@ -474,9 +477,15 @@ void printVersion(bool json) {
             << (info["dirty"].asBool() ? ", dirty" : ", clean") << ")\n"
             << "React Native " << info["reactNative"].asString()
             << ", Hermes " << info["hermes"].asString()
-            << ", addon ABI " << info["addonAbi"].asInt() << '\n'
-            << "macOS " << info["minimumMacOS"].asString()
-            << "+ arm64; interactive="
+            << ", addon ABI " << info["addonAbi"].asInt() << '\n';
+  const auto host = info["hostOs"].asString();
+  if (host == "macos") {
+    std::cout << "macOS " << info["minimumMacOS"].asString()
+              << "+ " << info["architecture"].asString();
+  } else {
+    std::cout << host << " " << info["architecture"].asString();
+  }
+  std::cout << "; interactive="
             << (info["features"]["interactive"].asBool() ? "yes" : "no")
             << ", Skia="
             << (info["features"]["skia"].asBool() ? "yes" : "no") << '\n';

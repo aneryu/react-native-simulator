@@ -1,6 +1,9 @@
 #include "HeadlessImageAssets.h"
+#include "ImagePixelSize.h"
 
 #include <cctype>
+#include <fstream>
+#include <iterator>
 #include <string_view>
 #include <system_error>
 
@@ -164,7 +167,13 @@ std::optional<std::pair<int, int>> headlessLocalImagePixelSize(
   }
   return std::pair{width, height};
 #else
-  (void)path;
-  return std::nullopt;
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    return std::nullopt;
+  }
+  const std::string bytes(
+      (std::istreambuf_iterator<char>(input)),
+      std::istreambuf_iterator<char>());
+  return imagePixelSizeFromBytes(bytes);
 #endif
 }

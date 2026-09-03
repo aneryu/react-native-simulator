@@ -8,6 +8,9 @@ set(RNS_EXPECTED_IMGUI_TAG "v1.92.9")
 set(RNS_EXPECTED_SDL_TAG "release-3.4.8")
 set(RNS_EXPECTED_SKIA_COMMIT
     "cacf77bdba7ba7df8ea7236d7e14b08c658ff368")
+# RN 0.87 Android/iOS Folly pin. Linux compiles RN's folly_runtime subset
+# from this tarball; macOS keeps the Homebrew full library.
+set(RNS_EXPECTED_FOLLY_VERSION "2024.11.18.00")
 
 # RN 0.87's RuntimeScheduler uses Hermes IEventLoopControl. The older
 # sdks/.hermesv1version tag does not provide that API; this newer Hermes v1

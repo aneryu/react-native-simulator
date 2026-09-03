@@ -11,7 +11,9 @@
 #include <SDL3/SDL.h>
 #include <folly/json.h>
 
+#if defined(__APPLE__)
 #include <mach-o/dyld.h>
+#endif
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
@@ -37,6 +39,8 @@
 #include <limits>
 #include <optional>
 #include <mutex>
+#include <system_error>
+#include <thread>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -991,12 +995,21 @@ static Options parseOptions(int argc, char **argv) {
 }
 
 static std::filesystem::path executablePath() {
+#if defined(__APPLE__)
   std::vector<char> buffer(1024);
   uint32_t size = static_cast<uint32_t>(buffer.size());
   while (_NSGetExecutablePath(buffer.data(), &size) != 0) {
     buffer.resize(size);
   }
   return std::filesystem::weakly_canonical(buffer.data());
+#else
+  std::error_code error;
+  auto path = std::filesystem::read_symlink("/proc/self/exe", error);
+  if (error) {
+    return {};
+  }
+  return std::filesystem::weakly_canonical(path, error);
+#endif
 }
 
 class LiveSession final {

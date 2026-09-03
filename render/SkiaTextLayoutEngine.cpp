@@ -13,7 +13,13 @@
 #include "include/core/SkTypeface.h"
 #include "include/ports/SkFontMgr_directory.h"
 #include "include/ports/SkFontMgr_empty.h"
+#if defined(SK_BUILD_FOR_MAC) || defined(SK_BUILD_FOR_IOS)
 #include "include/ports/SkFontMgr_mac_ct.h"
+#endif
+#if defined(SK_FONTMGR_FONTCONFIG_AVAILABLE) || defined(__linux__)
+#include "include/ports/SkFontMgr_fontconfig.h"
+#include "include/ports/SkFontScanner_FreeType.h"
+#endif
 #include "modules/skparagraph/include/FontCollection.h"
 #include "modules/skparagraph/include/TypefaceFontProvider.h"
 #include "modules/skparagraph/include/Paragraph.h"
@@ -1439,6 +1445,13 @@ void validateSkiaFontDirectory(
   }
 }
 
+float snapPlaceholderExtent(float value) {
+  // SkParagraph placeholder rects can land 1 ulp below the requested size on
+  // FreeType/FontConfig. Yoga and retained-scene consumers need the size that
+  // was passed to PlaceholderStyle.
+  return std::round(value * 64.0f) / 64.0f;
+}
+
 struct PreparedWavySpan {
   std::size_t utf16Start{0};
   std::size_t utf16End{0};
@@ -1520,8 +1533,8 @@ class SkiaPreparedParagraph::Impl {
       attachments.push_back({
           .x = box.rect.x(),
           .y = box.rect.y(),
-          .width = box.rect.width(),
-          .height = box.rect.height(),
+          .width = snapPlaceholderExtent(box.rect.width()),
+          .height = snapPlaceholderExtent(box.rect.height()),
           .clipped = false});
     }
     // SkParagraph keeps U+FFFC placeholders in logical order inside an LTR
@@ -1833,7 +1846,13 @@ class SkiaTextLayoutEngine::Impl {
       fonts->setAssetFontManager(fontMgr);
       fonts->setDefaultFontManager(fontMgr, defaultFontFamilies(platform));
     } else {
+#if defined(SK_BUILD_FOR_MAC) || defined(SK_BUILD_FOR_IOS)
       fontMgr = SkFontMgr_New_CoreText(nullptr);
+#elif defined(__linux__)
+      fontMgr = SkFontMgr_New_FontConfig(nullptr, SkFontScanner_Make_FreeType());
+#else
+      fontMgr = SkFontMgr_New_Custom_Empty();
+#endif
       fonts->setDefaultFontManager(fontMgr, defaultFontFamilies(platform));
     }
     fonts->enableFontFallback();

@@ -31,9 +31,11 @@ int connectToUnixSocket(const std::filesystem::path& socketPath) {
           "Cannot create inspector socket: " +
           std::string(std::strerror(errno)));
     }
+#ifdef SO_NOSIGPIPE
     int noSigPipe = 1;
     ::setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe,
                  sizeof(noSigPipe));
+#endif
     sockaddr_un address{};
     address.sun_family = AF_UNIX;
     std::strncpy(
@@ -64,7 +66,12 @@ void writeAll(int socket, const std::string& message) {
         socket,
         message.data() + offset,
         message.size() - offset,
-        0);
+#ifdef MSG_NOSIGNAL
+        MSG_NOSIGNAL
+#else
+        0
+#endif
+    );
     if (written < 0) {
       if (errno == EINTR) {
         continue;

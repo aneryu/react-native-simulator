@@ -217,6 +217,9 @@ inline void loadUiFonts(float sizePx, float density, const ImWchar* ranges) {
       "/System/Library/Fonts/SFNS.ttf",
       "/System/Library/Fonts/HelveticaNeue.ttc",
       "/System/Library/Fonts/Helvetica.ttc",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+      "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
   };
   bool loaded = false;
   for (const char* path : latinCandidates) {
@@ -229,6 +232,9 @@ inline void loadUiFonts(float sizePx, float density, const ImWchar* ranges) {
     const char* cjkCandidates[] = {
         "/System/Library/Fonts/STHeiti Light.ttc",
         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
     };
     for (const char* path : cjkCandidates) {
       if (addFontFile(path, sizePx, density, true, 0, ranges)) {
