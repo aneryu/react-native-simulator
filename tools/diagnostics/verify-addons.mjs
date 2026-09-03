@@ -60,6 +60,15 @@ for (const sourcePath of [
     source,
     /NativeCxxModuleExampleCxx|ScreenshotManager|RNTReportFullyDrawnView|RNTMyNativeView|RNTMyLegacyNativeView|AndroidPopupMenu/,
   );
+  assert.doesNotMatch(
+    source,
+    /ExpoAsset|ExpoKeepAwake|ExpoSplashScreen|ExpoFontLoader|ExpoSystemUI|ExponentConstants|ExpoModulesCore|ExpoFetchModule|ExpoLinking/,
+  );
 }
 
-console.log('RN profile and RN Tester addon isolation verified');
+const withExpo = run('tests/fixtures/expo-addon-probe.js', ['--addon', 'expo']);
+assert.deepEqual(withExpo.addons, ['expo']);
+assert.ok(withExpo.addonModules.includes('ExpoAsset'));
+assert.ok(withExpo.addonModules.includes('ExponentConstants'));
+
+console.log('RN profile, RN Tester addon, and Expo addon isolation verified');

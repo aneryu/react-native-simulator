@@ -4,6 +4,14 @@ React Native Simulator follows the phased architecture in
 [SIMULATOR_DESIGN.md](docs/design/SIMULATOR_DESIGN.md). The rolling Nightly is
 experimental and Android-first.
 
+## Expo host-adapter
+
+- Expo project identity, AppEntry / expo-router entry discovery, and AppRegistry
+  key `main` are implemented. The built-in addon host-adapts boot modules only.
+- Expo Router, Reanimated, Screens, Gesture Handler, Expo Go, and the rest of
+  the Expo SDK remain unavailable. Do not treat the host-adapter as SDK
+  certification.
+
 ## Phase 4: RN 0.87 Android capability certification
 
 - close the remaining NativeModule inventory with explicit implemented,

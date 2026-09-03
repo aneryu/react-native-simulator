@@ -33,6 +33,32 @@ React Native version implements another version's contract.
 See [RN 0.87 capability baseline](../baselines/RN087_CAPABILITY_BASELINE.md) for
 the current supported, approximated, mocked, and unavailable surfaces.
 
+## Expo addon
+
+Expo is a third-party contract, not an RN profile. The host detects an Expo
+project from `package.json` (`dependencies.expo`) or an `expo` key in
+`app.json` / `app.config.json`. Detection does not require Node.js.
+
+`registerRootComponent` always registers AppRegistry key `main`. `expo.name`
+is a display string and is never used as `--app-key`. Metro entry discovery
+resolves `package.json` `main` through `node_modules` (`expo/AppEntry`,
+`expo-router/entry`) and prefers those files when `./index.js` is absent.
+
+The built-in `expo` addon is loaded automatically from an Expo project root,
+or explicitly with `--addon expo` / `--addon /path/to/rns-addon-expo.dylib`.
+It host-adapts only the modules needed to boot Expo's JS runtime:
+
+- `global.expo` (`EventEmitter`, `NativeModule`, `SharedObject`, `SharedRef`, `modules`)
+- `ExpoAsset`, `ExpoKeepAwake`, `ExpoSplashScreen`, `ExpoFontLoader`,
+  `ExpoSystemUI`, `ExponentConstants`, `ExpoModulesCore`, `ExpoFetchModule`,
+  `ExpoLinking`
+
+`ExponentConstants` reports `executionEnvironment: "bare"` and does not
+install `ExpoGo`, so `isRunningInExpoGo()` stays false. This is not Expo Go
+and not an Expo SDK certificate. Expo Router, `react-native-screens`,
+`react-native-reanimated`, `react-native-gesture-handler`, `expo-image`, and
+other SDK modules remain unavailable unless a separate addon provides them.
+
 ## RN Tester addon
 
 The default `rns-addon-rntester.dylib` contains only contracts owned by RN's
@@ -58,7 +84,7 @@ header inputs) and distribute the resulting compatible dylib separately.
 
 Implement `ReactNativeSimulator::SimulatorAddon` in
 `runtime/addons/<name>/`, build it as a dylib, and export the C ABI entry point
-`react_native_simulator_addon_v2`. The descriptor declares the addon ABI, RN
+`react_native_simulator_addon_v2`. The descriptor declares the addon ABI (3), RN
 version, Hermes version, and create/destroy callbacks. The loader rejects an
 incompatible addon before exposing any module.
 

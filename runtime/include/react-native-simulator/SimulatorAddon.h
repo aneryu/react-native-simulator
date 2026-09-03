@@ -56,9 +56,16 @@ class SimulatorAddon {
       facebook::jsi::Runtime& runtime,
       const std::string& moduleName,
       const std::shared_ptr<facebook::react::CallInvoker>& jsInvoker) = 0;
+  // Optional JSI install after TurboModuleBinding is in place.
+  virtual void installJSI(
+      facebook::jsi::Runtime& runtime,
+      const std::shared_ptr<facebook::react::CallInvoker>& jsInvoker) {
+    (void)runtime;
+    (void)jsInvoker;
+  }
 };
 
-inline constexpr std::uint32_t kSimulatorAddonAbiVersion = 2;
+inline constexpr std::uint32_t kSimulatorAddonAbiVersion = 3;
 
 struct SimulatorAddonDescriptor {
   std::uint32_t abiVersion;
@@ -96,6 +103,9 @@ class SimulatorAddonRegistry {
   std::vector<SimulatorAddonCapability> moduleCapabilities() const;
   std::vector<SimulatorAddonCapability> componentCapabilities() const;
   std::vector<SimulatorAddonViewManagerConfig> viewManagerConfigs() const;
+  void installJSI(
+      facebook::jsi::Runtime& runtime,
+      const std::shared_ptr<facebook::react::CallInvoker>& jsInvoker);
 
  private:
   struct Entry;

@@ -82,7 +82,10 @@ rnsim
 connects to Metro on `localhost:8081`; closing the window cancels the wait. The
 Metro source owns the bundle regardless of where `rnsim` was launched, and
 `rnsim doctor` reports a project-root mismatch or probe failure as diagnostic
-evidence without blocking launch.
+evidence without blocking launch. Expo projects are detected from `app.json` /
+`package.json`; start Metro with `npx expo start` and `rnsim` uses AppRegistry
+key `main` plus Expo's AppEntry. This is not Expo Go, and Expo Router remains
+unavailable.
 
 What you get in the window:
 

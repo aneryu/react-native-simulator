@@ -43,6 +43,8 @@ its own package-manager command, then run doctor from that same project root:
 
 ```sh
 npm start
+# Expo:
+# npx expo start
 # In another terminal, from the same directory:
 rnsim doctor
 ```
@@ -91,7 +93,7 @@ HBC produced by another Hermes revision.
 ## Addon fails to load
 
 Compare `rnsim --version --json` with the addon's build metadata. The addon must
-use ABI 2, RN 0.87.0, Hermes `260318099.0.1`, arm64, and the matching engine
+use ABI 3, RN 0.87.0, Hermes `260318099.0.1`, arm64, and the matching engine
 major/minor release. Application-specific native contracts belong in an addon,
 not in the framework provider.
 

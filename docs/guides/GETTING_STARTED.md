@@ -23,9 +23,12 @@ builds expose their exact Git commit; see the
   version to fail later as a native/JavaScript contract error.
 - Official RN components and modules are the supported starting point. Provide
   an explicit [addon](ADDONS.md) for application or third-party native
-  contracts; unknown modules stay unavailable.
+  contracts; unknown modules stay unavailable. Expo projects are detected and
+  load a built-in host-adapted Expo addon; Expo Router and Reanimated stay
+  unavailable.
 - A normal app registers the name from `app.json` with
   `AppRegistry.registerComponent`. `rnsim` discovers that name automatically.
+  Expo apps register `main`.
 
 ## Install the runtime
 
@@ -119,6 +122,37 @@ sources; neither is blocked by project-root identity. Diagnose a custom source
 with `rnsim doctor --url URL`, then pass the same URL to `rnsim --url URL`. Use
 `--app-key` when the application name is not available from `app.json` or
 several keys are registered.
+
+## Expo projects
+
+`rnsim` detects Expo from `dependencies.expo` or an `expo` key in `app.json`.
+From an Expo app root:
+
+```sh
+npx expo start
+# In another terminal, from the same directory:
+rnsim
+```
+
+Expo's `registerRootComponent` registers AppRegistry key `main`; `expo.name` is
+not used as `--app-key`. If the project has no `./index.js`, `rnsim` loads
+`node_modules/expo/AppEntry.js` or `expo-router/entry` from Metro. Doctor
+suggests `npx expo start` and reports `project.kind` as `expo`.
+
+This runtime hosts React Native 0.87.0. Expo SDK 57 ships RN 0.86. Interactive
+sessions warn on that mismatch and continue; they do not rewrite PlatformConstants
+to pretend the native engine is 0.86. For a matching pair, install
+`react-native@0.87.0` (currently `expo@canary`). `rnsim` can be launched outside
+the Expo directory: if Metro serves `expo/AppEntry` or `expo-router/entry`, the
+built-in Expo addon still loads. The addon host-adapts boot modules (`ExpoAsset`,
+`ExponentConstants`, `ExpoFetchModule`, `ExpoLinking`, keep-awake, splash screen,
+font loader, and system UI). It is not Expo Go.
+
+The default `create-expo-app` template uses Expo Router plus
+`react-native-screens`, `react-native-reanimated`, and
+`react-native-gesture-handler`. Those contracts are unavailable. A blank Expo
+app that renders `react-native` `View`/`Text` plus `expo-status-bar` is the
+supported starting point. See [ADDONS.md](ADDONS.md).
 
 The interactive workspace keeps the application in front: Device fills the
 window by default. An ambiguous AppRegistry choice or blocking error forces the
@@ -222,13 +256,16 @@ rnsim --config ./rnsim.json
 Application, company, and third-party native contracts belong in
 `runtime/addons/<name>/` and are loaded with `--addon`. The RN framework
 provider never registers application-specific module names. Missing modules stay
-unavailable rather than becoming silent mocks. See [ADDONS.md](ADDONS.md) and
-its TurboModule and Fabric component implementation guidance.
+unavailable rather than becoming silent mocks. Expo is the one built-in
+third-party addon: it is auto-loaded for Expo projects or with `--addon expo`,
+and it host-adapts boot modules only. See [ADDONS.md](ADDONS.md) and its
+TurboModule and Fabric component implementation guidance.
 
 ## Related
 
 - [React Native DevTools](DEVTOOLS.md)
 - [Multi-bundle loading](MULTI_BUNDLE.md)
+- [Native addons, including Expo](ADDONS.md)
 - [RN Tester baseline](../baselines/RNTESTER_BASELINE.md)
 - [Troubleshooting](TROUBLESHOOTING.md)
 - [`rnsim.json` schema](../schema/rnsim.schema.json)

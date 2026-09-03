@@ -35,7 +35,7 @@ The target CLI form is:
 
 ```text
 react-native-simulator nightly (commit 61510f45e723f9d2, clean)
-React Native 0.87.0, Hermes 260318099.0.1, addon ABI 2
+React Native 0.87.0, Hermes 260318099.0.1, addon ABI 3
 ```
 
 Machine-readable metadata should separate fields instead of parsing the display

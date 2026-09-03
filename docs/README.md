@@ -15,7 +15,7 @@
 - [Architecture contract](design/SIMULATOR_DESIGN.md)
 - [Nightly versioning policy](design/VERSIONING.md)
 - [Chrome style contract](design/CHROME_STYLE.md)
-- [Native addons](guides/ADDONS.md)
+- [Native addons](guides/ADDONS.md) (includes Expo)
 - [Skia renderer](guides/SKIA.md)
 - [RN 0.87 capability baseline](baselines/RN087_CAPABILITY_BASELINE.md)
 - [RN Tester baseline](baselines/RNTESTER_BASELINE.md)

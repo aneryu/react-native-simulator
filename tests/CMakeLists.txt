@@ -119,6 +119,11 @@ add_test(NAME cli-doctor-project
     -DRNSIM=$<TARGET_FILE:react-native-simulator>
     -DPROJECT_DIR=${RNS_TEST_FIXTURES_DIR}/doctor-project
     -P "${PROJECT_SOURCE_DIR}/cmake/ValidateDoctorProject.cmake")
+add_test(NAME cli-doctor-expo-project
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    -DPROJECT_DIR=${RNS_TEST_FIXTURES_DIR}/doctor-expo-project
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateDoctorExpoProject.cmake")
 add_test(NAME cli-conformance-unavailable
   COMMAND $<TARGET_FILE:react-native-simulator> test
     --bundle "${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js")
@@ -196,6 +201,15 @@ add_test(NAME rntester-addon
     --profile android-rn87
     --addon $<TARGET_FILE:react-native-simulator-addon-rntester>
     --timeout-ms 1000)
+add_test(NAME expo-addon
+  COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
+    "${RNS_TEST_FIXTURES_DIR}/expo-addon-probe.js"
+    --profile android-rn87
+    --addon expo
+    --timeout-ms 1000)
+set_tests_properties(expo-addon PROPERTIES
+  PASS_REGULAR_EXPRESSION
+    "\"addons\":\\[\"expo\"\\].*\"ExpoAsset\":\"host-adapted\".*\"bundleLoaded\":true")
 
 set_tests_properties(runtime-source runtime-bytecode PROPERTIES
   PASS_REGULAR_EXPRESSION
@@ -297,7 +311,7 @@ endif()
 set_tests_properties(runtime-source runtime-bytecode runtime-multi-bundle
   runtime-trace validate-runtime-trace rn73-profile rn87-profile
   runtime-embedding-api local-config cli-no-legacy-command
-  cli-version cli-doctor cli-doctor-project
+  cli-version cli-doctor cli-doctor-project cli-doctor-expo-project
   cli-conformance-unavailable
   cli-profile-platform-conflict
   metro-http-source cli-help
@@ -310,6 +324,7 @@ set_tests_properties(hmr-protocol PROPERTIES TIMEOUT 20)
 if(TEST shopee-addon)
   set_tests_properties(shopee-addon PROPERTIES TIMEOUT 10)
 endif()
+set_tests_properties(expo-addon PROPERTIES TIMEOUT 10)
 
 add_custom_target(verify
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure

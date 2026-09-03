@@ -183,6 +183,7 @@ class Engine final {
   Engine& operator=(const Engine&) = delete;
 
   void addAddon(std::string addon);
+  void addAddon(std::unique_ptr<class SimulatorAddon> addon);
   void loadBundle(const std::filesystem::path& path);
   void loadBundle(std::string bytes, std::string sourceUrl);
   void setSceneUpdateCallback(

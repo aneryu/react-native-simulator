@@ -397,6 +397,12 @@ rns_add_simulator_addon(
   react-native-simulator-addon-rntester
   rns-addon-rntester
   addons/rntester/RNTesterAddon.cpp)
+rns_add_simulator_addon(
+  react-native-simulator-addon-expo
+  rns-addon-expo
+  addons/expo/ExpoAddon.cpp)
+target_compile_definitions(react-native-simulator-addon-expo PRIVATE
+  RNS_EXPO_ADDON_DYLIB=1)
 set_target_properties(react-native-simulator-addon-rntester PROPERTIES
   # The demo addon is installed next to its config and relies on the rnsim
   # executable's packaged engine rpath. It must not retain a build-tree path.
@@ -404,7 +410,8 @@ set_target_properties(react-native-simulator-addon-rntester PROPERTIES
 
 add_executable(react-native-simulator
   src/core/SimulatorConfig.cpp
-  src/core/main.cpp)
+  src/core/main.cpp
+  addons/expo/ExpoAddon.cpp)
 if(APPLE)
   set(_rnsim_build_rpath "@loader_path")
   set(_rnsim_install_rpath "@loader_path/../lib")
@@ -418,6 +425,7 @@ set_target_properties(react-native-simulator PROPERTIES
   INSTALL_RPATH "${_rnsim_install_rpath}")
 target_include_directories(react-native-simulator PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/src/core"
+  "${CMAKE_CURRENT_LIST_DIR}/addons/expo"
   "${RN_ROOT}/ReactCommon"
   "${RN_ROOT}/ReactCommon/callinvoker"
   "${RN_ROOT}/ReactCommon/react/nativemodule/core"
@@ -529,6 +537,9 @@ install(TARGETS react-native-simulator
 install(TARGETS react-native-simulator-addon-rntester
   LIBRARY DESTINATION .
     COMPONENT rntester-demo)
+install(TARGETS react-native-simulator-addon-expo
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/react-native-simulator/addons
+    COMPONENT react-native-simulator)
 if(TARGET react-native-simulator-addon-shopee)
   install(TARGETS react-native-simulator-addon-shopee
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/react-native-simulator/addons

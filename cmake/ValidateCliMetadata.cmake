@@ -36,7 +36,7 @@ if(NOT version STREQUAL "nightly" OR
    NOT channel STREQUAL "nightly" OR
    NOT transport_version STREQUAL "0.0.0" OR
    NOT react_native STREQUAL "0.87.0" OR
-   NOT addon_abi EQUAL 2)
+   NOT addon_abi EQUAL 3)
   message(FATAL_ERROR "Unexpected ${MODE} metadata: ${metadata}")
 endif()
 

@@ -74,7 +74,9 @@ See `docs/design/SIMULATOR_DESIGN.md` for the architecture contract and `ROADMAP
   decorative gradients, or restyle Fabric/Skia pixels to match the shell.
 - Keep upstream RN contracts in versioned profiles and application/company/third-party contracts
   in isolated `runtime/addons/<name>/` directories. Never register application-specific module
-  names in the RN framework provider.
+  names in the RN framework provider. Expo lives in `runtime/addons/expo/` and is auto-loaded
+  for Expo projects or with `--addon expo`; it host-adapts boot modules only and is not Expo Go
+  or Expo Router certification.
 - Record the exact React Native revision and JavaScript engine once selected. Runtime-source
   claims must be checked against the installed/runtime copy, not only a local reference copy.
 - Preserve React Native semantics where possible. Official visual components must ultimately use

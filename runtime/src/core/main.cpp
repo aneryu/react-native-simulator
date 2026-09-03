@@ -1,6 +1,7 @@
 #include <react-native-simulator/Engine.h>
 #include <react-native-simulator/SimulatorAddon.h>
 
+#include "ExpoAddon.h"
 #include "HttpBundleLoader.h"
 #include "SimulatorConfig.h"
 
@@ -71,6 +72,7 @@ struct CliOptions {
   };
   std::vector<BundleSource> bundles;
   std::vector<std::string> addons;
+  bool builtInExpoAddon{false};
   std::optional<std::filesystem::path> outputPath;
   std::optional<std::filesystem::path> screenshotPath;
 };
@@ -117,6 +119,101 @@ std::optional<std::string> appJsonName(const std::filesystem::path &root) {
   return name;
 }
 
+bool jsonHasChild(const std::filesystem::path &path, const char *field) {
+  if (!std::filesystem::exists(path)) {
+    return false;
+  }
+  try {
+    boost::property_tree::ptree json;
+    boost::property_tree::read_json(path.string(), json);
+    return json.get_child_optional(field).has_value();
+  } catch (const std::exception &) {
+  }
+  return false;
+}
+
+struct ExpoProject {
+  bool detected{false};
+  std::optional<std::string> declared;
+  std::optional<std::string> installed;
+  bool router{false};
+};
+
+ExpoProject detectExpoProject(const std::filesystem::path &root) {
+  ExpoProject expo;
+  expo.declared = readJsonString(root / "package.json", "dependencies.expo");
+  if (!expo.declared) {
+    expo.declared =
+        readJsonString(root / "package.json", "devDependencies.expo");
+  }
+  expo.installed =
+      readJsonString(root / "node_modules/expo/package.json", "version");
+  expo.router =
+      readJsonString(root / "package.json", "dependencies.expo-router")
+          .has_value() ||
+      readJsonString(root / "package.json", "devDependencies.expo-router")
+          .has_value() ||
+      std::filesystem::exists(root / "node_modules/expo-router");
+  expo.detected = expo.declared.has_value() || expo.installed.has_value() ||
+      jsonHasChild(root / "app.json", "expo") ||
+      jsonHasChild(root / "app.config.json", "expo");
+  return expo;
+}
+
+std::optional<std::filesystem::path> resolveProjectScript(
+    const std::filesystem::path &root,
+    std::string specifier) {
+  if (specifier.empty() || specifier[0] == '/' ||
+      specifier.find("://") != std::string::npos) {
+    return std::nullopt;
+  }
+  while (specifier.size() >= 2 && specifier[0] == '.' && specifier[1] == '/') {
+    specifier.erase(0, 2);
+  }
+  const auto tryFile =
+      [&](const std::filesystem::path &candidate)
+      -> std::optional<std::filesystem::path> {
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(candidate, error) ||
+        !isScriptFile(candidate)) {
+      return std::nullopt;
+    }
+    auto relative = candidate.lexically_relative(root);
+    if (relative.empty() || relative.generic_string().starts_with("..")) {
+      return std::nullopt;
+    }
+    return relative;
+  };
+  const auto trySpecifier =
+      [&](const std::filesystem::path &base)
+      -> std::optional<std::filesystem::path> {
+    if (const auto hit = tryFile(base)) {
+      return hit;
+    }
+    for (const char *ext : {".js", ".jsx", ".ts", ".tsx"}) {
+      if (const auto hit = tryFile(std::filesystem::path(base.string() + ext))) {
+        return hit;
+      }
+    }
+    for (const char *name :
+         {"index.js", "index.jsx", "index.ts", "index.tsx"}) {
+      if (const auto hit = tryFile(base / name)) {
+        return hit;
+      }
+    }
+    return std::nullopt;
+  };
+  if (const auto hit = trySpecifier(root / specifier)) {
+    return hit;
+  }
+  if (specifier[0] != '.') {
+    if (const auto hit = trySpecifier(root / "node_modules" / specifier)) {
+      return hit;
+    }
+  }
+  return std::nullopt;
+}
+
 void addEntryCandidate(
     std::vector<std::string> &entries,
     std::unordered_set<std::string> &seen,
@@ -151,9 +248,15 @@ std::vector<std::string> discoverMetroEntries(
         entries, seen, root, std::filesystem::path("src") / (*name + ".js"));
   }
   if (const auto main = readJsonString(root / "package.json", "main")) {
-    if ((*main)[0] != '/' && main->find("://") == std::string::npos) {
-      addEntryCandidate(entries, seen, root, *main);
+    if (const auto resolved = resolveProjectScript(root, *main)) {
+      addEntryCandidate(entries, seen, root, *resolved);
     }
+  }
+  if (detectExpoProject(root).detected) {
+    addEntryCandidate(
+        entries, seen, root, "node_modules/expo/AppEntry.js");
+    addEntryCandidate(
+        entries, seen, root, "node_modules/expo-router/entry.js");
   }
   addEntryCandidate(
       entries, seen, root, "src/index." + platform + ".js");
@@ -183,10 +286,42 @@ std::vector<std::string> discoverMetroEntries(
 
 std::optional<std::string> inferAppKeyFromProject(
     const std::filesystem::path &root) {
+  // Expo registerRootComponent always uses AppRegistry key "main". expo.name
+  // is a display string, not the native application key.
+  if (detectExpoProject(root).detected) {
+    return std::string("main");
+  }
   // Entry filenames describe Metro input, not AppRegistry identity. Prefer the
   // caller's app.json name when present; otherwise let the live AppRegistry
   // select its sole key or ask the developer to choose among multiple keys.
   return appJsonName(root);
+}
+
+std::string defaultMetroBundlePath(
+    const std::filesystem::path &root,
+    const std::string &platform) {
+  std::string path = "index.bundle";
+  const bool hasRootIndex =
+      std::filesystem::exists(root / "index.js") ||
+      std::filesystem::exists(root / ("index." + platform + ".js"));
+  if (!hasRootIndex) {
+    const auto entries = discoverMetroEntries(root, platform);
+    if (!entries.empty()) {
+      path = toBundlePath(entries.front());
+    }
+  }
+  return path;
+}
+
+bool addonPathIsExpo(const std::string &addon) {
+  const auto name = std::filesystem::path(addon).filename().string();
+  return name.rfind("rns-addon-expo", 0) == 0;
+}
+
+bool bundleUrlLooksLikeExpo(const std::string &url) {
+  return url.find("expo-router/") != std::string::npos ||
+      url.find("node_modules/expo/") != std::string::npos ||
+      url.find("/expo/AppEntry") != std::string::npos;
 }
 
 std::optional<std::filesystem::path> metroProjectRootFromError(
@@ -314,8 +449,10 @@ bool waitForMetro(
     return true;
   }
   const auto origin = bundleOrigin(bundleUrl);
+  const bool expo = detectExpoProject(std::filesystem::current_path()).detected;
   std::cerr << "waiting for Metro at " << origin << '\n'
-            << "start it with npm start; rnsim does not launch Metro\n";
+            << "start it with " << (expo ? "npx expo start" : "npm start")
+            << "; rnsim does not launch Metro\n";
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(60);
   while (!metroStatusRunning(bundleUrl)) {
@@ -350,9 +487,26 @@ bool isIndexBundleUrl(const std::string &url) {
 std::string fetchDefaultMetroBundle(
     CliOptions::BundleSource &bundle,
     rns::EngineConfig *runtime,
-    const std::function<bool()> &cancelled = {}) {
+    const std::function<bool()> &cancelled = {},
+    std::optional<std::filesystem::path> *discoveredProject = nullptr) {
+  const auto rememberProject =
+      [&](const std::optional<std::filesystem::path> &project) {
+        if (discoveredProject != nullptr && project) {
+          *discoveredProject = project;
+        }
+        if (runtime != nullptr && !runtime->appKey && project) {
+          runtime->appKey = inferAppKeyFromProject(*project);
+        }
+      };
   try {
-    return fetchHttpBundle(bundle.source, 60000, cancelled);
+    auto bytes = fetchHttpBundle(bundle.source, 60000, cancelled);
+    try {
+      rememberProject(probeMetroProjectRoot(bundle.source, cancelled));
+    } catch (const HttpRequestCancelled &) {
+      throw;
+    } catch (const std::exception &) {
+    }
+    return bytes;
   } catch (const MetroHttpError &error) {
     if (!bundle.defaultMetro || !isIndexBundleUrl(bundle.source) ||
         error.status != 404 ||
@@ -366,6 +520,7 @@ std::string fetchDefaultMetroBundle(
     if (!project) {
       throw;
     }
+    rememberProject(project);
     const auto entries = discoverMetroEntries(*project, platform);
     std::exception_ptr lastError;
     const auto limit = std::min<size_t>(entries.size(), 4);
@@ -380,9 +535,6 @@ std::string fetchDefaultMetroBundle(
       try {
         auto bytes = fetchHttpBundle(fallback, 60000, cancelled);
         bundle.source = std::move(fallback);
-        if (runtime != nullptr && !runtime->appKey) {
-          runtime->appKey = inferAppKeyFromProject(*project);
-        }
         return bytes;
       } catch (const HttpRequestCancelled &) {
         throw;
@@ -413,6 +565,7 @@ Common options:
   --platform android|ios  Metro target platform (default: android)
   --profile NAME          RN contract: android-rn87, ios-rn87, android-rn73
   --bundle FILE           Load a caller-built local bundle
+  --addon PATH|expo       Application addon; expo is the built-in host adapter
   --android-font-dir DIR  Fonts used by Skia measurement and paint
 
 Interactive options:
@@ -426,7 +579,13 @@ Interactive options:
 With no --bundle/--url, interactive mode opens its window, then waits for Metro
 at localhost:8081 and loads index.bundle. Closing the window cancels that wait.
 If Metro has no ./index, rnsim reads the packager project path from the error
-and tries entry files found there. app.json name becomes --app-key.
+and tries entry files found there, including Expo AppEntry and expo-router/entry.
+app.json name becomes --app-key; Expo projects use AppRegistry key main.
+Expo projects also load the built-in host-adapted Expo addon when the launch
+directory or Metro project is Expo. Pass --addon expo to load it explicitly.
+Expo SDK 57 (RN 0.86) interactive sessions warn and continue; they are not a
+0.86 native profile. Expo Router, Reanimated, Screens, and Gesture Handler
+remain unavailable.
 
 Headless options:
   --iterations N          Workload size
@@ -565,9 +724,10 @@ void printDoctor(
       entries.push_back(entry);
     }
   }
+  const auto expo = detectExpoProject(projectRoot);
   const auto appKey = configuredAppKey
       ? configuredAppKey
-      : appJsonName(projectRoot);
+      : inferAppKeyFromProject(projectRoot);
   // Match launch source precedence exactly. An explicit doctor URL diagnoses
   // that Metro source even when rnsim.json names a local bundle. Otherwise a
   // configured bundle remains selected even when its path is missing.
@@ -578,8 +738,9 @@ void printDoctor(
   const bool hasEntry = configuredMetroUrl.has_value() ||
       (offlineBundleSelected ? offlineBundlePresent : !entries.empty());
   const std::string metroUrl = configuredMetroUrl.value_or(
-      "http://localhost:8081/index.bundle?platform=" + platform +
-      "&dev=true&minify=false");
+      "http://localhost:8081/" +
+      defaultMetroBundlePath(projectRoot, platform) + "?platform=" +
+      platform + "&dev=true&minify=false");
   const bool metroRequired = !offlineBundleSelected;
   const bool metroRunning = metroRequired && metroStatusRunning(metroUrl);
   MetroProjectCheck metroProject;
@@ -611,8 +772,13 @@ void printDoctor(
     nextAction = "Run rnsim doctor from an RN 0.87 application root.";
   } else if (!reactNativeCompatible) {
     projectStatus = "incompatible-react-native";
-    nextAction = std::string("Use React Native ") +
-        RNS_REACT_NATIVE_VERSION + " with this rnsim binary.";
+    nextAction = expo.detected
+        ? std::string("Use React Native ") + RNS_REACT_NATIVE_VERSION +
+            " with this rnsim binary. Expo SDK 57 ships RN 0.86; an Expo "
+            "project must install react-native@" +
+            RNS_REACT_NATIVE_VERSION + " (currently expo@canary)."
+        : std::string("Use React Native ") + RNS_REACT_NATIVE_VERSION +
+            " with this rnsim binary.";
   } else if (!configValid) {
     projectStatus = "invalid-config";
     nextAction = configError;
@@ -622,11 +788,15 @@ void printDoctor(
         configuredBundle->string();
   } else if (!hasEntry) {
     projectStatus = "missing-entry";
-    nextAction =
-        "Add index.js, configure a bundle in rnsim.json, or pass --url/--bundle.";
+    nextAction = expo.detected
+        ? "Install expo so node_modules/expo/AppEntry.js exists, configure a "
+          "bundle in rnsim.json, or pass --url/--bundle."
+        : "Add index.js, configure a bundle in rnsim.json, or pass --url/--bundle.";
   } else if (metroRequired && !metroRunning) {
     projectStatus = "compatible-metro-not-running";
-    nextAction = "Start Metro with npm start or yarn start.";
+    nextAction = expo.detected
+        ? "Start Metro with npx expo start."
+        : "Start Metro with npm start or yarn start.";
   } else if (metroRequired && !metroProject.verified) {
     if (metroProject.actualRoot) {
       nextAction =
@@ -659,9 +829,17 @@ void printDoctor(
   report["defaultProfile"] = "android-rn87";
   report["status"] = "experimental-android-first";
   report["securitySandbox"] = false;
+  folly::dynamic unsupported = folly::dynamic::array;
+  if (expo.router) {
+    unsupported.push_back("expo-router");
+    unsupported.push_back("react-native-screens");
+    unsupported.push_back("react-native-reanimated");
+    unsupported.push_back("react-native-gesture-handler");
+  }
   report["project"] = folly::dynamic::object
       ("root", projectRoot.string())
       ("detected", projectDetected)
+      ("kind", expo.detected ? "expo" : "react-native")
       ("status", projectStatus)
       ("preflightPassed", preflightPassed)
       ("readyToLaunch", readyToLaunch)
@@ -677,6 +855,15 @@ void printDoctor(
       ("profile", platform + "-rn87")
       ("appKey", optionalText(appKey))
       ("entries", std::move(entryJson))
+      ("expo", folly::dynamic::object
+          ("detected", expo.detected)
+          ("declared", optionalText(expo.declared))
+          ("installed", optionalText(expo.installed))
+          ("sdk", optionalText(expo.installed ? expo.installed : expo.declared))
+          ("router", expo.router)
+          ("appRegistryKey", expo.detected ? folly::dynamic("main")
+                                           : folly::dynamic(nullptr))
+          ("unsupportedNativeContracts", std::move(unsupported)))
       ("config", folly::dynamic::object
           ("path", std::filesystem::is_regular_file(localConfig)
               ? folly::dynamic(localConfig.string())
@@ -719,10 +906,18 @@ void printDoctor(
                     : report["localConfig"].asString())
             << '\n'
             << "project: " << projectRoot.string() << '\n'
+            << "kind: " << (expo.detected ? "expo" : "react-native") << '\n'
             << "React Native: "
             << (effectiveVersion ? *effectiveVersion : "not detected")
             << (reactNativeCompatible ? " (compatible)" : " (expected "
                 RNS_REACT_NATIVE_VERSION ")") << '\n'
+            << (expo.detected
+                    ? "Expo: " +
+                        (expo.installed ? *expo.installed
+                                        : expo.declared ? *expo.declared
+                                                        : std::string("detected")) +
+                        (expo.router ? " (expo-router not hosted)\n" : "\n")
+                    : "")
             << "source: "
             << (offlineBundleSelected
                     ? configuredBundle->string()
@@ -766,16 +961,7 @@ CliOptions parseOptions(int argc, char **argv) {
   bool viewportConfigured = false;
   const auto addMetroBundle = [&options](const std::string &platform) {
     const auto cwd = std::filesystem::current_path();
-    std::string path = "index.bundle";
-    const bool hasRootIndex =
-        std::filesystem::exists(cwd / "index.js") ||
-        std::filesystem::exists(cwd / ("index." + platform + ".js"));
-    if (!hasRootIndex) {
-      const auto entries = discoverMetroEntries(cwd, platform);
-      if (!entries.empty()) {
-        path = toBundlePath(entries.front());
-      }
-    }
+    const auto path = defaultMetroBundlePath(cwd, platform);
     options.bundles.push_back({
         .source = "http://localhost:8081/" + path + "?platform=" + platform +
             "&dev=true&minify=false",
@@ -966,7 +1152,11 @@ CliOptions parseOptions(int argc, char **argv) {
       options.runtime.pointScaleFactor = std::stof(value);
       viewportConfigured = true;
     } else if (name == "--addon") {
-      options.addons.push_back(value);
+      if (value == "expo") {
+        options.builtInExpoAddon = true;
+      } else {
+        options.addons.push_back(value);
+      }
     } else if (name == "--require-react-fabric") {
       options.runtime.requireReactFabric = parseBoolean(name, value);
     } else if (name == "--require-no-pending-work") {
@@ -1136,11 +1326,41 @@ int main(int argc, char **argv) {
       return 0;
     }
     auto options = parseOptions(argc, argv);
+    const auto launchRoot = std::filesystem::current_path();
     if (options.mode == CliOptions::Mode::Interactive &&
         !options.runtime.appKey) {
-      options.runtime.appKey =
-          inferAppKeyFromProject(std::filesystem::current_path());
+      options.runtime.appKey = inferAppKeyFromProject(launchRoot);
     }
+    bool expoDylib = false;
+    for (const auto &addon : options.addons) {
+      if (addonPathIsExpo(addon)) {
+        expoDylib = true;
+      }
+    }
+    bool expoAddonLoaded = false;
+    const auto loadExpoAddon = [&](rns::Engine &runtime, const char *reason) {
+      if (expoAddonLoaded || expoDylib) {
+        return;
+      }
+      runtime.addAddon(createExpoAddon());
+      expoAddonLoaded = true;
+      std::cerr << "loaded built-in Expo host-adapter (" << reason << ")\n";
+    };
+    const auto expoFromProjectOrUrl =
+        [](const std::optional<std::filesystem::path> &project,
+           const std::string &url) {
+          return bundleUrlLooksLikeExpo(url) ||
+              (project && detectExpoProject(*project).detected);
+        };
+    const auto attachAddons = [&](rns::Engine &runtime) {
+      if (options.builtInExpoAddon ||
+          detectExpoProject(launchRoot).detected) {
+        loadExpoAddon(runtime, "project root");
+      }
+      for (const auto &addon : options.addons) {
+        runtime.addAddon(addon);
+      }
+    };
     if (options.mode == CliOptions::Mode::Interactive) {
       std::cerr << "starting interactive session ("
                 << options.runtime.profile << ", viewport "
@@ -1153,10 +1373,8 @@ int main(int argc, char **argv) {
     if (options.mode == CliOptions::Mode::Interactive) {
 #if RNS_ENABLE_IMGUI
       rns::Engine runtime(std::move(options.runtime));
-      for (const auto &addon : options.addons) {
-        runtime.addAddon(addon);
-      }
-      auto prepareRuntime = [&options, &runtime](
+      attachAddons(runtime);
+      auto prepareRuntime = [&](
                                 const std::function<bool()> &cancelled) {
         // Preparation is transactional so the frontend can safely retry after
         // Metro starts or a bundle fetch fails. Do not queue any Engine bundle
@@ -1176,10 +1394,15 @@ int main(int argc, char **argv) {
             if (!waitForMetro(bundle.source, cancelled)) {
               return;
             }
+            std::optional<std::filesystem::path> metroProject;
             httpBodies[index] = fetchDefaultMetroBundle(
                 bundle,
                 nullptr,
-                cancelled);
+                cancelled,
+                &metroProject);
+            if (expoFromProjectOrUrl(metroProject, bundle.source)) {
+              loadExpoAddon(runtime, "Metro project");
+            }
             if (cancelled()) {
               return;
             }
@@ -1219,8 +1442,12 @@ int main(int argc, char **argv) {
         }
         std::cerr << "loading bundle " << bundle.source << '\n';
         try {
-          httpBodies[index] =
-              fetchDefaultMetroBundle(bundle, &options.runtime);
+          std::optional<std::filesystem::path> metroProject;
+          httpBodies[index] = fetchDefaultMetroBundle(
+              bundle, &options.runtime, {}, &metroProject);
+          if (expoFromProjectOrUrl(metroProject, bundle.source)) {
+            options.builtInExpoAddon = true;
+          }
         } catch (const std::exception &error) {
           throw std::runtime_error(
               "Cannot load the bundle from " + bundle.source + ": " +
@@ -1228,9 +1455,7 @@ int main(int argc, char **argv) {
         }
       }
       rns::Engine runtime(std::move(options.runtime));
-      for (const auto &addon : options.addons) {
-        runtime.addAddon(addon);
-      }
+      attachAddons(runtime);
       for (size_t index = 0; index < options.bundles.size(); ++index) {
         const auto &bundle = options.bundles[index];
         if (bundle.http) {

@@ -265,6 +265,7 @@ class rns::Engine::Impl {
 
   rns::EngineConfig config;
   std::vector<std::string> addons;
+  std::vector<std::unique_ptr<rns::SimulatorAddon>> ownedAddons;
   std::vector<InitialBundle> bundles;
   std::atomic<bool> ran{false};
   std::atomic<bool> running{false};
@@ -1695,14 +1696,15 @@ static std::string valueToString(jsi::Runtime& runtime, const jsi::Value& value)
 
 static void installConsole(
     jsi::Runtime& runtime,
-    const std::string& profile) {
+    const std::string& profile,
+    bool interactive) {
   jsi::Object console(runtime);
   for (const auto* method : {"debug", "log", "info", "warn", "error"}) {
     auto output = jsi::Function::createFromHostFunction(
         runtime,
         jsi::PropNameID::forAscii(runtime, method),
         1,
-        [method, profile](
+        [method, profile, interactive](
             jsi::Runtime& runtime,
             const jsi::Value&,
             const jsi::Value* args,
@@ -1725,8 +1727,14 @@ static void installConsole(
                 << "rnsim: JS bundle RN version does not match profile "
                 << profile << " (native " RNS_REACT_NATIVE_VERSION ").\n";
             if (profile.find("rn87") != std::string::npos) {
-              std::cerr << "If this Metro bundle is RN 0.73, restart with "
-                           "--profile android-rn73.\n";
+              std::cerr
+                  << "Expo SDK 57 ships RN 0.86; this host is RN 0.87. "
+                  << (interactive
+                          ? "Interactive sessions continue with that warning. "
+                          : "Headless stays strict. ")
+                  << "For a matching pair use react-native@0.87.0 "
+                     "(expo@canary). RN 0.73 Metro bundles need "
+                     "--profile android-rn73.\n";
             }
           }
           return jsi::Value::undefined();
@@ -1755,6 +1763,16 @@ void rns::Engine::addAddon(std::string addon) {
     throw std::logic_error("cannot add an addon after the runtime has run");
   }
   impl_->addons.push_back(std::move(addon));
+}
+
+void rns::Engine::addAddon(std::unique_ptr<rns::SimulatorAddon> addon) {
+  if (impl_->ran) {
+    throw std::logic_error("cannot add an addon after the runtime has run");
+  }
+  if (addon == nullptr) {
+    throw std::invalid_argument("addon must not be null");
+  }
+  impl_->ownedAddons.push_back(std::move(addon));
 }
 
 void rns::Engine::loadBundle(const std::filesystem::path& path) {
@@ -1975,6 +1993,10 @@ rns::EngineResult rns::Engine::run() {
       });
     }
     rns::SimulatorAddonRegistry addonRegistry;
+    for (auto& addon : impl_->ownedAddons) {
+      addonRegistry.add(std::move(addon));
+    }
+    impl_->ownedAddons.clear();
     for (const auto& addonPath : impl_->addons) {
       addonRegistry.load(
           addonPath, RNS_REACT_NATIVE_VERSION, RNS_HERMES_VERSION);
@@ -2076,7 +2098,7 @@ rns::EngineResult rns::Engine::run() {
                     .build())
             .build());
     auto* runtime = hermesRuntime.get();
-    installConsole(*runtime, options.profile);
+    installConsole(*runtime, options.profile, developmentMode);
     std::size_t jsErrorCount = 0;
     std::vector<JsErrorRecord> jsErrors;
     bool workloadReady = false;
@@ -2183,9 +2205,24 @@ rns::EngineResult rns::Engine::run() {
         std::make_unique<SimulatorHermesRuntime>(std::move(hermesRuntime)),
         eventLoop,
         timerManager,
-        [impl = impl_.get(), &jsErrorCount, &jsErrors](
+        [impl = impl_.get(), &jsErrorCount, &jsErrors, developmentMode](
             jsi::Runtime&,
             const react::JsErrorHandler::ProcessedError& error) {
+            const bool versionMismatch =
+                error.message.find("React Native version mismatch") !=
+                std::string::npos;
+            // RN reports the mismatch via console.error → RN$handleException.
+            // Returning keeps jsErrorCount at 0 so interactive auto-run continues.
+            if (developmentMode && versionMismatch) {
+              rns::RuntimeDiagnostic diagnostic{
+                  .kind = rns::RuntimeDiagnosticKind::JavaScriptError,
+                  .message = error.message,
+                  .fatal = false,
+              };
+              impl->recordRuntimeDiagnostic(std::move(diagnostic));
+              std::cerr << "RN JS warning: " << error.message << '\n';
+              return;
+            }
             ++jsErrorCount;
             jsErrors.push_back({
                 .message = error.message,
@@ -2225,6 +2262,12 @@ rns::EngineResult rns::Engine::run() {
                      "RN 0.73 Metro bundles need --profile android-rn73; "
                      "application and third-party modules need an explicit "
                      "--addon path/to/addon library.\n";
+            }
+            if (error.message.find("EventEmitter") != std::string::npos &&
+                error.message.find("undefined") != std::string::npos) {
+              std::cerr
+                  << "rnsim: Expo JS ran without global.expo. Run rnsim from "
+                     "the Expo app root, or pass --addon expo.\n";
             }
         },
         devTools ? devTools->target() : nullptr);
@@ -2553,6 +2596,7 @@ rns::EngineResult rns::Engine::run() {
           }
           react::TurboModuleBinding::install(
               runtime, std::move(moduleProvider));
+          addonRegistry.installJSI(runtime, jsInvoker);
           const auto addonComponents = addonRegistry.componentCapabilities();
           const auto addonViewManagerConfigs =
               addonRegistry.viewManagerConfigs();

@@ -151,4 +151,12 @@ SimulatorAddonRegistry::viewManagerConfigs() const {
   return result;
 }
 
+void SimulatorAddonRegistry::installJSI(
+    facebook::jsi::Runtime& runtime,
+    const std::shared_ptr<facebook::react::CallInvoker>& jsInvoker) {
+  for (const auto& entry : addons_) {
+    entry->addon->installJSI(runtime, jsInvoker);
+  }
+}
+
 } // namespace ReactNativeSimulator

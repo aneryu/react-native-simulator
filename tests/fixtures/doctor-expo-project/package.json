@@ -1,0 +1,9 @@
+{
+  "name": "rnsim-doctor-expo-fixture",
+  "private": true,
+  "main": "expo/AppEntry",
+  "dependencies": {
+    "expo": "58.0.0-canary",
+    "react-native": "0.87.0"
+  }
+}
