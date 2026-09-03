@@ -73,7 +73,11 @@ struct CliOptions {
     bool defaultMetro{false};
   };
   std::vector<BundleSource> bundles;
-  std::vector<std::string> addons;
+  struct AddonToken {
+    std::string token;
+    rns::AddonRequestOrigin origin{rns::AddonRequestOrigin::Cli};
+  };
+  std::vector<AddonToken> addons;
   std::vector<std::string> disabledAddons;
   bool autoAddons{true};
   std::optional<std::string> initialUrl;
@@ -1043,9 +1047,13 @@ CliOptions parseOptions(int argc, char **argv) {
     }
     for (const auto& addon : config.addons) {
       if (addon.name) {
-        options.addons.push_back(*addon.name);
+        options.addons.push_back(
+            {.token = *addon.name, .origin = rns::AddonRequestOrigin::Config});
       } else if (addon.path) {
-        options.addons.push_back(addon.path->string());
+        options.addons.push_back({
+            .token = addon.path->string(),
+            .origin = rns::AddonRequestOrigin::Config,
+        });
       }
     }
     options.disabledAddons.insert(
@@ -1211,7 +1219,8 @@ CliOptions parseOptions(int argc, char **argv) {
       options.runtime.pointScaleFactor = std::stof(value);
       viewportConfigured = true;
     } else if (name == "--addon") {
-      options.addons.push_back(value);
+      options.addons.push_back(
+          {.token = value, .origin = rns::AddonRequestOrigin::Cli});
     } else if (name == "--no-addon") {
       options.disabledAddons.push_back(value);
     } else if (name == "--initial-url") {
@@ -1433,11 +1442,11 @@ int main(int argc, char **argv) {
     for (const auto& name : options.disabledAddons) {
       draft.disableAddon(name);
     }
-    for (const auto& token : options.addons) {
-      if (rns::looksLikeAddonModulePath(token)) {
-        draft.addAddonPath(token, rns::AddonRequestOrigin::Cli);
+    for (const auto& addon : options.addons) {
+      if (rns::looksLikeAddonModulePath(addon.token)) {
+        draft.addAddonPath(addon.token, addon.origin);
       } else {
-        draft.addBuiltInAddon(token, rns::AddonRequestOrigin::Cli);
+        draft.addBuiltInAddon(addon.token, addon.origin);
       }
     }
     if (options.initialUrl) {
