@@ -98,7 +98,8 @@ function(rns_declare_addon)
   endif()
   if(RNS_ENABLE_SANITIZERS)
     target_compile_options(${_object} PRIVATE
-      -fsanitize=address,undefined -fno-sanitize=vptr
+      -fsanitize=address,undefined
+      $<$<BOOL:${APPLE}>:-fno-sanitize=vptr>
       -fno-omit-frame-pointer)
   endif()
 
@@ -178,7 +179,8 @@ react_native_simulator_addon_v4() noexcept {
       -Wall -Wextra -Wpedantic)
     if(RNS_ENABLE_SANITIZERS)
       target_compile_options(${_module} PRIVATE
-        -fsanitize=address,undefined -fno-sanitize=vptr
+        -fsanitize=address,undefined
+        $<$<BOOL:${APPLE}>:-fno-sanitize=vptr>
         -fno-omit-frame-pointer)
       target_link_options(${_module} PRIVATE -fsanitize=address,undefined)
     endif()

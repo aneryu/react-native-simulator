@@ -351,11 +351,12 @@ if(NOT APPLE)
 endif()
 # AppleClang 17's vptr sanitizer reports invalid std::stringbuf vptrs while
 # crossing the macOS system libc++ boundary, before simulator application code
-# runs. Keep this disabled consistently for the engine, addons, and CLI; ASan
-# and every other UBSan check remain enabled.
+# runs. Keep vptr disabled on Apple only. Linux GCC must keep vptr
+# instrumentation so LayoutConformance typeinfo COMDAT is not discarded.
 if(RNS_ENABLE_SANITIZERS)
   target_compile_options(react-native-simulator-engine PRIVATE
-    -fsanitize=address,undefined -fno-sanitize=vptr
+    -fsanitize=address,undefined
+    $<$<BOOL:${APPLE}>:-fno-sanitize=vptr>
     -fno-omit-frame-pointer)
   target_link_options(react-native-simulator-engine PUBLIC
     -fsanitize=address,undefined)
@@ -416,7 +417,8 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 if(RNS_ENABLE_SANITIZERS)
   target_compile_options(react-native-simulator PRIVATE
-    -fsanitize=address,undefined -fno-sanitize=vptr
+    -fsanitize=address,undefined
+    $<$<BOOL:${APPLE}>:-fno-sanitize=vptr>
     -fno-omit-frame-pointer)
   target_link_options(react-native-simulator PRIVATE -fsanitize=address,undefined)
 endif()

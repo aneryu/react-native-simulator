@@ -3616,6 +3616,9 @@ rns::EngineResult rns::Engine::run() {
            (impl_->stopRequested || impl_->reloadRequested ||
             (options.devTools.waitForDisconnect &&
              (!devTools || !devTools->hasSession()))))) {
+        if (pendingAddonFatal) {
+          surfacePendingFatal();
+        }
         break;
       }
       eventLoopTasks += eventLoop->runUntil(
