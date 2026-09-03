@@ -128,7 +128,7 @@ export. Pass `--android-font-dir` on the `rnsim` command, set
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "reactNative": "0.87.0",
   "platform": "android",
   "fonts": {"directory": "./android-fonts"}
@@ -148,7 +148,7 @@ cmake --preset skia
 cmake --build --preset skia --target react-native-simulator
 
 build/skia/runtime/rnsim headless --bundle /path/to/output.bundle \
-  --profile android-rn73 \
+  --profile android-rn87 --addon compat-rn73 \
   --bundle tests/fixtures/rn0732-render-workload.js \
   --viewport-width 392.7273 \
   --viewport-height 753.4545 \

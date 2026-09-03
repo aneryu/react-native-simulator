@@ -1,162 +1,172 @@
-#include <react-native-simulator/SimulatorAddon.h>
+#include "AddonHostSupport.h"
 
-#include <dlfcn.h>
-#include <iterator>
+#include <react-native-simulator/Engine.h>
+
+#include <algorithm>
 #include <stdexcept>
+#include <utility>
 
 namespace ReactNativeSimulator {
 
-struct SimulatorAddonRegistry::Entry {
-  std::unique_ptr<SimulatorAddon> owned;
-  SimulatorAddon* addon{nullptr};
-  void (*destroy)(SimulatorAddon*){nullptr};
-  void* library{nullptr};
-
-  ~Entry() {
-    if (destroy != nullptr && addon != nullptr) {
-      destroy(addon);
-    }
-    owned.reset();
-    if (library != nullptr) {
-      dlclose(library);
-    }
-  }
-};
-
-SimulatorAddonRegistry::SimulatorAddonRegistry() = default;
-SimulatorAddonRegistry::~SimulatorAddonRegistry() = default;
-SimulatorAddonRegistry::SimulatorAddonRegistry(SimulatorAddonRegistry&&) noexcept =
-    default;
-SimulatorAddonRegistry& SimulatorAddonRegistry::operator=(
-    SimulatorAddonRegistry&&) noexcept = default;
-
-void SimulatorAddonRegistry::add(std::unique_ptr<SimulatorAddon> addon) {
-  auto entry = std::make_unique<Entry>();
-  entry->addon = addon.get();
-  entry->owned = std::move(addon);
-  addons_.push_back(std::move(entry));
+AddonFabricRegistrar::AddonFabricRegistrar(
+    HostSession& session,
+    std::string addonName,
+    const AddonManifest& manifest)
+    : session_(&session),
+      addonName_(std::move(addonName)),
+      manifest_(&manifest) {
+  session_->addonName = addonName_;
+  session_->manifest = manifest_;
 }
 
-void SimulatorAddonRegistry::load(
-    const std::filesystem::path& libraryPath,
-    std::string_view reactNativeVersion,
-    std::string_view hermesVersion) {
-  void* library = dlopen(libraryPath.c_str(), RTLD_NOW | RTLD_LOCAL);
-  if (library == nullptr) {
-    throw std::runtime_error(
-        "Cannot load addon " + libraryPath.string() + ": " + dlerror());
+void AddonFabricRegistrar::registerDescriptor(
+    facebook::react::ComponentDescriptorProvider provider) {
+  if (session_ == nullptr || manifest_ == nullptr) {
+    throw std::logic_error("AddonFabricRegistrar is not bound to a session");
   }
-  auto closeOnFailure = [&] { dlclose(library); };
-  dlerror();
-  auto getDescriptor = reinterpret_cast<GetSimulatorAddonDescriptor>(
-      dlsym(library, kSimulatorAddonEntryPoint));
-  if (const char* error = dlerror(); error != nullptr) {
-    const std::string message = error;
-    closeOnFailure();
-    throw std::runtime_error(
-        "Addon entry point is missing in " + libraryPath.string() +
-        ": " + message);
+  if (provider.name == nullptr || provider.name[0] == '\0' ||
+      provider.constructor == nullptr || provider.handle == 0) {
+    throw AddonContractViolation(
+        addonName_,
+        "configureFabric",
+        provider.name != nullptr ? provider.name : "",
+        0,
+        "registerDescriptor requires a non-empty name, constructor, and handle");
   }
-  const auto* descriptor = getDescriptor();
-  if (descriptor == nullptr || descriptor->abiVersion != kSimulatorAddonAbiVersion ||
-      descriptor->name == nullptr || descriptor->reactNativeVersion == nullptr ||
-      descriptor->hermesVersion == nullptr || descriptor->create == nullptr ||
-      descriptor->destroy == nullptr) {
-    closeOnFailure();
-    throw std::runtime_error("Invalid addon descriptor: " + libraryPath.string());
+  const auto component = std::find_if(
+      manifest_->components.begin(),
+      manifest_->components.end(),
+      [&](const auto& candidate) { return candidate.name == provider.name; });
+  if (component == manifest_->components.end()) {
+    throw AddonContractViolation(
+        addonName_,
+        "configureFabric",
+        provider.name,
+        0,
+        "registerDescriptor for a component not in this addon's manifest");
   }
-  if (reactNativeVersion != descriptor->reactNativeVersion ||
-      hermesVersion != descriptor->hermesVersion) {
-    const auto addonVersions = std::string(descriptor->reactNativeVersion) + "/" +
-        descriptor->hermesVersion;
-    closeOnFailure();
-    throw std::runtime_error(
-        "Addon runtime version mismatch: " + addonVersions);
+  if (component->kind != AddonComponentKind::FabricDescriptor) {
+    throw AddonContractViolation(
+        addonName_,
+        "configureFabric",
+        provider.name,
+        0,
+        "DescriptorOnlyMock components must not register a provider");
   }
-  auto entry = std::make_unique<Entry>();
-  entry->library = library;
-  entry->destroy = descriptor->destroy;
-  entry->addon = descriptor->create();
-  if (entry->addon == nullptr || entry->addon->name() != descriptor->name) {
-    throw std::runtime_error("Addon factory returned an invalid instance");
-  }
-  addons_.push_back(std::move(entry));
-}
-
-std::shared_ptr<facebook::react::TurboModule>
-SimulatorAddonRegistry::getTurboModule(
-    facebook::jsi::Runtime& runtime,
-    const std::string& moduleName,
-    const std::shared_ptr<facebook::react::CallInvoker>& jsInvoker) {
-  for (const auto& addon : addons_) {
-    if (auto module = addon->addon->getTurboModule(
-            runtime, moduleName, jsInvoker)) {
-      return module;
+  for (const auto& staged : session_->providers) {
+    if (staged.provider.name != nullptr &&
+        std::string(staged.provider.name) == provider.name) {
+      throw AddonContractViolation(
+          addonName_,
+          "configureFabric",
+          provider.name,
+          0,
+          "duplicate descriptor registration");
+    }
+    if (staged.provider.handle == provider.handle) {
+      throw AddonContractViolation(
+          addonName_,
+          "configureFabric",
+          provider.name,
+          0,
+          "duplicate component handle");
     }
   }
-  return nullptr;
+  session_->providers.push_back({addonName_, provider});
 }
 
-std::vector<std::string> SimulatorAddonRegistry::names() const {
-  std::vector<std::string> result;
-  result.reserve(addons_.size());
-  for (const auto& addon : addons_) {
-    result.push_back(addon->addon->name());
+void AddonFabricRegistrar::onMount(
+    std::string_view ownedComponent,
+    AddonMountHandler handler) {
+  if (session_ == nullptr || manifest_ == nullptr) {
+    throw std::logic_error("AddonFabricRegistrar is not bound to a session");
   }
-  return result;
+  const std::string name(ownedComponent);
+  const auto component = std::find_if(
+      manifest_->components.begin(),
+      manifest_->components.end(),
+      [&](const auto& candidate) { return candidate.name == name; });
+  if (component == manifest_->components.end()) {
+    throw AddonContractViolation(
+        addonName_, "configureFabric", name, 0, "onMount for an unowned component");
+  }
+  if (session_->mountHandlers.contains(name)) {
+    throw AddonContractViolation(
+        addonName_,
+        "configureFabric",
+        name,
+        0,
+        "duplicate mount handler");
+  }
+  session_->mountHandlers[name] = std::move(handler);
 }
 
-std::vector<std::string> SimulatorAddonRegistry::moduleNames() const {
-  std::vector<std::string> result;
-  for (const auto& addon : addons_) {
-    const auto names = addon->addon->moduleNames();
-    result.insert(result.end(), names.begin(), names.end());
+void AddonFabricRegistrar::onCommand(
+    std::string_view ownedComponent,
+    std::string_view declaredCommand,
+    AddonCommandHandler handler) {
+  if (session_ == nullptr || manifest_ == nullptr) {
+    throw std::logic_error("AddonFabricRegistrar is not bound to a session");
   }
-  return result;
+  const std::string name(ownedComponent);
+  const std::string command(declaredCommand);
+  const auto component = std::find_if(
+      manifest_->components.begin(),
+      manifest_->components.end(),
+      [&](const auto& candidate) { return candidate.name == name; });
+  if (component == manifest_->components.end()) {
+    throw AddonContractViolation(
+        addonName_,
+        "configureFabric",
+        name,
+        0,
+        "onCommand for an unowned component");
+  }
+  if (std::find(component->commands.begin(), component->commands.end(), command) ==
+      component->commands.end()) {
+    throw AddonContractViolation(
+        addonName_,
+        "configureFabric",
+        name,
+        0,
+        "onCommand for undeclared command " + command);
+  }
+  auto& commands = session_->commandHandlers[name];
+  if (commands.contains(command)) {
+    throw AddonContractViolation(
+        addonName_,
+        "configureFabric",
+        name,
+        0,
+        "duplicate command handler " + command);
+  }
+  commands[command] = std::move(handler);
 }
 
-std::vector<SimulatorAddonCapability>
-SimulatorAddonRegistry::moduleCapabilities() const {
-  std::vector<SimulatorAddonCapability> result;
-  for (const auto& addon : addons_) {
-    const auto capabilities = addon->addon->moduleCapabilities();
-    result.insert(result.end(), capabilities.begin(), capabilities.end());
+bool AddonRuntimeExecutor::post(
+    std::function<void(facebook::jsi::Runtime&)> fn) const noexcept {
+  if (!state_ || !state_->open.load()) {
+    if (state_) {
+      state_->droppedPosts.fetch_add(1);
+    }
+    return false;
   }
-  return result;
+  try {
+    if (!state_->enqueue) {
+      state_->droppedPosts.fetch_add(1);
+      return false;
+    }
+    return state_->enqueue(std::move(fn));
+  } catch (...) {
+    return false;
+  }
 }
 
-std::vector<SimulatorAddonCapability>
-SimulatorAddonRegistry::componentCapabilities() const {
-  std::vector<SimulatorAddonCapability> result;
-  for (const auto& entry : addons_) {
-    auto capabilities = entry->addon->componentCapabilities();
-    result.insert(
-        result.end(),
-        std::make_move_iterator(capabilities.begin()),
-        std::make_move_iterator(capabilities.end()));
-  }
-  return result;
-}
-
-std::vector<SimulatorAddonViewManagerConfig>
-SimulatorAddonRegistry::viewManagerConfigs() const {
-  std::vector<SimulatorAddonViewManagerConfig> result;
-  for (const auto& entry : addons_) {
-    auto configs = entry->addon->viewManagerConfigs();
-    result.insert(
-        result.end(),
-        std::make_move_iterator(configs.begin()),
-        std::make_move_iterator(configs.end()));
-  }
-  return result;
-}
-
-void SimulatorAddonRegistry::installJSI(
-    facebook::jsi::Runtime& runtime,
-    const std::shared_ptr<facebook::react::CallInvoker>& jsInvoker) {
-  for (const auto& entry : addons_) {
-    entry->addon->installJSI(runtime, jsInvoker);
-  }
+AddonRuntimeExecutor makeAddonRuntimeExecutor(
+    std::shared_ptr<AddonRuntimeExecutor::State> state) {
+  AddonRuntimeExecutor executor;
+  executor.state_ = std::move(state);
+  return executor;
 }
 
 } // namespace ReactNativeSimulator

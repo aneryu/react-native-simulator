@@ -18,16 +18,18 @@ RN 0.87 RuntimeScheduler requires `IEventLoopControl`.
 
 ## Verified runtime path
 
-The current Release and ASan+UBSan presets pass 27/27 tests. Coverage includes
-the embedding API, source/HBC and multi-bundle loading, HTTP/Metro transport,
-reload and HMR protocol, DevTools, Fabric/Yoga, typed Skia scenes, traces,
-clean CMake package consumption, RN 0.73/0.87 profiles, the RN Tester addon,
-and caller-built RN Tester Android startup.
+Release and ASan+UBSan presets must pass `ctest --preset release` /
+`ctest --preset sanitized`. Coverage includes the embedding API, source/HBC
+and multi-bundle loading, HTTP/Metro transport, reload and HMR protocol,
+DevTools, Fabric/Yoga, typed Skia scenes, traces, the generated addon catalog
+(`expo`, `safe-area`, `compat-rn73`), ABI 4 MODULE loads, and caller-built RN
+Tester Android startup when that bundle is supplied.
 
 This proves that the current host path runs. It does not prove full platform
-parity. Runtime metrics are the authoritative per-session inventory:
-`rnFrameworkModules`, `rnFrameworkComponents`, `nativeCapabilities`, and
-`fallbackComponents`.
+parity. Runtime metrics are schema 3: structured
+`nativeCapabilities.modules` / `components` rows with `name`, `class`, and
+`owner`, plus `fallbackComponents`. There is no `android-rn73` profile;
+0.73.x JavaScript uses `android-rn87` + `compat-rn73`.
 
 ## Capability labels
 
@@ -63,7 +65,7 @@ parity. Runtime metrics are the authoritative per-session inventory:
 | SoundManager, HeadlessJsTaskSupport, FrameRateLogger, ModalManager | shape-preserving adapters | mocked |
 | ReactDevToolsSettingsManager, ReactDevToolsRuntimeSettingsModule | in-memory hook and reload/profile settings | host-adapted |
 | LinkingManager | same ImGui/mock open-URL adapter as iOS; Android Linking APIs still use IntentAndroid | mocked |
-| RNCSafeAreaContext | window-relative insets (0 at the root; host notch/nav chrome is outside the RN window) | host-adapted |
+| RNCSafeAreaContext | served by auto-loaded `safe-area` addon; snapshot viewport at (0,0) and zero insets | host-adapted (addon:safe-area) |
 | Unknown modules | `nullptr` / enforcing lookup failure | unavailable |
 
 `android-rn87` and `ios-rn87` provide profile-specific `PlatformConstants`.
@@ -81,7 +83,7 @@ AndroidTextInput/TextInput, ActivityIndicatorView, AndroidSwitch, Switch,
 AndroidProgressBar, ModalHostView, AndroidDrawerLayout,
 AndroidSwipeRefreshLayout, PullToRefreshView,
 AndroidHorizontalScrollView, AndroidHorizontalScrollContentView,
-SafeAreaView, RNCSafeAreaProvider, RNCSafeAreaView,
+SafeAreaView,
 InputAccessory, VirtualView, VirtualViewExperimental,
 DebuggingOverlay, RCTImageView
 ```
@@ -110,9 +112,9 @@ not HWUI pixel equivalence. Known boundaries include:
 - `rotateY` remains a 2D determinant approximation;
 - PlatformColor uses a host AppCompat DayNight token map, not Android Resources;
 - Android font padding and hyphenation are deterministic approximations;
-- `RNCSafeAreaProvider` / `RNCSafeAreaView` report window-relative insets. Host
-  status/nav chrome is drawn around the RN window, so a root provider does not
-  overlap the notch; this is not Android 15 edge-to-edge WindowInsets;
+- `RNCSafeAreaProvider` / `RNCSafeAreaView` belong to addon `safe-area`, not
+  the profile. v1 insets are zero and `initialWindowMetrics.frame` matches the
+  snapshot viewport; this is not Android 15 edge-to-edge WindowInsets;
 - `VirtualView`, `InputAccessory`, generic `Switch`, `PullToRefreshView`,
   `RCTImageView`, and `DebuggingOverlay` remain primarily layout-only;
 - no macOS accessibility platform source feeds the interactive frontend.

@@ -11,16 +11,10 @@
 class SimulatorEventLoop;
 class RuntimeProfile;
 
-namespace ReactNativeSimulator {
-class SimulatorAddonRegistry;
-}
-
 void setDevSettingsReloadHandler(std::function<void()> handler);
 
-std::shared_ptr<facebook::react::TurboModule> getHeadlessTurboModule(
+std::shared_ptr<facebook::react::TurboModule> getHeadlessHostTurboModule(
     facebook::jsi::Runtime& runtime,
     const std::string& name,
-    const RuntimeProfile& profile,
-    ReactNativeSimulator::SimulatorAddonRegistry& addons,
     const std::shared_ptr<facebook::react::CallInvoker>& jsInvoker,
     const std::shared_ptr<SimulatorEventLoop>& eventLoop = {});

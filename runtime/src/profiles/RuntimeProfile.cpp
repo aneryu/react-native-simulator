@@ -74,13 +74,5 @@ std::unique_ptr<RuntimeProfile> createRuntimeProfile(
         "native-headless-platform-adapter",
         std::move(host));
   }
-  if (name == "android-rn73") {
-    return std::make_unique<RegisteredRuntimeProfile>(
-        name,
-        "android",
-        "0.73.10",
-        "partial-compatibility-adapter",
-        std::move(host));
-  }
   throw std::invalid_argument("Unknown profile: " + name);
 }

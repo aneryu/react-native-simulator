@@ -21,8 +21,6 @@ const char HeadlessModalHostViewName[] = "ModalHostView";
 const char HeadlessAndroidSwipeRefreshLayoutName[] = "AndroidSwipeRefreshLayout";
 const char HeadlessAndroidDrawerLayoutName[] = "AndroidDrawerLayout";
 const char HeadlessSafeAreaViewName[] = "SafeAreaView";
-const char HeadlessRNCSafeAreaProviderName[] = "RNCSafeAreaProvider";
-const char HeadlessRNCSafeAreaViewName[] = "RNCSafeAreaView";
 
 HeadlessActivityIndicatorViewProps::HeadlessActivityIndicatorViewProps(
     const PropsParserContext& context,
@@ -238,42 +236,36 @@ HeadlessAndroidDrawerLayoutProps::HeadlessAndroidDrawerLayoutProps(
           sourceProps.drawerBackgroundColor,
           SharedColor{})) {}
 
-void registerHeadlessOfficialComponents(
-    ComponentDescriptorProviderRegistry& providers,
+void collectHeadlessOfficialComponentProviders(
+    std::vector<ComponentDescriptorProvider>& providers,
     std::vector<std::shared_ptr<std::string>>& flavorStorage) {
-  providers.add(
+  providers.push_back(
       concreteComponentDescriptorProvider<
           HeadlessActivityIndicatorComponentDescriptor>());
-  providers.add(
+  providers.push_back(
       concreteComponentDescriptorProvider<
           HeadlessAndroidSwitchComponentDescriptor>());
-  providers.add(
+  providers.push_back(
       concreteComponentDescriptorProvider<
           HeadlessSwitchComponentDescriptor>());
-  providers.add(
+  providers.push_back(
       concreteComponentDescriptorProvider<
           HeadlessAndroidProgressBarComponentDescriptor>());
-  providers.add(
+  providers.push_back(
       concreteComponentDescriptorProvider<
           HeadlessModalHostViewComponentDescriptor>());
-  providers.add(
+  providers.push_back(
       concreteComponentDescriptorProvider<
           AndroidHorizontalScrollContentViewComponentDescriptor>());
-  providers.add(
+  providers.push_back(
       concreteComponentDescriptorProvider<
           HeadlessAndroidSwipeRefreshLayoutComponentDescriptor>());
-  providers.add(
+  providers.push_back(
       concreteComponentDescriptorProvider<
           HeadlessAndroidDrawerLayoutComponentDescriptor>());
-  providers.add(
+  providers.push_back(
       concreteComponentDescriptorProvider<
           HeadlessSafeAreaViewComponentDescriptor>());
-  providers.add(
-      concreteComponentDescriptorProvider<
-          HeadlessRNCSafeAreaProviderComponentDescriptor>());
-  providers.add(
-      concreteComponentDescriptorProvider<
-          HeadlessRNCSafeAreaViewComponentDescriptor>());
 
   for (const auto& spec : kHeadlessOfficialComponents) {
     if (std::string(spec.name) == "ActivityIndicatorView" ||
@@ -285,19 +277,27 @@ void registerHeadlessOfficialComponents(
         std::string(spec.name) == "AndroidHorizontalScrollContentView" ||
         std::string(spec.name) == "AndroidSwipeRefreshLayout" ||
         std::string(spec.name) == "AndroidDrawerLayout" ||
-        std::string(spec.name) == "SafeAreaView" ||
-        std::string(spec.name) == "RNCSafeAreaProvider" ||
-        std::string(spec.name) == "RNCSafeAreaView") {
+        std::string(spec.name) == "SafeAreaView") {
       continue;
     }
     auto flavor = std::make_shared<std::string>(spec.name);
     flavorStorage.push_back(flavor);
-    providers.add({
+    providers.push_back({
         reinterpret_cast<ComponentHandle>(flavor->c_str()),
         flavor->c_str(),
         flavor,
         &concreteComponentDescriptorConstructor<
             UnimplementedViewComponentDescriptor>});
+  }
+}
+
+void registerHeadlessOfficialComponents(
+    ComponentDescriptorProviderRegistry& providers,
+    std::vector<std::shared_ptr<std::string>>& flavorStorage) {
+  std::vector<ComponentDescriptorProvider> staged;
+  collectHeadlessOfficialComponentProviders(staged, flavorStorage);
+  for (const auto& provider : staged) {
+    providers.add(provider);
   }
 }
 

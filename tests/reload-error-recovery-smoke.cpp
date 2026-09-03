@@ -1,4 +1,5 @@
 #include <react-native-simulator/Engine.h>
+#include "EngineTestSupport.h"
 
 #include "TestEngineThread.h"
 
@@ -40,8 +41,8 @@ int main() {
   ReactNativeSimulator::EngineConfig config;
   config.mode = ReactNativeSimulator::SimulatorMode::Interactive;
   config.timeoutMs = 15000;
-  ReactNativeSimulator::Engine engine(config);
-  engine.loadBundle(bundle);
+  auto engine = ReactNativeSimulator::test::makeEngine(
+      std::move(config), {ReactNativeSimulator::test::fileBundle(bundle)});
 
   std::string runError;
   TestEngineThread runner([&] {

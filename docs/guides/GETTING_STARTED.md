@@ -239,7 +239,7 @@ the config bundle list:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "reactNative": "0.87.0",
   "platform": "android",
   "appKey": "MyApp",
@@ -254,12 +254,13 @@ rnsim --config ./rnsim.json
 ## Third-party native modules
 
 Application, company, and third-party native contracts belong in
-`runtime/addons/<name>/` and are loaded with `--addon`. The RN framework
-provider never registers application-specific module names. Missing modules stay
-unavailable rather than becoming silent mocks. Expo is the one built-in
-third-party addon: it is auto-loaded for Expo projects or with `--addon expo`,
-and it host-adapts boot modules only. See [ADDONS.md](ADDONS.md) and its
-TurboModule and Fabric component implementation guidance.
+`runtime/addons/<name>/` and are loaded with `--addon` or a schema-2 tagged
+`rnsim.json` entry. The RN framework provider never registers
+application-specific module names. Missing modules stay unavailable rather than
+becoming silent mocks. `safe-area` auto-loads for every project. Expo is
+auto-loaded for Expo projects or with `--addon expo`, and it host-adapts boot
+modules only. RN 0.73.x JavaScript needs `--profile android-rn87 --addon
+compat-rn73`. See [ADDONS.md](ADDONS.md).
 
 ## Related
 

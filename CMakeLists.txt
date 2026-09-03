@@ -41,6 +41,12 @@ set(RNS_RNTESTER_BUNDLE "" CACHE FILEPATH
   "Caller-built RN Tester Android bundle used by the default conformance integration")
 option(RNS_REQUIRE_RNTESTER_BUNDLE
   "Fail configure when the caller-built RN Tester integration bundle is absent" OFF)
+set(RNS_RN073_BUSINESS_BUNDLE "" CACHE FILEPATH
+  "Real RN 0.73.10 business JS bundle used by the required compat-rn73 lane")
+set(RNS_RN073_BUSINESS_PROVENANCE "" CACHE FILEPATH
+  "Provenance JSON for RNS_RN073_BUSINESS_BUNDLE")
+option(RNS_REQUIRE_RN073_BUSINESS_BUNDLE
+  "Fail configure when the RN 0.73.10 business bundle or provenance is absent" OFF)
 
 set(RNS_THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 set(RNS_REACT_NATIVE_REPOSITORY "${RNS_THIRD_PARTY_DIR}/react-native")
@@ -277,9 +283,8 @@ set(RN_ROOT "${RNS_REACT_NATIVE_DIR}")
 set(HERMES_SOURCE "${RNS_HERMES_DIR}")
 set(HERMES_BINARY_DIR "${CMAKE_BINARY_DIR}/hermes")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/HostDependencies.cmake")
-add_subdirectory(runtime)
-
 include(CTest)
+add_subdirectory(runtime)
 
 if(BUILD_TESTING)
   add_subdirectory(tests)

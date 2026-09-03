@@ -2,9 +2,7 @@
 #include "HeadlessAnimatedModule.h"
 #include "HeadlessNativeDOM.h"
 #include "HeadlessObservers.h"
-#include "RuntimeProfile.h"
 
-#include <react-native-simulator/SimulatorAddon.h>
 #include "HeadlessRNModules.h"
 
 #include <react/featureflags/ReactNativeFeatureFlags.h>
@@ -569,11 +567,9 @@ void setDevSettingsReloadHandler(std::function<void()> handler) {
   devSettingsReloadHandler = std::move(handler);
 }
 
-std::shared_ptr<react::TurboModule> getHeadlessTurboModule(
-    jsi::Runtime& runtime,
+std::shared_ptr<react::TurboModule> getHeadlessHostTurboModule(
+    jsi::Runtime&,
     const std::string& name,
-    const RuntimeProfile& profile,
-    ReactNativeSimulator::SimulatorAddonRegistry& addons,
     const std::shared_ptr<react::CallInvoker>& jsInvoker,
     const std::shared_ptr<SimulatorEventLoop>& eventLoop) {
   if (name == "NativeAnimatedModule") {
@@ -612,13 +608,8 @@ std::shared_ptr<react::TurboModule> getHeadlessTurboModule(
   if (name == "HeadlessSampleModule") {
     return std::make_shared<HeadlessSampleTurboModule>(jsInvoker);
   }
-  if (auto module = profile.getTurboModule(runtime, name, jsInvoker)) {
-    return module;
-  }
   if (name == "UIManager") {
-    // Fabric owns layout and mounting. This compatibility module only lets
-    // RN's static view-config path probe for legacy UIManager safely.
     return std::make_shared<EmptyTurboModule>(name, jsInvoker);
   }
-  return addons.getTurboModule(runtime, name, jsInvoker);
+  return nullptr;
 }

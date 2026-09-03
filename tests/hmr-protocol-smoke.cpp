@@ -1,4 +1,5 @@
 #include <react-native-simulator/Engine.h>
+#include "EngineTestSupport.h"
 
 #include "TestEngineThread.h"
 
@@ -258,8 +259,9 @@ int main() {
   config.mode = ReactNativeSimulator::SimulatorMode::Interactive;
   config.timeoutMs = 15000;
   config.autoRunApplication = false;
-  ReactNativeSimulator::Engine engine(config);
-  engine.loadBundle(std::string(kBundle), url);
+  auto engine = ReactNativeSimulator::test::makeEngine(
+      std::move(config),
+      {ReactNativeSimulator::test::memoryBundle(std::string(kBundle), url)});
 
   std::string runError;
   TestEngineThread runner([&] {
@@ -347,8 +349,10 @@ int main() {
   failingConfig.mode = ReactNativeSimulator::SimulatorMode::Interactive;
   failingConfig.timeoutMs = 5000;
   failingConfig.autoRunApplication = false;
-  ReactNativeSimulator::Engine failingEngine(std::move(failingConfig));
-  failingEngine.loadBundle(std::string(kFailingHMRBundle), failingUrl);
+  auto failingEngine = ReactNativeSimulator::test::makeEngine(
+      std::move(failingConfig),
+      {ReactNativeSimulator::test::memoryBundle(
+          std::string(kFailingHMRBundle), failingUrl)});
   ReactNativeSimulator::EngineResult failingResult;
   TestEngineThread failingRunner(
       [&] { failingResult = failingEngine.run(); });

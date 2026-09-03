@@ -2,15 +2,23 @@
 
 #include <react/nativemodule/core/ReactCommon/TurboModuleUtils.h>
 
+#include <memory>
+
 namespace jsi = facebook::jsi;
 namespace react = facebook::react;
+using ReactNativeSimulator::AddonCommand;
+using ReactNativeSimulator::AddonComponentDeclaration;
+using ReactNativeSimulator::AddonComponentKind;
+using ReactNativeSimulator::AddonGenerationContext;
+using ReactNativeSimulator::AddonHost;
+using ReactNativeSimulator::AddonHostSnapshot;
+using ReactNativeSimulator::AddonManifest;
+using ReactNativeSimulator::AddonModuleDeclaration;
+using ReactNativeSimulator::AddonNumericConstant;
+using ReactNativeSimulator::AddonRole;
+using ReactNativeSimulator::AddonViewManagerConfig;
+using ReactNativeSimulator::RuntimeCapabilityClass;
 using ReactNativeSimulator::SimulatorAddon;
-using ReactNativeSimulator::SimulatorAddonCapability;
-using ReactNativeSimulator::SimulatorAddonCommand;
-using ReactNativeSimulator::SimulatorAddonDescriptor;
-using ReactNativeSimulator::SimulatorAddonNumericConstant;
-using ReactNativeSimulator::SimulatorAddonViewManagerConfig;
-using ReactNativeSimulator::kSimulatorAddonAbiVersion;
 
 namespace {
 class NativeCxxModuleExampleStub final : public react::TurboModule {
@@ -98,47 +106,46 @@ class ScreenshotManagerStub final : public react::TurboModule {
 
 class RNTesterAddon final : public SimulatorAddon {
  public:
-  std::string name() const override {
-    return "rntester";
-  }
-
-  std::vector<std::string> moduleNames() const override {
-    return {"NativeCxxModuleExampleCxx", "ScreenshotManager"};
-  }
-
-  std::vector<SimulatorAddonCapability> moduleCapabilities() const override {
-    return {
-        {"NativeCxxModuleExampleCxx", "tester-stub"},
-        {"ScreenshotManager", "tester-stub"},
+  AddonManifest manifest() const override {
+    AddonManifest manifest;
+    manifest.name = "rntester";
+    manifest.addonVersion = "1.0.0";
+    manifest.role = AddonRole::Application;
+    manifest.modules = {
+        {"NativeCxxModuleExampleCxx", RuntimeCapabilityClass::Mocked, "tester-stub"},
+        {"ScreenshotManager", RuntimeCapabilityClass::Mocked, "tester-stub"},
     };
-  }
-
-  std::vector<SimulatorAddonCapability> componentCapabilities() const override {
-    return {
-        {"RNTReportFullyDrawnView", "descriptor-only-mock"},
-        {"RNTMyNativeView", "descriptor-only-mock"},
-        {"RNTMyLegacyNativeView", "descriptor-only-mock"},
-        {"AndroidPopupMenu", "descriptor-only-mock"},
+    auto mock = [](const char* name) {
+      return AddonComponentDeclaration{
+          name,
+          RuntimeCapabilityClass::Mocked,
+          AddonComponentKind::DescriptorOnlyMock,
+          {},
+          {},
+          "descriptor-only-mock"};
     };
-  }
-
-  std::vector<SimulatorAddonViewManagerConfig>
-  viewManagerConfigs() const override {
-    return {{
+    manifest.components = {
+        mock("RNTReportFullyDrawnView"),
+        mock("RNTMyNativeView"),
+        mock("RNTMyLegacyNativeView"),
+        mock("AndroidPopupMenu"),
+    };
+    manifest.viewManagerConfigs = {{
         .name = "RNTMyLegacyNativeView",
-        .numericConstants = {
-            SimulatorAddonNumericConstant{.name = "PI", .value = 3.14},
-        },
-        .commands = {
-            SimulatorAddonCommand{
-                .name = "changeBackgroundColor", .id = 1},
-            SimulatorAddonCommand{.name = "addOverlays", .id = 2},
-            SimulatorAddonCommand{.name = "removeOverlays", .id = 3},
-        },
+        .numericConstants = {AddonNumericConstant{.name = "PI", .value = 3.14}},
+        .commands =
+            {AddonCommand{.name = "changeBackgroundColor", .id = 1},
+             AddonCommand{.name = "addOverlays", .id = 2},
+             AddonCommand{.name = "removeOverlays", .id = 3}},
     }};
+    return manifest;
   }
+
+  void bind(const AddonHost&) override {}
+  void unbind() noexcept override {}
 
   std::shared_ptr<react::TurboModule> getTurboModule(
+      const AddonGenerationContext&,
       jsi::Runtime&,
       const std::string& moduleName,
       const std::shared_ptr<facebook::react::CallInvoker>& jsInvoker) override {
@@ -150,18 +157,28 @@ class RNTesterAddon final : public SimulatorAddon {
     }
     return nullptr;
   }
+
+  std::shared_ptr<react::TurboModule> wrapTurboModule(
+      const AddonGenerationContext&,
+      jsi::Runtime&,
+      const std::string&,
+      std::shared_ptr<react::TurboModule> framework,
+      const std::shared_ptr<facebook::react::CallInvoker>&) override {
+    return framework;
+  }
+
+  void configureFabric(
+      const AddonGenerationContext&,
+      ReactNativeSimulator::AddonFabricRegistrar&) override {}
+  void installJSI(
+      const AddonGenerationContext&,
+      jsi::Runtime&,
+      const std::shared_ptr<facebook::react::CallInvoker>&) override {}
+  void hostSnapshotChanged(const AddonHostSnapshot&) override {}
+  void quiesceGeneration(std::uint64_t) noexcept override {}
 };
 } // namespace
 
-extern "C" const SimulatorAddonDescriptor*
-react_native_simulator_addon_v2() {
-  static const SimulatorAddonDescriptor descriptor{
-      .abiVersion = kSimulatorAddonAbiVersion,
-      .name = "rntester",
-      .reactNativeVersion = RNS_REACT_NATIVE_VERSION,
-      .hermesVersion = RNS_HERMES_VERSION,
-      .create = []() -> SimulatorAddon* { return new RNTesterAddon(); },
-      .destroy = [](SimulatorAddon* addon) { delete addon; },
-  };
-  return &descriptor;
+std::unique_ptr<SimulatorAddon> createRNTesterAddon() {
+  return std::make_unique<RNTesterAddon>();
 }

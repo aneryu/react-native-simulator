@@ -1,5 +1,7 @@
 #include <react-native-simulator/Engine.h>
 
+#include "EngineTestSupport.h"
+
 #include <iostream>
 #include <string>
 
@@ -15,8 +17,9 @@ int main() {
   config.viewportHeight = 640;
   config.pointScaleFactor = 2;
 
-  ReactNativeSimulator::Engine runtime(std::move(config));
-  runtime.loadBundle(
+  auto runtime = ReactNativeSimulator::test::makeEngine(
+      std::move(config),
+      {ReactNativeSimulator::test::memoryBundle(
       R"JS(
 RN$SimulatorWorkload.ready();
 const modules = globalThis.nativeModuleProxy;
@@ -98,7 +101,7 @@ Promise.all([
   throw error;
 });
 )JS",
-      "memory://headless-api-modules.js");
+      "memory://headless-api-modules.js")});
 
   const auto result = runtime.run();
   if (result.exitCode != 0 ||
@@ -111,8 +114,9 @@ Promise.all([
   iosConfig.iterations = 5;
   iosConfig.timeoutMs = 2000;
   iosConfig.profile = "ios-rn87";
-  ReactNativeSimulator::Engine iosRuntime(std::move(iosConfig));
-  iosRuntime.loadBundle(
+  auto iosRuntime = ReactNativeSimulator::test::makeEngine(
+      std::move(iosConfig),
+      {ReactNativeSimulator::test::memoryBundle(
       R"JS(
 RN$SimulatorWorkload.ready();
 const modules = globalThis.nativeModuleProxy;
@@ -131,7 +135,7 @@ if (constants.theme !== 'dark' || constants.count !== 2 ||
 globalThis.RN$SimulatorWorkloadResult = {iterations: 5, checksum: 13};
 RN$SimulatorWorkload.complete();
 )JS",
-      "memory://headless-ios-modules.js");
+      "memory://headless-ios-modules.js")});
   const auto iosResult = iosRuntime.run();
   if (iosResult.exitCode != 0 ||
       iosResult.metricsJson.find("\"workloadChecksum\":13") ==
@@ -144,8 +148,9 @@ RN$SimulatorWorkload.complete();
   backConfig.iterations = 5;
   backConfig.timeoutMs = 2000;
   backConfig.profile = "android-rn87";
-  ReactNativeSimulator::Engine backRuntime(std::move(backConfig));
-  backRuntime.loadBundle(
+  auto backRuntime = ReactNativeSimulator::test::makeEngine(
+      std::move(backConfig),
+      {ReactNativeSimulator::test::memoryBundle(
       R"JS(
 let events = [];
 globalThis.__rctDeviceEventEmitter = {
@@ -167,7 +172,7 @@ RN$Simulator.dispatchActions([{type: 'hardwareBackPress'}]).then(function() {
   RN$SimulatorWorkload.complete();
 }).catch(function(error) { throw error; });
 )JS",
-      "memory://headless-back-press.js");
+      "memory://headless-back-press.js")});
   const auto backResult = backRuntime.run();
   if (backResult.exitCode != 0 ||
       backResult.metricsJson.find("\"workloadChecksum\":17") ==
@@ -184,8 +189,9 @@ RN$Simulator.dispatchActions([{type: 'hardwareBackPress'}]).then(function() {
   gapConfig.viewportHeight = 844;
   gapConfig.insetTop = 24;
   gapConfig.insetBottom = 48;
-  ReactNativeSimulator::Engine gapRuntime(std::move(gapConfig));
-  gapRuntime.loadBundle(
+  auto gapRuntime = ReactNativeSimulator::test::makeEngine(
+      std::move(gapConfig),
+      {ReactNativeSimulator::test::memoryBundle(
       R"JS(
 RN$SimulatorWorkload.ready();
 const modules = globalThis.nativeModuleProxy;
@@ -224,13 +230,12 @@ if (settings.getGlobalHookSettings() !== '{"hook":true}' ||
 globalThis.RN$SimulatorWorkloadResult = {iterations: 5, checksum: 19};
 RN$SimulatorWorkload.complete();
 )JS",
-      "memory://android-capability-gap.js");
+      "memory://android-capability-gap.js")});
   const auto gapResult = gapRuntime.run();
   if (gapResult.exitCode != 0 ||
       gapResult.metricsJson.find("\"workloadChecksum\":19") ==
           std::string::npos ||
-      gapResult.metricsJson.find(
-          "\"RNCSafeAreaProvider\":\"window-relative-insets\"") ==
+      gapResult.metricsJson.find("\"name\":\"RNCSafeAreaProvider\"") ==
           std::string::npos) {
     std::cerr << gapResult.error << '\n' << gapResult.metricsJson << '\n';
     return 1;
