@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,7 @@ struct HeadlessRNModuleHost {
   float insetBottom{0.0f};
   std::string scriptURL{"react-native-simulator://bundle"};
   std::filesystem::path assetDirectory;
+  std::optional<std::string> initialUrl;
 };
 
 std::shared_ptr<facebook::react::TurboModule> getHeadlessRNModule(

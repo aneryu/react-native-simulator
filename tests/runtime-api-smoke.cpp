@@ -1,6 +1,7 @@
 #include <react-native-simulator/Engine.h>
 #include <react-native-simulator/Interaction.h>
 
+#include "EngineTestSupport.h"
 #include "TestEngineThread.h"
 
 #include <atomic>
@@ -221,18 +222,19 @@ int main() {
     handedOffScene = std::move(scene);
   };
 
-  ReactNativeSimulator::Engine runtime(std::move(config));
-  runtime.loadBundle(
-      "RN$SimulatorWorkload.ready();\n"
-      "globalThis.embeddingState = 40;\n",
-      "memory://runtime-api-main.js");
-  runtime.loadBundle(
-      "globalThis.embeddingState += 2;\n"
-      "globalThis.RN$SimulatorWorkloadResult = {\n"
-      "  iterations: 5, checksum: globalThis.embeddingState\n"
-      "};\n"
-      "RN$SimulatorWorkload.complete();\n",
-      "memory://runtime-api-workload.js");
+  auto runtime = ReactNativeSimulator::test::makeEngine(
+      std::move(config),
+      {ReactNativeSimulator::test::memoryBundle(
+           "RN$SimulatorWorkload.ready();\n"
+           "globalThis.embeddingState = 40;\n",
+           "memory://runtime-api-main.js"),
+       ReactNativeSimulator::test::memoryBundle(
+           "globalThis.embeddingState += 2;\n"
+           "globalThis.RN$SimulatorWorkloadResult = {\n"
+           "  iterations: 5, checksum: globalThis.embeddingState\n"
+           "};\n"
+           "RN$SimulatorWorkload.complete();\n",
+           "memory://runtime-api-workload.js")});
   const auto result = runtime.run();
   if (result.exitCode != 0 || !result.error.empty() ||
       result.scene == nullptr || result.scene->viewportWidth != 300.0f ||
@@ -242,7 +244,7 @@ int main() {
       handedOffScene->revision != result.scene->revision ||
       result.scene->viewportHeight != 80.0f ||
       result.scene->pointScaleFactor != 1.0f ||
-      result.metricsJson.find("\"schemaVersion\":2") == std::string::npos ||
+      result.metricsJson.find("\"schemaVersion\":3") == std::string::npos ||
       result.metricsJson.find("\"bundlesLoaded\":2") == std::string::npos ||
       result.metricsJson.find("\"workloadChecksum\":42") ==
           std::string::npos ||
@@ -268,17 +270,18 @@ int main() {
   ReactNativeSimulator::EngineConfig actionConfig;
   actionConfig.iterations = 5;
   actionConfig.timeoutMs = 1000;
-  ReactNativeSimulator::Engine actionRuntime(std::move(actionConfig));
-  actionRuntime.loadBundle(
-      "RN$SimulatorWorkload.ready();\n"
-      "RN$Simulator.dispatchActions([{type:'pointerDown',x:999,y:999}])\n"
-      ".then(function(){throw new Error('action unexpectedly resolved')})\n"
-      ".catch(function(error){\n"
-      " globalThis.RN$SimulatorWorkloadResult={iterations:5,checksum:\n"
-      "   String(error.message).indexOf('no target')>=0?7:0};\n"
-      " RN$SimulatorWorkload.complete();\n"
-      "});\n",
-      "memory://action-api.js");
+  auto actionRuntime = ReactNativeSimulator::test::makeEngine(
+      std::move(actionConfig),
+      {ReactNativeSimulator::test::memoryBundle(
+          "RN$SimulatorWorkload.ready();\n"
+          "RN$Simulator.dispatchActions([{type:'pointerDown',x:999,y:999}])\n"
+          ".then(function(){throw new Error('action unexpectedly resolved')})\n"
+          ".catch(function(error){\n"
+          " globalThis.RN$SimulatorWorkloadResult={iterations:5,checksum:\n"
+          "   String(error.message).indexOf('no target')>=0?7:0};\n"
+          " RN$SimulatorWorkload.complete();\n"
+          "});\n",
+          "memory://action-api.js")});
   const auto actionResult = actionRuntime.run();
   if (actionResult.exitCode != 0 ||
       actionResult.metricsJson.find("\"workloadChecksum\":7") ==
@@ -290,14 +293,15 @@ int main() {
   ReactNativeSimulator::EngineConfig capabilityConfig;
   capabilityConfig.iterations = 1;
   capabilityConfig.timeoutMs = 1000;
-  ReactNativeSimulator::Engine capabilityRuntime(std::move(capabilityConfig));
-  capabilityRuntime.loadBundle(
-      "void globalThis.nativeModuleProxy.$$typeof;\n"
-      "globalThis.__turboModuleProxy('DefinitelyMissingModule');\n"
-      "RN$SimulatorWorkload.ready();\n"
-      "globalThis.RN$SimulatorWorkloadResult={iterations:1,checksum:13};\n"
-      "RN$SimulatorWorkload.complete();\n",
-      "memory://capability-status.js");
+  auto capabilityRuntime = ReactNativeSimulator::test::makeEngine(
+      std::move(capabilityConfig),
+      {ReactNativeSimulator::test::memoryBundle(
+          "void globalThis.nativeModuleProxy.$$typeof;\n"
+          "globalThis.__turboModuleProxy('DefinitelyMissingModule');\n"
+          "RN$SimulatorWorkload.ready();\n"
+          "globalThis.RN$SimulatorWorkloadResult={iterations:1,checksum:13};\n"
+          "RN$SimulatorWorkload.complete();\n",
+          "memory://capability-status.js")});
   const auto capabilityResult = capabilityRuntime.run();
   const auto capabilityStatus = capabilityRuntime.runtimeStatus();
   bool sawUnavailableUsage = false;
@@ -330,19 +334,20 @@ int main() {
   interactiveConfig.autoRunApplication = true;
   interactiveConfig.initialPropsJson = "{\"n\":4}";
   interactiveConfig.timeoutMs = 1000;
-  ReactNativeSimulator::Engine interactive(std::move(interactiveConfig));
-  interactive.loadBundle(
-      "globalThis.__turboModuleProxy('DeviceInfo');\n"
-      "globalThis.RN$AppRegistry={\n"
-      " getAppKeys:function(){return ['InteractiveApp'];},\n"
-      " runApplication:function(key,parameters){\n"
-      "  globalThis.RN$SimulatorWorkloadResult={iterations:1,checksum:\n"
-      "   key==='InteractiveApp'&&parameters.rootTag===21&&\n"
-      "   parameters.fabric===true&&parameters.initialProps&&\n"
-      "   parameters.initialProps.n===4?9:0};\n"
-      " }\n"
-      "};\n",
-                         "memory://interactive.js");
+  auto interactive = ReactNativeSimulator::test::makeEngine(
+      std::move(interactiveConfig),
+      {ReactNativeSimulator::test::memoryBundle(
+          "globalThis.__turboModuleProxy('DeviceInfo');\n"
+          "globalThis.RN$AppRegistry={\n"
+          " getAppKeys:function(){return ['InteractiveApp'];},\n"
+          " runApplication:function(key,parameters){\n"
+          "  globalThis.RN$SimulatorWorkloadResult={iterations:1,checksum:\n"
+          "   key==='InteractiveApp'&&parameters.rootTag===21&&\n"
+          "   parameters.fabric===true&&parameters.initialProps&&\n"
+          "   parameters.initialProps.n===4?9:0};\n"
+          " }\n"
+          "};\n",
+          "memory://interactive.js")});
   ReactNativeSimulator::EngineResult interactiveResult;
   TestEngineThread interactiveThread(
       [&] { interactiveResult = interactive.run(); });
@@ -394,10 +399,11 @@ int main() {
   ReactNativeSimulator::EngineConfig errorConfig;
   errorConfig.mode = ReactNativeSimulator::SimulatorMode::Interactive;
   errorConfig.timeoutMs = 1000;
-  ReactNativeSimulator::Engine errorRuntime(std::move(errorConfig));
-  errorRuntime.loadBundle(
-      "throw new Error('interactive status boom');\n",
-      "memory://interactive-error.js");
+  auto errorRuntime = ReactNativeSimulator::test::makeEngine(
+      std::move(errorConfig),
+      {ReactNativeSimulator::test::memoryBundle(
+          "throw new Error('interactive status boom');\n",
+          "memory://interactive-error.js")});
   ReactNativeSimulator::EngineResult errorResult;
   TestEngineThread errorThread([&] { errorResult = errorRuntime.run(); });
   bool observedStructuredError = false;
@@ -481,20 +487,21 @@ int main() {
                observed, scene->runtimeGeneration)) {
     }
   };
-  ReactNativeSimulator::Engine selectable(std::move(selectConfig));
-  selectable.loadBundle(
-      "globalThis.RN$AppRegistry={\n"
-      " getAppKeys:function(){return ['LogBox','AppA','AppB'];},\n"
-      " runApplication:function(key,parameters){\n"
-      "  const status=globalThis.__turboModuleProxy('StatusBarManager');\n"
-      "  status.setHidden(false); status.setHidden(true);\n"
-      "  globalThis.RN$SimulatorWorkloadResult={iterations:1,checksum:\n"
-      "   key==='AppB'&&parameters.initialProps&&\n"
-      "   parameters.initialProps.marker===7&&\n"
-      "   parameters.rootTag===21&&parameters.fabric===true?11:0};\n"
-      " }\n"
-      "};\n",
-      "memory://select-app.js");
+  auto selectable = ReactNativeSimulator::test::makeEngine(
+      std::move(selectConfig),
+      {ReactNativeSimulator::test::memoryBundle(
+          "globalThis.RN$AppRegistry={\n"
+          " getAppKeys:function(){return ['LogBox','AppA','AppB'];},\n"
+          " runApplication:function(key,parameters){\n"
+          "  const status=globalThis.__turboModuleProxy('StatusBarManager');\n"
+          "  status.setHidden(false); status.setHidden(true);\n"
+          "  globalThis.RN$SimulatorWorkloadResult={iterations:1,checksum:\n"
+          "   key==='AppB'&&parameters.initialProps&&\n"
+          "   parameters.initialProps.marker===7&&\n"
+          "   parameters.rootTag===21&&parameters.fabric===true?11:0};\n"
+          " }\n"
+          "};\n",
+          "memory://select-app.js")});
   ReactNativeSimulator::EngineResult selectResult;
   TestEngineThread selectThread([&] { selectResult = selectable.run(); });
   bool ranSelected = false;

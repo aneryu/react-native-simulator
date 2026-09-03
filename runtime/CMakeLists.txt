@@ -131,9 +131,18 @@ file(GLOB HERMES_INSPECTOR_SOURCES CONFIGURE_DEPENDS
 
 add_subdirectory("${RN_ROOT}/ReactCommon/yoga/yoga" "${CMAKE_BINARY_DIR}/yoga")
 
+include("${PROJECT_ROOT}/cmake/GenerateAddonApiFingerprint.cmake")
+include("${PROJECT_ROOT}/cmake/RnsAddon.cmake")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(RNS_RUNTIME_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated"
+  CACHE INTERNAL "Generated runtime headers")
+rns_generate_addon_api_fingerprint()
+
 add_library(react-native-simulator-engine STATIC
   src/core/SceneHitTest.cpp
   src/core/SimulatorAddon.cpp
+  src/core/LaunchPlan.cpp
+  src/core/FrameworkInventory.cpp
   src/core/SimulatorEventLoop.cpp
   src/core/HostEnvironment.cpp
   src/core/HostPlatform.cpp
@@ -233,7 +242,8 @@ target_compile_definitions(react-native-simulator-engine PRIVATE
   REACT_NATIVE_DEBUGGER_ENABLED_DEVONLY=1
   RNS_REACT_NATIVE_VERSION="${RNS_REACT_NATIVE_VERSION}"
   RNS_REACT_PEER_RANGE="${RNS_REACT_PEER_RANGE}"
-  RNS_HERMES_VERSION="${RNS_HERMES_VERSION}")
+  RNS_HERMES_VERSION="${RNS_HERMES_VERSION}"
+  RNS_ADDON_API_FINGERPRINT="${RNS_ADDON_API_FINGERPRINT}")
 if(RNS_ENABLE_SOURCE_DEVTOOLS_FRONTEND)
   target_compile_definitions(react-native-simulator-engine PRIVATE
     RNS_ENABLE_SOURCE_DEVTOOLS_FRONTEND=1
@@ -246,6 +256,19 @@ target_include_directories(react-native-simulator-engine
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>"
     "$<INSTALL_INTERFACE:include>"
+    "$<BUILD_INTERFACE:${RN_ROOT}/ReactCommon>"
+    "$<BUILD_INTERFACE:${RN_ROOT}/ReactCommon/callinvoker>"
+    "$<BUILD_INTERFACE:${RN_ROOT}/ReactCommon/runtimeexecutor>"
+    "$<BUILD_INTERFACE:${RN_ROOT}/ReactCommon/react/nativemodule/core>"
+    "$<BUILD_INTERFACE:${RN_ROOT}/ReactCommon/jsi>"
+    "$<BUILD_INTERFACE:${HERMES_SOURCE}/API>"
+    "$<BUILD_INTERFACE:${HERMES_SOURCE}/API/jsi>"
+    "$<BUILD_INTERFACE:${FOLLY_INCLUDE_DIR}>"
+    "$<BUILD_INTERFACE:${RN_ROOT}/ReactCommon/react/renderer/graphics/platform/cxx>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/shims/graphics-cxx>"
+    "$<BUILD_INTERFACE:${RN_ROOT}/ReactCommon/react/utils/platform/cxx>"
+    "$<BUILD_INTERFACE:${RN_ROOT}/ReactCommon/react/renderer/components/view/platform/android>"
+    "$<BUILD_INTERFACE:${RN_ROOT}/ReactCommon/react/renderer/components/view/platform/cxx>"
   PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}/generated"
   "${CMAKE_CURRENT_LIST_DIR}/src/core"
@@ -289,10 +312,10 @@ target_include_directories(react-native-simulator-engine
 
 target_link_libraries(react-native-simulator-engine PRIVATE
   hermesvm_a
-  yogacore
   Boost::boost
   FastFloat::fast_float
   Threads::Threads)
+target_link_libraries(react-native-simulator-engine PUBLIC yogacore)
 # Folly headers need FOLLY_NO_CONFIG on Linux. Keep this PUBLIC so the CLI,
 # tests, and frontend inherit the same include path and compile definitions.
 target_link_libraries(react-native-simulator-engine PUBLIC rns_folly)
@@ -338,80 +361,14 @@ if(RNS_ENABLE_SANITIZERS)
     -fsanitize=address,undefined)
 endif()
 
-function(rns_add_simulator_addon target_name output_name source)
-  add_library(${target_name} MODULE ${source})
-  if(APPLE)
-    set(_addon_suffix ".dylib")
-    set(_addon_build_rpath "@loader_path")
-    set(_addon_install_rpath "@loader_path/..")
-  else()
-    set(_addon_suffix ".so")
-    set(_addon_build_rpath "\$ORIGIN")
-    set(_addon_install_rpath "\$ORIGIN/..")
-  endif()
-  set_target_properties(${target_name} PROPERTIES
-    PREFIX ""
-    OUTPUT_NAME "${output_name}"
-    SUFFIX "${_addon_suffix}"
-    BUILD_RPATH "${_addon_build_rpath}"
-    INSTALL_RPATH "${_addon_install_rpath}")
-  target_compile_definitions(${target_name} PRIVATE
-    RNS_REACT_NATIVE_VERSION="${RNS_REACT_NATIVE_VERSION}"
-    RNS_HERMES_VERSION="${RNS_HERMES_VERSION}")
-  target_include_directories(${target_name} PRIVATE
-    "${CMAKE_CURRENT_LIST_DIR}/include"
-    "${RN_ROOT}/ReactCommon"
-    "${RN_ROOT}/ReactCommon/jsi"
-    "${RN_ROOT}/ReactCommon/callinvoker"
-    "${RN_ROOT}/ReactCommon/runtimeexecutor"
-    "${RN_ROOT}/ReactCommon/react/nativemodule/core")
-  target_link_libraries(${target_name} PRIVATE rns_folly_headers)
-  if(APPLE)
-    target_link_options(${target_name} PRIVATE
-      "-Wl,-undefined,dynamic_lookup"
-      "$<$<CONFIG:Release>:-Wl,-dead_strip>")
-  else()
-    target_link_options(${target_name} PRIVATE
-      "$<$<CONFIG:Release>:-Wl,--gc-sections>")
-  endif()
-  target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
-  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    target_compile_options(${target_name} PRIVATE -Wno-changes-meaning)
-  endif()
-  if(RNS_ENABLE_SANITIZERS)
-    target_compile_options(${target_name} PRIVATE
-      -fsanitize=address,undefined -fno-sanitize=vptr
-      -fno-omit-frame-pointer)
-    target_link_options(${target_name} PRIVATE
-      -fsanitize=address,undefined)
-  endif()
-endfunction()
-
-if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/addons/shopee/ShopeeAddon.cpp")
-  rns_add_simulator_addon(
-    react-native-simulator-addon-shopee
-    rns-addon-shopee
-    addons/shopee/ShopeeAddon.cpp)
-endif()
-rns_add_simulator_addon(
-  react-native-simulator-addon-rntester
-  rns-addon-rntester
-  addons/rntester/RNTesterAddon.cpp)
-rns_add_simulator_addon(
-  react-native-simulator-addon-expo
-  rns-addon-expo
-  addons/expo/ExpoAddon.cpp)
-target_compile_definitions(react-native-simulator-addon-expo PRIVATE
-  RNS_EXPO_ADDON_DYLIB=1)
-set_target_properties(react-native-simulator-addon-rntester PROPERTIES
-  # The demo addon is installed next to its config and relies on the rnsim
-  # executable's packaged engine rpath. It must not retain a build-tree path.
-  INSTALL_RPATH "")
+rns_discover_and_add_addons()
+rns_generate_builtin_addon_catalog()
+target_sources(react-native-simulator-engine PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/BuiltinAddonCatalog.cpp")
 
 add_executable(react-native-simulator
   src/core/SimulatorConfig.cpp
-  src/core/main.cpp
-  addons/expo/ExpoAddon.cpp)
+  src/core/main.cpp)
 if(APPLE)
   set(_rnsim_build_rpath "@loader_path")
   set(_rnsim_install_rpath "@loader_path/../lib")
@@ -425,7 +382,7 @@ set_target_properties(react-native-simulator PROPERTIES
   INSTALL_RPATH "${_rnsim_install_rpath}")
 target_include_directories(react-native-simulator PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/src/core"
-  "${CMAKE_CURRENT_LIST_DIR}/addons/expo"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated"
   "${RN_ROOT}/ReactCommon"
   "${RN_ROOT}/ReactCommon/callinvoker"
   "${RN_ROOT}/ReactCommon/react/nativemodule/core"
@@ -534,17 +491,6 @@ install(TARGETS react-native-simulator
     NAMELINK_COMPONENT react-native-simulator
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     COMPONENT react-native-simulator)
-install(TARGETS react-native-simulator-addon-rntester
-  LIBRARY DESTINATION .
-    COMPONENT rntester-demo)
-install(TARGETS react-native-simulator-addon-expo
-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/react-native-simulator/addons
-    COMPONENT react-native-simulator)
-if(TARGET react-native-simulator-addon-shopee)
-  install(TARGETS react-native-simulator-addon-shopee
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/react-native-simulator/addons
-      COMPONENT react-native-simulator)
-endif()
 if(RNS_ENABLE_IMGUI)
   install(TARGETS react-native-simulator-inspector
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

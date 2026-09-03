@@ -1,4 +1,5 @@
 #include <react-native-simulator/Engine.h>
+#include "EngineTestSupport.h"
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -335,8 +336,9 @@ int main(int argc, char** argv) {
     }
   });
 
-  ReactNativeSimulator::Engine runtime(config);
-  runtime.loadBundle(argv[1]);
+  auto runtime = ReactNativeSimulator::test::makeEngine(
+      std::move(config),
+      {ReactNativeSimulator::test::fileBundle(argv[1])});
   const auto result = runtime.run();
   client.join();
 

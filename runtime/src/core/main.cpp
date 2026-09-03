@@ -1,7 +1,8 @@
 #include <react-native-simulator/Engine.h>
 #include <react-native-simulator/SimulatorAddon.h>
 
-#include "ExpoAddon.h"
+#include "AddonJson.h"
+#include "BuiltinAddonCatalog.h"
 #include "HttpBundleLoader.h"
 #include "SimulatorConfig.h"
 
@@ -21,6 +22,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -72,7 +74,9 @@ struct CliOptions {
   };
   std::vector<BundleSource> bundles;
   std::vector<std::string> addons;
-  bool builtInExpoAddon{false};
+  std::vector<std::string> disabledAddons;
+  bool autoAddons{true};
+  std::optional<std::string> initialUrl;
   std::optional<std::filesystem::path> outputPath;
   std::optional<std::filesystem::path> screenshotPath;
 };
@@ -563,9 +567,13 @@ Usage:
 Common options:
   --config FILE           Local config (default: ./rnsim.json when present)
   --platform android|ios  Metro target platform (default: android)
-  --profile NAME          RN contract: android-rn87, ios-rn87, android-rn73
+  --profile NAME          RN contract: android-rn87, ios-rn87, macos-rn87
   --bundle FILE           Load a caller-built local bundle
-  --addon PATH|expo       Application addon; expo is the built-in host adapter
+  --addon NAME_OR_PATH    Built-in catalog key or MODULE path
+  --no-addon NAME         Disable one auto-selected catalog key
+  --no-auto-addons        Disable every automatic addon
+  --list-addons [--json]  Print the compiled addon catalog
+  --initial-url URL       Freeze the session initial URL
   --android-font-dir DIR  Fonts used by Skia measurement and paint
 
 Interactive options:
@@ -581,8 +589,8 @@ at localhost:8081 and loads index.bundle. Closing the window cancels that wait.
 If Metro has no ./index, rnsim reads the packager project path from the error
 and tries entry files found there, including Expo AppEntry and expo-router/entry.
 app.json name becomes --app-key; Expo projects use AppRegistry key main.
-Expo projects also load the built-in host-adapted Expo addon when the launch
-directory or Metro project is Expo. Pass --addon expo to load it explicitly.
+Expo projects also auto-load the built-in Expo boot adapter. `safe-area`
+auto-loads for every project. Pass --no-addon safe-area to disable it.
 Expo SDK 57 (RN 0.86) interactive sessions warn and continue; they are not a
 0.86 native profile. Expo Router, Reanimated, Screens, and Gesture Handler
 remain unavailable.
@@ -1001,8 +1009,17 @@ CliOptions parseOptions(int argc, char **argv) {
           {.source = config.bundle->string(), .http = false});
     }
     for (const auto& addon : config.addons) {
-      options.addons.push_back(addon.string());
+      if (addon.name) {
+        options.addons.push_back(*addon.name);
+      } else if (addon.path) {
+        options.addons.push_back(addon.path->string());
+      }
     }
+    options.disabledAddons.insert(
+        options.disabledAddons.end(),
+        config.disabledAddons.begin(),
+        config.disabledAddons.end());
+    options.autoAddons = config.autoAddons;
     if (config.viewportWidth) {
       options.runtime.viewportWidth = *config.viewportWidth;
       viewportConfigured = true;
@@ -1076,6 +1093,10 @@ CliOptions parseOptions(int argc, char **argv) {
       options.runtime.devTools.waitForDisconnect = false;
       continue;
     }
+    if (name == "--no-auto-addons") {
+      options.autoAddons = false;
+      continue;
+    }
     if (name == "--config") {
       if (index >= argc) {
         throw std::invalid_argument("--config requires a value");
@@ -1140,6 +1161,11 @@ CliOptions parseOptions(int argc, char **argv) {
     } else if (name == "--initial-props") {
       options.runtime.initialPropsJson = normalizeInitialPropsJson(value);
     } else if (name == "--profile") {
+      if (value == "android-rn73") {
+        throw std::invalid_argument(
+            "profile android-rn73 was removed; the native engine is RN 0.87.0.\n"
+            "Use --profile android-rn87 --addon compat-rn73 for the 0.73.x JS adapter.");
+      }
       options.runtime.profile = value;
       profileConfigured = true;
     } else if (name == "--viewport-width") {
@@ -1152,11 +1178,11 @@ CliOptions parseOptions(int argc, char **argv) {
       options.runtime.pointScaleFactor = std::stof(value);
       viewportConfigured = true;
     } else if (name == "--addon") {
-      if (value == "expo") {
-        options.builtInExpoAddon = true;
-      } else {
-        options.addons.push_back(value);
-      }
+      options.addons.push_back(value);
+    } else if (name == "--no-addon") {
+      options.disabledAddons.push_back(value);
+    } else if (name == "--initial-url") {
+      options.initialUrl = value;
     } else if (name == "--require-react-fabric") {
       options.runtime.requireReactFabric = parseBoolean(name, value);
     } else if (name == "--require-no-pending-work") {
@@ -1275,6 +1301,22 @@ CliOptions parseOptions(int argc, char **argv) {
 
 int main(int argc, char **argv) {
   try {
+    if (argc >= 2 && std::string(argv[1]) == "--list-addons") {
+      bool json = argc == 3 && std::string(argv[2]) == "--json";
+      if (argc > 3 || (argc == 3 && !json)) {
+        throw std::invalid_argument("Usage: rnsim --list-addons [--json]");
+      }
+      const auto catalog = rns::builtinAddonCatalogJson();
+      if (json) {
+        std::cout << folly::toJson(catalog) << '\n';
+      } else {
+        for (const auto& addon : catalog["addons"]) {
+          std::cout << addon["name"].asString() << " auto="
+                    << addon["auto"].asString() << '\n';
+        }
+      }
+      return 0;
+    }
     if (argc >= 2 && std::string(argv[1]) == "--version") {
       if (argc > 3 || (argc == 3 && std::string(argv[2]) != "--json")) {
         throw std::invalid_argument("Usage: rnsim --version [--json]");
@@ -1331,35 +1373,48 @@ int main(int argc, char **argv) {
         !options.runtime.appKey) {
       options.runtime.appKey = inferAppKeyFromProject(launchRoot);
     }
-    bool expoDylib = false;
-    for (const auto &addon : options.addons) {
-      if (addonPathIsExpo(addon)) {
-        expoDylib = true;
+    if (!options.initialUrl) {
+      if (const char* env = std::getenv("RNSIM_INITIAL_URL")) {
+        options.initialUrl = env;
       }
     }
-    bool expoAddonLoaded = false;
-    const auto loadExpoAddon = [&](rns::Engine &runtime, const char *reason) {
-      if (expoAddonLoaded || expoDylib) {
-        return;
-      }
-      runtime.addAddon(createExpoAddon());
-      expoAddonLoaded = true;
-      std::cerr << "loaded built-in Expo host-adapter (" << reason << ")\n";
-    };
     const auto expoFromProjectOrUrl =
         [](const std::optional<std::filesystem::path> &project,
            const std::string &url) {
           return bundleUrlLooksLikeExpo(url) ||
               (project && detectExpoProject(*project).detected);
         };
-    const auto attachAddons = [&](rns::Engine &runtime) {
-      if (options.builtInExpoAddon ||
-          detectExpoProject(launchRoot).detected) {
-        loadExpoAddon(runtime, "project root");
+    rns::LaunchDraft draft(std::move(options.runtime));
+    if (detectExpoProject(launchRoot).detected) {
+      draft.setProjectKind(rns::ProjectKind::Expo);
+    }
+    draft.setAutoAddons(options.autoAddons);
+    for (const auto& name : options.disabledAddons) {
+      draft.disableAddon(name);
+    }
+    for (const auto& token : options.addons) {
+      if (rns::looksLikeAddonModulePath(token)) {
+        draft.addAddonPath(token, rns::AddonRequestOrigin::Cli);
+      } else {
+        draft.addBuiltInAddon(token, rns::AddonRequestOrigin::Cli);
       }
-      for (const auto &addon : options.addons) {
-        runtime.addAddon(addon);
+    }
+    if (options.initialUrl) {
+      draft.setInitialUrl(options.initialUrl);
+    }
+    auto candidates = rns::prepareExplicitAddons(draft);
+    const auto addLocalBundle = [&](const CliOptions::BundleSource& bundle,
+                                    std::optional<std::string> body) {
+      rns::InitialBundleSpec spec;
+      spec.sourceUrl = body ? bundle.source
+                            : std::string("file://") +
+              std::filesystem::weakly_canonical(bundle.source).generic_string();
+      if (body) {
+        spec.body = std::move(*body);
+      } else {
+        spec.path = std::filesystem::path(bundle.source);
       }
+      draft.addBundle(std::move(spec));
     };
     if (options.mode == CliOptions::Mode::Interactive) {
       std::cerr << "starting interactive session ("
@@ -1372,13 +1427,9 @@ int main(int argc, char **argv) {
     rns::EngineResult result;
     if (options.mode == CliOptions::Mode::Interactive) {
 #if RNS_ENABLE_IMGUI
-      rns::Engine runtime(std::move(options.runtime));
-      attachAddons(runtime);
+      rns::Engine runtime;
       auto prepareRuntime = [&](
                                 const std::function<bool()> &cancelled) {
-        // Preparation is transactional so the frontend can safely retry after
-        // Metro starts or a bundle fetch fails. Do not queue any Engine bundle
-        // until every remote source has been fetched.
         std::vector<std::optional<std::string>> httpBodies(
             options.bundles.size());
         for (size_t index = 0; index < options.bundles.size(); ++index) {
@@ -1401,7 +1452,7 @@ int main(int argc, char **argv) {
                 cancelled,
                 &metroProject);
             if (expoFromProjectOrUrl(metroProject, bundle.source)) {
-              loadExpoAddon(runtime, "Metro project");
+              draft.setProjectKind(rns::ProjectKind::Expo);
             }
             if (cancelled()) {
               return;
@@ -1409,7 +1460,7 @@ int main(int argc, char **argv) {
           } catch (const HttpRequestCancelled &) {
             return;
           } catch (const std::exception &error) {
-            throw std::runtime_error(
+            throw rns::RetryableNetworkError(
                 "Cannot load the bundle from " + bundle.source +
                 ". Start Metro or pass --url/--bundle: " + error.what());
           }
@@ -1419,12 +1470,11 @@ int main(int argc, char **argv) {
         }
         for (size_t index = 0; index < options.bundles.size(); ++index) {
           const auto &bundle = options.bundles[index];
-          if (bundle.http) {
-            runtime.loadBundle(std::move(*httpBodies[index]), bundle.source);
-          } else {
-            runtime.loadBundle(std::filesystem::path(bundle.source));
-          }
+          addLocalBundle(bundle, httpBodies[index]);
         }
+        auto plan = rns::finalizeLaunchPlan(
+            std::move(draft), std::move(candidates));
+        runtime.applyLaunchPlan(std::move(plan));
       };
       result = rns::runInteractiveFrontend(
           runtime, fontDirectory, std::move(prepareRuntime));
@@ -1444,26 +1494,23 @@ int main(int argc, char **argv) {
         try {
           std::optional<std::filesystem::path> metroProject;
           httpBodies[index] = fetchDefaultMetroBundle(
-              bundle, &options.runtime, {}, &metroProject);
+              bundle, &draft.config(), {}, &metroProject);
           if (expoFromProjectOrUrl(metroProject, bundle.source)) {
-            options.builtInExpoAddon = true;
+            draft.setProjectKind(rns::ProjectKind::Expo);
           }
         } catch (const std::exception &error) {
-          throw std::runtime_error(
+          throw rns::RetryableNetworkError(
               "Cannot load the bundle from " + bundle.source + ": " +
               error.what());
         }
       }
-      rns::Engine runtime(std::move(options.runtime));
-      attachAddons(runtime);
       for (size_t index = 0; index < options.bundles.size(); ++index) {
-        const auto &bundle = options.bundles[index];
-        if (bundle.http) {
-          runtime.loadBundle(*httpBodies[index], bundle.source);
-        } else {
-          runtime.loadBundle(std::filesystem::path(bundle.source));
-        }
+        addLocalBundle(options.bundles[index], httpBodies[index]);
       }
+      auto plan = rns::finalizeLaunchPlan(
+          std::move(draft), std::move(candidates));
+      rns::Engine runtime;
+      runtime.applyLaunchPlan(std::move(plan));
       result = runtime.run();
     }
     if (!result.metricsJson.empty()) {

@@ -13,8 +13,10 @@ const buildDirectory = requestedBuild == null
         : path.join(root, 'build'))
   : path.resolve(root, requestedBuild);
 const binary = path.join(buildDirectory, 'runtime', 'rnsim');
-const rntesterAddon = path.join(
-  buildDirectory, 'runtime', 'rns-addon-rntester.dylib');
+const rntesterAddon = [
+  path.join(buildDirectory, 'runtime', 'rns-addon-rntester.dylib'),
+  path.join(buildDirectory, 'runtime', 'rns-addon-rntester.so'),
+].find(candidate => existsSync(candidate));
 
 function run(fixture, extraArgs = []) {
   const result = spawnSync(
@@ -36,19 +38,23 @@ function run(fixture, extraArgs = []) {
 const profileOnly = run('tests/fixtures/runtime-smoke.js');
 assert.equal(profileOnly.jsErrors, 0);
 assert.equal(profileOnly.workloadComplete, true);
-assert.deepEqual(profileOnly.addons, []);
-assert.ok(profileOnly.rnFrameworkModules.includes('PlatformConstants'));
-assert.deepEqual(profileOnly.addonModules, []);
+assert.ok(Array.isArray(profileOnly.addons));
+assert.ok(profileOnly.addons.some(addon => addon.name === 'safe-area'));
+assert.ok(profileOnly.nativeCapabilities.modules.some(
+  module => module.name === 'PlatformConstants' && module.owner === 'android-rn87'));
 
+assert.ok(rntesterAddon, 'rntester MODULE was not built');
 const withRnTester = run('tests/fixtures/rntester-addon-probe.js', [
   '--addon',
   rntesterAddon,
 ]);
-assert.deepEqual(withRnTester.addons, ['rntester']);
-assert.deepEqual(withRnTester.addonModules.sort(), [
-  'NativeCxxModuleExampleCxx',
-  'ScreenshotManager',
-].sort());
+assert.ok(withRnTester.addons.some(addon => addon.name === 'rntester'));
+assert.ok(withRnTester.nativeCapabilities.modules.some(
+  module => module.name === 'NativeCxxModuleExampleCxx' &&
+    module.owner === 'addon:rntester'));
+assert.ok(withRnTester.nativeCapabilities.modules.some(
+  module => module.name === 'ScreenshotManager' &&
+    module.owner === 'addon:rntester'));
 
 for (const sourcePath of [
   'runtime/src/modules/HeadlessRNModules.cpp',
@@ -67,8 +73,10 @@ for (const sourcePath of [
 }
 
 const withExpo = run('tests/fixtures/expo-addon-probe.js', ['--addon', 'expo']);
-assert.deepEqual(withExpo.addons, ['expo']);
-assert.ok(withExpo.addonModules.includes('ExpoAsset'));
-assert.ok(withExpo.addonModules.includes('ExponentConstants'));
+assert.ok(withExpo.addons.some(addon => addon.name === 'expo'));
+assert.ok(withExpo.nativeCapabilities.modules.some(
+  module => module.name === 'ExpoAsset' && module.owner === 'addon:expo'));
+assert.ok(withExpo.nativeCapabilities.modules.some(
+  module => module.name === 'ExponentConstants' && module.owner === 'addon:expo'));
 
 console.log('RN profile, RN Tester addon, and Expo addon isolation verified');

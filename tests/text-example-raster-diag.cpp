@@ -1,6 +1,7 @@
 #include "SkiaMountedTreeRenderer.h"
 
 #include <react-native-simulator/Engine.h>
+#include "EngineTestSupport.h"
 #include <react-native-simulator/Interaction.h>
 
 #include <algorithm>
@@ -48,9 +49,16 @@ int main() {
     lastScene = std::move(scene);
   };
 
-  ReactNativeSimulator::Engine engine(std::move(config));
-  engine.addAddon("build/runtime/rns-addon-rntester.dylib");
-  engine.loadBundle("build/rntester/RNTesterApp.android.jsbundle");
+  auto engine = ReactNativeSimulator::test::makeEngine(
+      std::move(config),
+      {ReactNativeSimulator::test::fileBundle(
+          "build/rntester/RNTesterApp.android.jsbundle")},
+      [](ReactNativeSimulator::LaunchDraft& draft) {
+        draft.addAddonPath(
+            "build/runtime/rns-addon-rntester.dylib",
+            ReactNativeSimulator::AddonRequestOrigin::Test);
+        draft.setInitialUrl("rntester://example/TextExample");
+      });
 
   ReactNativeSimulator::EngineResult result;
   std::thread runtime([&] { result = engine.run(); });

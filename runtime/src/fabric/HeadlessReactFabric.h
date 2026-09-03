@@ -16,6 +16,7 @@
 #include <react-native-simulator/SimulatorAddon.h>
 #include <react-native-simulator/Scene.h>
 #include <react-native-simulator/Interaction.h>
+#include <react/renderer/componentregistry/ComponentDescriptorProvider.h>
 
 namespace facebook::react {
 class ComponentDescriptorProviderRegistry;
@@ -81,8 +82,10 @@ std::shared_ptr<HeadlessReactFabricHost> installHeadlessReactFabric(
     const std::filesystem::path& fontDirectory,
     const std::filesystem::path& assetDirectory,
     const std::string& platform,
-    std::vector<ReactNativeSimulator::SimulatorAddonCapability>
+    std::vector<ReactNativeSimulator::AddonComponentDeclaration>
         addonComponents = {},
+    std::vector<facebook::react::ComponentDescriptorProvider>
+        addonProviders = {},
     HeadlessReactFabricUpdate onUpdate = {});
 
 std::shared_ptr<facebook::react::UIManager> getHeadlessReactFabricUIManager();

@@ -54,10 +54,6 @@ inline constexpr HeadlessOfficialComponentSpec kHeadlessOfficialComponents[] = {
     {"AndroidHorizontalScrollView", "headless-viewport-state", false, 0, 0},
     {"AndroidHorizontalScrollContentView", "real-fabric-yoga", false, 0, 0},
     {"SafeAreaView", "window-relative-insets", false, 0, 0},
-    // Temporary host adapter for the community safe-area contract. The addon
-    // ABI cannot yet register event-capable Fabric descriptors.
-    {"RNCSafeAreaProvider", "window-relative-insets", false, 0, 0},
-    {"RNCSafeAreaView", "window-relative-insets", false, 0, 0},
     {"InputAccessory", "layout-only-placeholder", false, 0, 0},
     {"VirtualView", "layout-only-placeholder", false, 0, 0},
     {"VirtualViewExperimental", "layout-only-placeholder", false, 0, 0},

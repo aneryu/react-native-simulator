@@ -2,11 +2,5 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- Caller-built addons are loaded with dlopen and will not share the host
-       Developer ID Team ID. Hardened Runtime library validation would reject
-       them. This entitlement is required for Developer ID distribution; do not
-       add get-task-allow, JIT, or App Sandbox entitlements. -->
-  <key>com.apple.security.cs.disable-library-validation</key>
-  <true/>
 </dict>
 </plist>

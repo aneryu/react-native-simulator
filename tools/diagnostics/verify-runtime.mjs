@@ -58,7 +58,7 @@ try {
     ]);
     const metrics = metricsOf(execution);
     if (execution.code !== 0 || execution.signal != null ||
-        metrics?.schemaVersion !== 2 ||
+        metrics?.schemaVersion !== 3 ||
         metrics?.validationMode !== 'workload' ||
         metrics?.bundleLoaded !== true || metrics?.fabric !== true ||
         metrics?.yoga !== true || metrics?.timersPassed !== true ||
@@ -69,8 +69,8 @@ try {
         metrics?.workloadTimedOut !== false || metrics?.jsErrors !== 0 ||
         metrics?.heapAllocatedBytes <= 0 || metrics?.residentBytes <= 0 ||
         metrics?.workloadUserCpuMs < 0 ||
-        metrics?.nativeCapabilities?.modules?.NativeMicrotasksCxx !==
-          'real-headless') {
+        metrics?.nativeCapabilities?.modules?.find(
+          m => m.name === 'NativeMicrotasksCxx')?.class !== 'implemented') {
       throw new Error(
         `runtime smoke failed:\n${execution.stdout}\n${execution.stderr}`,
       );

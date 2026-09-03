@@ -1326,8 +1326,9 @@ class HeadlessReactFabricHost final
       const std::filesystem::path& fontDirectory,
       const std::filesystem::path& assetDirectory,
       const std::string& platform,
-      std::vector<ReactNativeSimulator::SimulatorAddonCapability>
+      std::vector<ReactNativeSimulator::AddonComponentDeclaration>
           addonComponents,
+      std::vector<react::ComponentDescriptorProvider> addonProviders,
       HeadlessReactFabricUpdate onUpdate)
       : contextContainer_(std::make_shared<react::ContextContainer>()),
         runtimeExecutor_(runtimeExecutor),
@@ -1461,6 +1462,10 @@ class HeadlessReactFabricHost final
         react::concreteComponentDescriptorProvider<
             react::HeadlessSampleViewComponentDescriptor>());
     for (const auto& component : addonComponents) {
+      if (component.kind !=
+          ReactNativeSimulator::AddonComponentKind::DescriptorOnlyMock) {
+        continue;
+      }
       auto flavor = std::make_shared<std::string>(component.name);
       addonComponentFlavors_.push_back(flavor);
       addonMockComponentNames_.push_back(component.name);
@@ -1470,6 +1475,9 @@ class HeadlessReactFabricHost final
           flavor,
           &react::concreteComponentDescriptorConstructor<
               react::UnimplementedViewComponentDescriptor>});
+    }
+    for (const auto& provider : addonProviders) {
+      providers_.add(provider);
     }
     uiManager_->setComponentDescriptorRegistry(registry_);
     uiManager_->setDelegate(this);
@@ -3583,8 +3591,9 @@ std::shared_ptr<HeadlessReactFabricHost> installHeadlessReactFabric(
     const std::filesystem::path& fontDirectory,
     const std::filesystem::path& assetDirectory,
     const std::string& platform,
-    std::vector<ReactNativeSimulator::SimulatorAddonCapability>
+    std::vector<ReactNativeSimulator::AddonComponentDeclaration>
         addonComponents,
+    std::vector<react::ComponentDescriptorProvider> addonProviders,
     HeadlessReactFabricUpdate onUpdate) {
   return std::make_shared<HeadlessReactFabricHost>(
       runtime,
@@ -3600,6 +3609,7 @@ std::shared_ptr<HeadlessReactFabricHost> installHeadlessReactFabric(
       assetDirectory,
       platform,
       std::move(addonComponents),
+      std::move(addonProviders),
       std::move(onUpdate));
 }
 

@@ -11,10 +11,13 @@
 
 namespace jsi = facebook::jsi;
 namespace react = facebook::react;
+using ReactNativeSimulator::AddonGenerationContext;
+using ReactNativeSimulator::AddonHost;
+using ReactNativeSimulator::AddonHostSnapshot;
+using ReactNativeSimulator::AddonManifest;
+using ReactNativeSimulator::AddonRole;
+using ReactNativeSimulator::RuntimeCapabilityClass;
 using ReactNativeSimulator::SimulatorAddon;
-using ReactNativeSimulator::SimulatorAddonCapability;
-using ReactNativeSimulator::SimulatorAddonDescriptor;
-using ReactNativeSimulator::kSimulatorAddonAbiVersion;
 
 namespace {
 jsi::Value undefinedResult(
@@ -148,8 +151,11 @@ class ExpoFetchModule final : public react::TurboModule {
 
 class ExpoLinkingModule final : public react::TurboModule {
  public:
-  explicit ExpoLinkingModule(std::shared_ptr<react::CallInvoker> jsInvoker)
-      : TurboModule("ExpoLinking", std::move(jsInvoker)) {
+  ExpoLinkingModule(
+      std::shared_ptr<react::CallInvoker> jsInvoker,
+      std::optional<std::string> initialUrl)
+      : TurboModule("ExpoLinking", std::move(jsInvoker)),
+        initialUrl_(std::move(initialUrl)) {
     methodMap_["getLinkingURL"] = {0, &getLinkingURL};
     methodMap_["clearInitialURL"] = {0, &undefinedResult};
     methodMap_["addListener"] = {2, &addListener};
@@ -157,12 +163,18 @@ class ExpoLinkingModule final : public react::TurboModule {
   }
 
  private:
+  std::optional<std::string> initialUrl_;
+
   static jsi::Value getLinkingURL(
-      jsi::Runtime&,
-      react::TurboModule&,
+      jsi::Runtime& runtime,
+      react::TurboModule& module,
       const jsi::Value*,
       size_t) {
-    return jsi::Value::null();
+    const auto& self = static_cast<ExpoLinkingModule&>(module);
+    if (!self.initialUrl_) {
+      return jsi::Value::null();
+    }
+    return jsi::String::createFromUtf8(runtime, *self.initialUrl_);
   }
 
   static jsi::Value addListener(
@@ -303,39 +315,36 @@ class ExponentConstantsModule final : public react::TurboModule {
 
 class ExpoAddon final : public SimulatorAddon {
  public:
-  std::string name() const override {
-    return "expo";
+  AddonManifest manifest() const override {
+    AddonManifest manifest;
+    manifest.name = "expo";
+    manifest.addonVersion = "1.0.0";
+    manifest.role = AddonRole::Application;
+    const auto module = [](const char* name) {
+      return ReactNativeSimulator::AddonModuleDeclaration{
+          name, RuntimeCapabilityClass::HostAdapted, "host-adapted"};
+    };
+    manifest.modules = {
+        module("ExpoModulesCore"),
+        module("ExpoAsset"),
+        module("ExpoKeepAwake"),
+        module("ExpoSplashScreen"),
+        module("ExpoFontLoader"),
+        module("ExpoSystemUI"),
+        module("ExponentConstants"),
+        module("ExpoFetchModule"),
+        module("ExpoLinking"),
+    };
+    return manifest;
   }
 
-  std::vector<std::string> moduleNames() const override {
-    return {
-        "ExpoModulesCore",
-        "ExpoAsset",
-        "ExpoKeepAwake",
-        "ExpoSplashScreen",
-        "ExpoFontLoader",
-        "ExpoSystemUI",
-        "ExponentConstants",
-        "ExpoFetchModule",
-        "ExpoLinking",
-    };
+  void bind(const AddonHost& host) override {
+    snapshot_ = host.snapshot();
   }
-
-  std::vector<SimulatorAddonCapability> moduleCapabilities() const override {
-    return {
-        {"ExpoModulesCore", "host-adapted"},
-        {"ExpoAsset", "host-adapted"},
-        {"ExpoKeepAwake", "host-adapted"},
-        {"ExpoSplashScreen", "host-adapted"},
-        {"ExpoFontLoader", "host-adapted"},
-        {"ExpoSystemUI", "host-adapted"},
-        {"ExponentConstants", "host-adapted"},
-        {"ExpoFetchModule", "host-adapted"},
-        {"ExpoLinking", "host-adapted"},
-    };
-  }
+  void unbind() noexcept override {}
 
   std::shared_ptr<react::TurboModule> getTurboModule(
+      const AddonGenerationContext&,
       jsi::Runtime&,
       const std::string& moduleName,
       const std::shared_ptr<react::CallInvoker>& jsInvoker) override {
@@ -364,14 +373,31 @@ class ExpoAddon final : public SimulatorAddon {
       return std::make_shared<ExpoFetchModule>(jsInvoker);
     }
     if (moduleName == "ExpoLinking") {
-      return std::make_shared<ExpoLinkingModule>(jsInvoker);
+      return std::make_shared<ExpoLinkingModule>(jsInvoker, snapshot_.initialUrl);
     }
     return nullptr;
   }
 
+  std::shared_ptr<react::TurboModule> wrapTurboModule(
+      const AddonGenerationContext&,
+      jsi::Runtime&,
+      const std::string&,
+      std::shared_ptr<react::TurboModule> framework,
+      const std::shared_ptr<react::CallInvoker>&) override {
+    return framework;
+  }
+
+  void configureFabric(
+      const AddonGenerationContext&,
+      ReactNativeSimulator::AddonFabricRegistrar&) override {}
+
+  void hostSnapshotChanged(const AddonHostSnapshot&) override {}
+  void quiesceGeneration(std::uint64_t) noexcept override {}
+
   void installJSI(
+      const AddonGenerationContext&,
       jsi::Runtime& runtime,
-      const std::shared_ptr<react::CallInvoker>& jsInvoker) override {
+      const std::shared_ptr<react::CallInvoker>&) override {
     constexpr const char* kBootstrap = R"JS(
 (function () {
   class EventEmitter {
@@ -488,39 +514,30 @@ class ExpoAddon final : public SimulatorAddon {
       return;
     }
     auto modules = modulesValue.asObject(runtime);
-    for (const auto& moduleName : moduleNames()) {
-      if (moduleName == "ExpoModulesCore" ||
-          moduleName == "ExpoFetchModule") {
-        continue;
-      }
-      auto module = getTurboModule(runtime, moduleName, jsInvoker);
-      if (module == nullptr) {
-        continue;
-      }
+    if (!runtime.global().hasProperty(runtime, "nativeModuleProxy") ||
+        !runtime.global().getProperty(runtime, "nativeModuleProxy").isObject()) {
+      return;
+    }
+    auto proxy =
+        runtime.global().getPropertyAsObject(runtime, "nativeModuleProxy");
+    for (const char* moduleName :
+         {"ExpoAsset",
+          "ExpoKeepAwake",
+          "ExpoSplashScreen",
+          "ExpoFontLoader",
+          "ExpoSystemUI",
+          "ExponentConstants",
+          "ExpoLinking"}) {
       modules.setProperty(
-          runtime,
-          moduleName.c_str(),
-          jsi::Object::createFromHostObject(runtime, std::move(module)));
+          runtime, moduleName, proxy.getProperty(runtime, moduleName));
     }
   }
+
+ private:
+  AddonHostSnapshot snapshot_;
 };
 } // namespace
 
 std::unique_ptr<SimulatorAddon> createExpoAddon() {
   return std::make_unique<ExpoAddon>();
 }
-
-#if defined(RNS_EXPO_ADDON_DYLIB)
-extern "C" const SimulatorAddonDescriptor*
-react_native_simulator_addon_v2() {
-  static const SimulatorAddonDescriptor descriptor{
-      .abiVersion = kSimulatorAddonAbiVersion,
-      .name = "expo",
-      .reactNativeVersion = RNS_REACT_NATIVE_VERSION,
-      .hermesVersion = RNS_HERMES_VERSION,
-      .create = []() -> SimulatorAddon* { return createExpoAddon().release(); },
-      .destroy = [](SimulatorAddon* addon) { delete addon; },
-  };
-  return &descriptor;
-}
-#endif

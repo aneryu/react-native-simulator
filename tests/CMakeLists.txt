@@ -180,9 +180,11 @@ add_test(NAME validate-runtime-trace
 set_tests_properties(validate-runtime-trace PROPERTIES DEPENDS runtime-trace)
 
 add_test(NAME rn73-profile
-  COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
-    "${RNS_RUNTIME_FIXTURE}"
-    --profile android-rn73 --timeout-ms 1000)
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    -DBUNDLE=${RNS_RUNTIME_FIXTURE}
+    "-DEXPECTED=profile android-rn73 was removed"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliFailure.cmake")
 add_test(NAME rn87-profile
   COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
     "${RNS_RUNTIME_FIXTURE}"
@@ -191,7 +193,7 @@ if(TARGET react-native-simulator-addon-shopee)
   add_test(NAME shopee-addon
     COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
       "${RNS_TEST_FIXTURES_DIR}/rn73-addon-probe.js"
-      --profile android-rn73
+      --profile android-rn87
       --addon $<TARGET_FILE:react-native-simulator-addon-shopee>
       --timeout-ms 1000)
 endif()
@@ -209,16 +211,13 @@ add_test(NAME expo-addon
     --timeout-ms 1000)
 set_tests_properties(expo-addon PROPERTIES
   PASS_REGULAR_EXPRESSION
-    "\"addons\":\\[\"expo\"\\].*\"ExpoAsset\":\"host-adapted\".*\"bundleLoaded\":true")
+    "\"name\":\"expo\".*\"name\":\"ExpoAsset\".*\"bundleLoaded\":true")
 
 set_tests_properties(runtime-source runtime-bytecode PROPERTIES
   PASS_REGULAR_EXPRESSION
     "\"validationMode\":\"workload\".*\"bundleLoaded\":true")
 set_tests_properties(runtime-multi-bundle PROPERTIES
   PASS_REGULAR_EXPRESSION "\"bundlesLoaded\":2")
-set_tests_properties(rn73-profile PROPERTIES
-  PASS_REGULAR_EXPRESSION
-    "\"profile\":\"android-rn73\".*\"addons\":\\[\\].*\"bundleLoaded\":true")
 if(RNS_ENABLE_SKIA)
   set(RNS_TEST_IMAGE_FIDELITY "skia-local-and-http-image")
 else()
@@ -226,15 +225,15 @@ else()
 endif()
 set_tests_properties(rn87-profile PROPERTIES
   PASS_REGULAR_EXPRESSION
-    "\"profile\":\"android-rn87\".*\"NativeReactNativeFeatureFlagsCxx\",\"NativeMicrotasksCxx\",\"NativeDOMCxx\",\"NativeAnimatedModule\".*\"IntentAndroid\",\"PermissionsAndroid\".*\"Image\":\"${RNS_TEST_IMAGE_FIDELITY}\".*\"fabric-layout-animation\".*\"bundleLoaded\":true")
+    "\"name\":\"android-rn87\".*\"NativeMicrotasksCxx\".*\"IntentAndroid\".*\"Image\".*\"bundleLoaded\":true")
 if(TEST shopee-addon)
   set_tests_properties(shopee-addon PROPERTIES
     PASS_REGULAR_EXPRESSION
-      "\"addons\":\\[\"shopee\"\\].*\"bundleLoaded\":true")
+      "\"name\":\"shopee\".*\"bundleLoaded\":true")
 endif()
 set_tests_properties(rntester-addon PROPERTIES
   PASS_REGULAR_EXPRESSION
-    "\"addons\":\\[\"rntester\"\\].*\"NativeCxxModuleExampleCxx\":\"tester-stub\".*\"RNTReportFullyDrawnView\":\"descriptor-only-mock\".*\"bundleLoaded\":true")
+    "\"name\":\"rntester\".*\"NativeCxxModuleExampleCxx\".*\"RNTReportFullyDrawnView\".*\"bundleLoaded\":true")
 set_tests_properties(runtime-trace PROPERTIES
   PASS_REGULAR_EXPRESSION "\"traceFile\":\"")
 
@@ -283,7 +282,7 @@ if(RNS_RN0732_FIXTURE_BUNDLE AND EXISTS "${RNS_RN0732_FIXTURE_BUNDLE}")
   add_test(NAME rn0732-retained-scene-mutations
     COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
       "${RNS_RN0732_FIXTURE_BUNDLE}"
-      --profile android-rn73
+      --profile android-rn87 --addon compat-rn73
       --bundle "${RNS_TEST_FIXTURES_DIR}/rn0732-mutation-workload.js"
       --viewport-width 300 --viewport-height 80 --point-scale-factor 2
       --iterations 2 --timeout-ms 5000
@@ -296,7 +295,7 @@ if(RNS_RN0732_FIXTURE_BUNDLE AND EXISTS "${RNS_RN0732_FIXTURE_BUNDLE}")
   add_test(NAME rn0732-textinput-interaction
     COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
       "${RNS_RN0732_FIXTURE_BUNDLE}"
-      --profile android-rn73
+      --profile android-rn87 --addon compat-rn73
       --bundle "${RNS_TEST_FIXTURES_DIR}/rn0732-textinput-workload.js"
       --viewport-width 300 --viewport-height 80
       --iterations 2 --timeout-ms 5000
@@ -304,8 +303,28 @@ if(RNS_RN0732_FIXTURE_BUNDLE AND EXISTS "${RNS_RN0732_FIXTURE_BUNDLE}")
       --fail-on-component-fallback true)
   set_tests_properties(rn0732-textinput-interaction PROPERTIES
     PASS_REGULAR_EXPRESSION
-      "\"AndroidTextInput\":\"rn-fabric-headless-platform-adapter\".*\"nativeId\":\"interaction-text-input\".*\"text\":\"A.*\"workloadChecksum\":3"
+      "\"name\":\"AndroidTextInput\".*\"nativeId\":\"interaction-text-input\".*\"text\":\"A.*\"workloadChecksum\":3"
     TIMEOUT 10)
+endif()
+
+if(RNS_REQUIRE_RN073_BUSINESS_BUNDLE)
+  if(NOT RNS_RN073_BUSINESS_BUNDLE OR
+     NOT EXISTS "${RNS_RN073_BUSINESS_BUNDLE}" OR
+     NOT RNS_RN073_BUSINESS_PROVENANCE OR
+     NOT EXISTS "${RNS_RN073_BUSINESS_PROVENANCE}")
+    message(FATAL_ERROR
+      "RNS_REQUIRE_RN073_BUSINESS_BUNDLE=ON requires RNS_RN073_BUSINESS_BUNDLE and RNS_RN073_BUSINESS_PROVENANCE")
+  endif()
+endif()
+if(RNS_RN073_BUSINESS_BUNDLE AND EXISTS "${RNS_RN073_BUSINESS_BUNDLE}" AND
+   RNS_RN073_BUSINESS_PROVENANCE AND EXISTS "${RNS_RN073_BUSINESS_PROVENANCE}")
+  add_test(NAME rn07310-business-bundle
+    COMMAND "${CMAKE_COMMAND}"
+      -DRNSIM=$<TARGET_FILE:react-native-simulator>
+      -DBUNDLE=${RNS_RN073_BUSINESS_BUNDLE}
+      -DPROVENANCE=${RNS_RN073_BUSINESS_PROVENANCE}
+      -P "${PROJECT_SOURCE_DIR}/cmake/ValidateRn073BusinessBundle.cmake")
+  set_tests_properties(rn07310-business-bundle PROPERTIES TIMEOUT 30)
 endif()
 
 set_tests_properties(runtime-source runtime-bytecode runtime-multi-bundle

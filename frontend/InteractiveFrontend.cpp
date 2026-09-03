@@ -1956,14 +1956,34 @@ EngineResult runInteractiveFrontend(
         if (prepareRuntime) {
           prepareRuntime([state] { return state->cancelRequested.load(); });
         }
-      } catch (const std::exception& error) {
+      } catch (const RetryableNetworkError& error) {
         result.exitCode = 1;
         result.error = error.what();
         preparationFailed = true;
+      } catch (const TerminalLaunchPlanError& error) {
+        result.exitCode = 1;
+        result.error = error.what();
+        {
+          std::lock_guard lock(state->mutex);
+          state->result = result;
+        }
+        break;
+      } catch (const std::exception& error) {
+        result.exitCode = 1;
+        result.error = error.what();
+        {
+          std::lock_guard lock(state->mutex);
+          state->result = result;
+        }
+        break;
       } catch (...) {
         result.exitCode = 1;
         result.error = "Unknown interactive runtime preparation error";
-        preparationFailed = true;
+        {
+          std::lock_guard lock(state->mutex);
+          state->result = result;
+        }
+        break;
       }
 
       if (preparationFailed) {
