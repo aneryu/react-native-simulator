@@ -92,6 +92,7 @@ rns_add_abi_test_module(null-create-addon)
 rns_add_abi_test_module(throwing-create-addon)
 rns_add_abi_test_module(name-mismatch-addon)
 rns_add_abi_test_module(safe-area-slot-addon)
+rns_add_abi_test_module(null-callback-addon)
 add_dependencies(addon-planner-smoke safe-area-slot-addon)
 
 foreach(test_target
@@ -148,6 +149,16 @@ if(RNS_ENABLE_SKIA AND RNS_ENABLE_IMGUI)
       --project-root "${RNS_TEST_FIXTURES_DIR}/doctor-project"
       --other-root "${RNS_TEST_FIXTURES_DIR}")
   set_tests_properties(cli-doctor-metro-project PROPERTIES TIMEOUT 10)
+  add_test(NAME interactive-preparation-retry-module
+    COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_LIST_DIR}/interactive-preparation-retry.py"
+      --rnsim $<TARGET_FILE:react-native-simulator>
+      --bundle "${RNS_TEST_FIXTURES_DIR}/interactive-retry-workload.js"
+      --addon $<TARGET_FILE:react-native-simulator-addon-fabric_probe>
+      --timeout-ms 2500
+      --output
+        "${CMAKE_BINARY_DIR}/tests/interactive-preparation-retry-module.json")
+  set_tests_properties(interactive-preparation-retry-module PROPERTIES TIMEOUT 15)
 endif()
 
 add_test(NAME runtime-embedding-api COMMAND runtime-api-smoke)
@@ -203,6 +214,13 @@ add_test(NAME addon-rejects-name-mismatch
     -DBUNDLE=${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js
     -DADDON=$<TARGET_FILE:name-mismatch-addon>
     "-DEXPECTED=does not equal descriptor name"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliAddonFailure.cmake")
+add_test(NAME addon-rejects-null-callbacks
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    -DBUNDLE=${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js
+    -DADDON=$<TARGET_FILE:null-callback-addon>
+    "-DEXPECTED=Invalid addon descriptor"
     -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliAddonFailure.cmake")
 add_test(NAME headless-api-modules COMMAND headless-api-modules-smoke)
 add_test(NAME metro-http-source COMMAND http-bundle-loader-smoke)
@@ -485,6 +503,7 @@ if(RNS_RNTESTER_BUNDLE AND EXISTS "${RNS_RNTESTER_BUNDLE}")
         --rnsim $<TARGET_FILE:react-native-simulator>
         --bundle "${RNS_RNTESTER_BUNDLE}"
         --addon $<TARGET_FILE:react-native-simulator-addon-rntester>
+        --app-key RNTesterApp
         --output
           "${CMAKE_BINARY_DIR}/tests/interactive-preparation-retry.json")
     set_tests_properties(interactive-preparation-retry PROPERTIES TIMEOUT 45)
@@ -564,7 +583,7 @@ set_tests_properties(runtime-source runtime-bytecode runtime-multi-bundle
   addon-planner addon-abi-lifecycle fabric-module-so addon-rejects-abi3
   addon-rejects-short-descriptor addon-rejects-fingerprint
   addon-rejects-null-create addon-rejects-throwing-create
-  addon-rejects-name-mismatch
+  addon-rejects-name-mismatch addon-rejects-null-callbacks
   cli-list-addons cli-no-addon-safe-area cli-no-addon-safe-area-fallback
   compat-rn73-constants local-config-schema1 local-config-bare-addon
   local-config-tagged-compat local-config-addon-origin
@@ -590,7 +609,7 @@ add_custom_target(verify
     react-native-simulator-addon-fabric_probe
     not-an-abi4-addon invalid-addon-descriptor wrong-fingerprint-addon
     null-create-addon throwing-create-addon name-mismatch-addon
-    safe-area-slot-addon
+    safe-area-slot-addon null-callback-addon
   USES_TERMINAL)
 if(TARGET react-native-simulator-addon-shopee)
   add_dependencies(verify react-native-simulator-addon-shopee)

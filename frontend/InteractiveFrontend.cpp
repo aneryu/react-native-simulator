@@ -2627,7 +2627,17 @@ EngineResult runInteractiveFrontend(
                  << ",\"componentCapabilityUsages\":"
                  << componentCapabilityUsageCount(runtimeStatus)
                  << ",\"capabilityLimitations\":"
-                 << capabilityLimitationCount(runtimeStatus) << "}\n";
+                 << capabilityLimitationCount(runtimeStatus)
+                 << ",\"moduleOpens\":"
+                 << addonPreparationCounters().moduleOpens
+                 << ",\"moduleCreates\":"
+                 << addonPreparationCounters().moduleCreates
+                 << ",\"manifestReads\":"
+                 << addonPreparationCounters().manifestReads
+                 << ",\"planFinalizations\":"
+                 << addonPreparationCounters().planFinalizations
+                 << ",\"planApplications\":"
+                 << addonPreparationCounters().planApplications << "}\n";
         }
         done = true;
       } else if (std::chrono::steady_clock::now() >= smokeDeadline) {
@@ -2638,7 +2648,17 @@ EngineResult runInteractiveFrontend(
                     "\"preparationFailures\":"
                  << state->preparationFailures.load()
                  << ",\"preparationRetries\":"
-                 << state->preparationRetries.load() << "}\n";
+                 << state->preparationRetries.load()
+                 << ",\"moduleOpens\":"
+                 << addonPreparationCounters().moduleOpens
+                 << ",\"moduleCreates\":"
+                 << addonPreparationCounters().moduleCreates
+                 << ",\"manifestReads\":"
+                 << addonPreparationCounters().manifestReads
+                 << ",\"planFinalizations\":"
+                 << addonPreparationCounters().planFinalizations
+                 << ",\"planApplications\":"
+                 << addonPreparationCounters().planApplications << "}\n";
         }
         done = true;
       }

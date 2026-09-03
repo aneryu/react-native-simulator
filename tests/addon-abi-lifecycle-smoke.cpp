@@ -173,6 +173,9 @@ class CollisionComponentAddon final : public CountingAddon {
   }
 };
 
+facebook::react::ComponentDescriptor::Unique throwingDescriptorCtor(
+    const facebook::react::ComponentDescriptorParameters&);
+
 class ExtraProviderAddon final : public CountingAddon {
  public:
   using CountingAddon::CountingAddon;
@@ -182,6 +185,124 @@ class ExtraProviderAddon final : public CountingAddon {
     CountingAddon::configureFabric(context, registrar);
     registrar.registerDescriptor({});
   }
+};
+
+class MissingProviderAddon final : public CountingAddon {
+ public:
+  using CountingAddon::CountingAddon;
+  rns::AddonManifest manifest() const override {
+    auto manifest = CountingAddon::manifest();
+    manifest.components = {{
+        "RNSMissingView",
+        rns::RuntimeCapabilityClass::HostAdapted,
+        rns::AddonComponentKind::FabricDescriptor,
+        {},
+        {},
+        "missing provider",
+    }};
+    return manifest;
+  }
+};
+
+class NullConstructorAddon final : public CountingAddon {
+ public:
+  using CountingAddon::CountingAddon;
+  rns::AddonManifest manifest() const override {
+    auto manifest = CountingAddon::manifest();
+    manifest.components = {{
+        "RNSNullCtorView",
+        rns::RuntimeCapabilityClass::HostAdapted,
+        rns::AddonComponentKind::FabricDescriptor,
+        {},
+        {},
+        "null ctor",
+    }};
+    return manifest;
+  }
+  void configureFabric(
+      const rns::AddonGenerationContext& context,
+      rns::AddonFabricRegistrar& registrar) override {
+    CountingAddon::configureFabric(context, registrar);
+    registrar.registerDescriptor({
+        0xABCDEF02ull,
+        "RNSNullCtorView",
+        nullptr,
+        nullptr,
+    });
+  }
+};
+
+class DuplicateProviderAddon final : public CountingAddon {
+ public:
+  using CountingAddon::CountingAddon;
+  rns::AddonManifest manifest() const override {
+    auto manifest = CountingAddon::manifest();
+    manifest.components = {{
+        "RNSDupProviderView",
+        rns::RuntimeCapabilityClass::HostAdapted,
+        rns::AddonComponentKind::FabricDescriptor,
+        {},
+        {},
+        "duplicate provider",
+    }};
+    return manifest;
+  }
+  void configureFabric(
+      const rns::AddonGenerationContext& context,
+      rns::AddonFabricRegistrar& registrar) override {
+    CountingAddon::configureFabric(context, registrar);
+    registrar.registerDescriptor({
+        0xABCDEF03ull,
+        "RNSDupProviderView",
+        nullptr,
+        &throwingDescriptorCtor,
+    });
+    registrar.registerDescriptor({
+        0xABCDEF04ull,
+        "RNSDupProviderView",
+        nullptr,
+        &throwingDescriptorCtor,
+    });
+  }
+};
+
+class ThrowingCommandAddon final : public CountingAddon {
+ public:
+  using CountingAddon::CountingAddon;
+  rns::AddonManifest manifest() const override {
+    auto manifest = CountingAddon::manifest();
+    manifest.components = {{
+        "RNSThrowCmdView",
+        rns::RuntimeCapabilityClass::HostAdapted,
+        rns::AddonComponentKind::FabricDescriptor,
+        {},
+        {"boom"},
+        "throwing command",
+    }};
+    return manifest;
+  }
+  void configureFabric(
+      const rns::AddonGenerationContext& context,
+      rns::AddonFabricRegistrar& registrar) override {
+    CountingAddon::configureFabric(context, registrar);
+    flavor_ = std::make_shared<std::string>("RNSThrowCmdView");
+    registrar.registerDescriptor({
+        reinterpret_cast<facebook::react::ComponentHandle>(flavor_->c_str()),
+        "RNSThrowCmdView",
+        flavor_,
+        &facebook::react::concreteComponentDescriptorConstructor<
+            facebook::react::UnimplementedViewComponentDescriptor>,
+    });
+    registrar.onCommand(
+        "RNSThrowCmdView",
+        "boom",
+        [](const auto&, std::string_view, const folly::dynamic&) {
+          throw std::runtime_error("command boom");
+        });
+  }
+
+ private:
+  std::shared_ptr<std::string> flavor_;
 };
 
 class OverlayWrapAddon final : public CountingAddon {
@@ -632,6 +753,75 @@ int main(int argc, char** argv) {
           "extra-provider");
       if (result.exitCode == 0) {
         std::cerr << "extra/unowned descriptor registration was accepted\n";
+        return 1;
+      }
+    }
+
+    {
+      auto counts = std::make_shared<HookCounts>();
+      const auto result = runWith(
+          config,
+          std::make_unique<MissingProviderAddon>("missing-provider", counts),
+          "missing-provider");
+      if (result.exitCode == 0 ||
+          result.error.find("missing descriptor provider") == std::string::npos) {
+        std::cerr << "missing Fabric provider was not rejected: "
+                  << result.error << '\n';
+        return 1;
+      }
+    }
+
+    {
+      auto counts = std::make_shared<HookCounts>();
+      const auto result = runWith(
+          config,
+          std::make_unique<NullConstructorAddon>("null-ctor", counts),
+          "null-ctor");
+      if (result.exitCode == 0 ||
+          result.error.find("constructor") == std::string::npos) {
+        std::cerr << "null Fabric constructor was not rejected: "
+                  << result.error << '\n';
+        return 1;
+      }
+    }
+
+    {
+      auto counts = std::make_shared<HookCounts>();
+      const auto result = runWith(
+          config,
+          std::make_unique<DuplicateProviderAddon>("dup-provider", counts),
+          "dup-provider");
+      if (result.exitCode == 0 ||
+          result.error.find("duplicate descriptor registration") ==
+              std::string::npos) {
+        std::cerr << "duplicate Fabric provider was not rejected: "
+                  << result.error << '\n';
+        return 1;
+      }
+    }
+
+    {
+      auto counts = std::make_shared<HookCounts>();
+      const auto result = runWithScript(
+          config,
+          std::make_unique<ThrowingCommandAddon>("throw-cmd", counts),
+          "throw-cmd",
+          "const uim = globalThis.nativeFabricUIManager;\n"
+          "const node = uim.createNode(100, 'RNSThrowCmdView', 21,"
+          " {width: 10, height: 10}, {tag: 100});\n"
+          "const set = uim.createChildSet();\n"
+          "uim.appendChildToSet(set, node);\n"
+          "uim.completeRoot(21, set);\n"
+          "setTimeout(function () {\n"
+          "  uim.dispatchCommand(node, 'boom', []);\n"
+          "  RN$SimulatorWorkload.ready();\n"
+          "  globalThis.RN$SimulatorWorkloadResult={iterations:1,checksum:1};\n"
+          "  RN$SimulatorWorkload.complete();\n"
+          "}, 0);\n");
+      if (result.exitCode == 0 ||
+          result.error.find("command handler threw") == std::string::npos) {
+        std::cerr << "throwing command callback was not contained: "
+                  << result.error << '\n';
         return 1;
       }
     }

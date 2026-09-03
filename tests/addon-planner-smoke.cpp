@@ -338,6 +338,29 @@ int main(int argc, char** argv) {
         "allows profiles");
 
     expectThrows(
+        "fixed-point RCTView",
+        [&] {
+          rns::LaunchDraft draft(config);
+          rns::AddonManifest extra;
+          extra.components = {{
+              "RCTView",
+              rns::RuntimeCapabilityClass::HostAdapted,
+              rns::AddonComponentKind::FabricDescriptor,
+              {},
+              {},
+              "alias",
+          }};
+          draft.addAddon(
+              std::make_unique<RecordingAddon>(
+                  "alias-view", std::make_shared<HookCounts>(), extra),
+              "alias-view",
+              rns::AddonRequestOrigin::Test);
+          auto candidates = rns::prepareExplicitAddons(draft);
+          (void)rns::finalizeLaunchPlan(std::move(draft), std::move(candidates));
+        },
+        "fixed point");
+
+    expectThrows(
         "second compatibility claim",
         [&] {
           rns::LaunchDraft draft(config);
@@ -433,9 +456,19 @@ int main(int argc, char** argv) {
     }
 
     if (argc > 1) {
+      rns::resetAddonPreparationCounters();
       rns::LaunchDraft draft(config);
       draft.addAddonPath(argv[1], rns::AddonRequestOrigin::Test);
       const auto result = runDraft(std::move(draft));
+      const auto counters = rns::addonPreparationCounters();
+      if (counters.moduleOpens != 1 || counters.moduleCreates != 1 ||
+          counters.planFinalizations != 1 || counters.planApplications != 1) {
+        std::cerr << "MODULE preparation counters drifted: opens="
+                  << counters.moduleOpens << " creates=" << counters.moduleCreates
+                  << " finalize=" << counters.planFinalizations
+                  << " apply=" << counters.planApplications << '\n';
+        return 1;
+      }
       const auto names = addonNames(result.metricsJson);
       if (result.exitCode != 0 || !containsName(names, "fabric-probe") ||
           result.metricsJson.find("\"source\":\"module\"") == std::string::npos) {

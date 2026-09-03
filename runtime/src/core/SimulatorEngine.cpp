@@ -1839,6 +1839,7 @@ void rns::Engine::applyLaunchPlan(rns::PreparedLaunchPlan&& plan) {
     impl_->bundles.push_back(std::move(loaded));
   }
   impl_->engineState = rns::EngineState::Planned;
+  ++rns::addonPreparationCounters().planApplications;
 }
 
 void rns::Engine::setSceneUpdateCallback(
@@ -2954,6 +2955,28 @@ rns::EngineResult rns::Engine::run() {
                   fabricSession, addon.manifest.name, addon.manifest);
               addon.addon->configureFabric(generationContext, registrar);
               ++configuredAddons;
+              for (const auto& component : addon.manifest.components) {
+                if (component.kind !=
+                    rns::AddonComponentKind::FabricDescriptor) {
+                  continue;
+                }
+                const auto registered = std::any_of(
+                    fabricSession.providers.begin(),
+                    fabricSession.providers.end(),
+                    [&](const auto& staged) {
+                      return staged.addonName == addon.manifest.name &&
+                          staged.provider.name != nullptr &&
+                          std::string(staged.provider.name) == component.name;
+                    });
+                if (!registered) {
+                  throw rns::AddonContractViolation(
+                      addon.manifest.name,
+                      "configureFabric",
+                      component.name,
+                      generationContext.generation,
+                      "missing descriptor provider for " + component.name);
+                }
+              }
             }
             for (const auto& staged : fabricSession.providers) {
               addonProviders.push_back(staged.provider);
@@ -4192,6 +4215,10 @@ rns::EngineResult rns::Engine::run() {
               << (nativeComponentPassed ? "true" : "false")
               << ",\"customNativeCommands\":"
               << reactFabric.customCommands
+              << ",\"unknownCommands\":"
+              << reactFabric.unknownCommands
+              << ",\"staleCommands\":"
+              << reactFabric.staleCommands
               << ",\"mockedNativeComponents\":"
               << reactFabric.mockedComponents
               << ",\"yogaWidths\":[" << fabric.firstWidth << ','
