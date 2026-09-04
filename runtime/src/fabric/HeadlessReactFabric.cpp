@@ -3206,6 +3206,7 @@ class HeadlessReactFabricHost final
     std::shared_ptr<const react::ShadowNode> shadowNode;
     react::ShadowNodeFamily::Shared family;
     std::string owner;
+    std::vector<int> children;
     bool inTree{false};
   };
 
@@ -3227,6 +3228,7 @@ class HeadlessReactFabricHost final
       item.shadowNode = record.shadowNode;
       item.family = record.family;
       item.owner = record.owner;
+      item.children = record.children;
       item.inTree = tag == kReactSurfaceId || record.node.parentTag.has_value();
       snapshot.emplace(tag, std::move(item));
     }
@@ -3307,7 +3309,18 @@ class HeadlessReactFabricHost final
       if (found == after.end() || !found->second.inTree) {
         unmounted.push_back(tag);
       } else {
-        updated.push_back(tag);
+        const auto& previous = item;
+        const auto& next = found->second;
+        const bool shadowChanged =
+            previous.shadowNode.get() != next.shadowNode.get();
+        const bool layoutChanged =
+            previous.layout.frame.origin.x != next.layout.frame.origin.x ||
+            previous.layout.frame.origin.y != next.layout.frame.origin.y ||
+            previous.layout.frame.size.width != next.layout.frame.size.width ||
+            previous.layout.frame.size.height != next.layout.frame.size.height;
+        if (shadowChanged || layoutChanged) {
+          updated.push_back(tag);
+        }
       }
     }
     for (const auto& [tag, item] : after) {
@@ -3319,25 +3332,29 @@ class HeadlessReactFabricHost final
         mounted.push_back(tag);
       }
     }
-    const auto walkPostOrder = [&](auto& tags, auto&& visit) {
+    const auto walkUnmountedPostOrder = [&](auto& tags, auto&& visit) {
+      std::unordered_set<react::Tag> remaining(tags.begin(), tags.end());
       std::function<void(react::Tag)> walk = [&](react::Tag tag) {
-        const auto found = mountedViews_.find(tag);
-        if (found != mountedViews_.end()) {
+        const auto found = before.find(tag);
+        if (found != before.end()) {
           for (const auto child : found->second.children) {
             walk(child);
           }
         }
-        visit(tag);
-      };
-      std::unordered_set<react::Tag> remaining(tags.begin(), tags.end());
-      walk(kReactSurfaceId);
-      for (const auto tag : tags) {
         if (remaining.erase(tag)) {
           visit(tag);
         }
+      };
+      if (before.contains(kReactSurfaceId)) {
+        walk(kReactSurfaceId);
+      }
+      for (const auto tag : tags) {
+        if (remaining.count(tag)) {
+          walk(tag);
+        }
       }
     };
-    walkPostOrder(unmounted, [&](react::Tag tag) {
+    walkUnmountedPostOrder(unmounted, [&](react::Tag tag) {
       const auto found = before.find(tag);
       if (found == before.end()) {
         return;

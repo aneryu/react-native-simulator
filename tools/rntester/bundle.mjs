@@ -310,7 +310,9 @@ const runtimeBundle = bytecodePath ?? bundlePath;
 const addonPath = path.join(
   options.buildDir,
   'runtime',
-  'rns-addon-rntester.dylib',
+  process.platform === 'darwin'
+    ? 'rns-addon-rntester.dylib'
+    : 'rns-addon-rntester.so',
 );
 const configPath = path.join(options.outDir, 'rnsim.json');
 const relativeBundle = path.relative(options.outDir, runtimeBundle);

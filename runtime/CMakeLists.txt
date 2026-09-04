@@ -172,7 +172,6 @@ add_library(react-native-simulator-engine STATIC
   src/modules/HeadlessBackPress.cpp
   src/modules/HeadlessThinModules.cpp
   src/modules/HeadlessObservers.cpp
-  src/profiles/RuntimeProfile.cpp
   "${RUNTIME_SCHEDULER_DIR}/RuntimeScheduler.cpp"
   "${RUNTIME_SCHEDULER_DIR}/RuntimeScheduler_Modern.cpp"
   "${RUNTIME_SCHEDULER_DIR}/RuntimeSchedulerBinding.cpp"

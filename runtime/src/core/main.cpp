@@ -75,6 +75,7 @@ struct CliOptions {
   std::vector<BundleSource> bundles;
   struct AddonToken {
     std::string token;
+    bool catalogKey{false};
     rns::AddonRequestOrigin origin{rns::AddonRequestOrigin::Cli};
   };
   std::vector<AddonToken> addons;
@@ -1042,8 +1043,11 @@ CliOptions parseOptions(int argc, char **argv) {
     }
     for (const auto& addon : config.addons) {
       if (addon.name) {
-        options.addons.push_back(
-            {.token = *addon.name, .origin = rns::AddonRequestOrigin::Config});
+        options.addons.push_back({
+            .token = *addon.name,
+            .catalogKey = true,
+            .origin = rns::AddonRequestOrigin::Config,
+        });
       } else if (addon.path) {
         options.addons.push_back({
             .token = addon.path->string(),
@@ -1338,10 +1342,28 @@ CliOptions parseOptions(int argc, char **argv) {
 
 int main(int argc, char **argv) {
   try {
-    if (argc >= 2 && std::string(argv[1]) == "--list-addons") {
-      bool json = argc == 3 && std::string(argv[2]) == "--json";
-      if (argc > 3 || (argc == 3 && !json)) {
-        throw std::invalid_argument("Usage: rnsim --list-addons [--json]");
+    int listAddonsIndex = -1;
+    for (int index = 1; index < argc; ++index) {
+      if (std::string(argv[index]) == "--list-addons") {
+        listAddonsIndex = index;
+        break;
+      }
+    }
+    if (listAddonsIndex >= 0) {
+      bool json = false;
+      for (int index = 1; index < argc; ++index) {
+        if (index == listAddonsIndex) {
+          continue;
+        }
+        const std::string argument = argv[index];
+        if (argument == "--json") {
+          json = true;
+        } else if (argument == "headless" || argument == "interactive" ||
+                   argument == "conformance" || argument == "test") {
+          continue;
+        } else {
+          throw std::invalid_argument("Usage: rnsim --list-addons [--json]");
+        }
       }
       const auto catalog = rns::builtinAddonCatalogJson();
       if (json) {
@@ -1381,8 +1403,11 @@ int main(int argc, char **argv) {
           if (++index >= argc) {
             throw std::invalid_argument("--addon requires a value");
           }
-          requestedCompatRn73 =
-              requestedCompatRn73 || argv[index] == std::string("compat-rn73");
+          if (argv[index] != std::string("compat-rn73")) {
+            throw std::invalid_argument(
+                "doctor --addon currently accepts only compat-rn73");
+          }
+          requestedCompatRn73 = true;
         } else {
           throw std::invalid_argument(
               "Usage: rnsim doctor [--json] [--url URL] [--addon compat-rn73]");
@@ -1438,7 +1463,7 @@ int main(int argc, char **argv) {
       draft.disableAddon(name);
     }
     for (const auto& addon : options.addons) {
-      if (rns::looksLikeAddonModulePath(addon.token)) {
+      if (!addon.catalogKey && rns::looksLikeAddonModulePath(addon.token)) {
         draft.addAddonPath(addon.token, addon.origin);
       } else {
         draft.addBuiltInAddon(addon.token, addon.origin);

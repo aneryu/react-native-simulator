@@ -168,12 +168,16 @@ class AddonFabricRegistrar {
       HostSession& session,
       std::string addonName,
       const AddonManifest& manifest);
+  ~AddonFabricRegistrar();
+  AddonFabricRegistrar(const AddonFabricRegistrar&) = delete;
+  AddonFabricRegistrar& operator=(const AddonFabricRegistrar&) = delete;
   void registerDescriptor(facebook::react::ComponentDescriptorProvider provider);
   void onMount(std::string_view ownedComponent, AddonMountHandler handler);
   void onCommand(
       std::string_view ownedComponent,
       std::string_view declaredCommand,
       AddonCommandHandler handler);
+  void releaseSession() noexcept;
 
  private:
   HostSession* session_{nullptr};

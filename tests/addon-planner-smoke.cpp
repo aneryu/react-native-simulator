@@ -23,6 +23,7 @@ struct HookCounts {
   int configure{0};
   int install{0};
   int quiesce{0};
+  int destroyed{0};
 };
 
 class RecordingAddon final : public rns::SimulatorAddon {
@@ -34,6 +35,7 @@ class RecordingAddon final : public rns::SimulatorAddon {
       : name_(std::move(name)),
         counts_(std::move(counts)),
         extra_(std::move(extra)) {}
+  ~RecordingAddon() override { ++counts_->destroyed; }
 
   rns::AddonManifest manifest() const override {
     rns::AddonManifest manifest = extra_;
@@ -533,6 +535,98 @@ int main(int argc, char** argv) {
       }
       if (engine.state() != rns::EngineState::Draft) {
         std::cerr << "empty plan mutated Draft\n";
+        return 1;
+      }
+    }
+
+    expectThrows(
+        "mutate after prepare",
+        [&] {
+          rns::LaunchDraft draft(config);
+          auto candidates = rns::prepareExplicitAddons(draft);
+          draft.addBuiltInAddon("compat-rn73");
+          (void)rns::finalizeLaunchPlan(std::move(draft), std::move(candidates));
+        },
+        "changed after prepareExplicitAddons");
+
+    {
+      auto counts = std::make_shared<HookCounts>();
+      rns::LaunchDraft draft(config);
+      draft.addAddon(
+          std::make_unique<RecordingAddon>("planned-dtor", counts),
+          "planned-dtor",
+          rns::AddonRequestOrigin::Test);
+      draft.addBundle(rns::test::memoryBundle(
+          "RN$SimulatorWorkload.ready();\nRN$SimulatorWorkload.complete();\n",
+          "memory://planned-dtor.js"));
+      auto candidates = rns::prepareExplicitAddons(draft);
+      auto plan = rns::finalizeLaunchPlan(std::move(draft), std::move(candidates));
+      {
+        rns::Engine engine;
+        engine.applyLaunchPlan(std::move(plan));
+        if (engine.state() != rns::EngineState::Planned) {
+          std::cerr << "~Engine Planned setup was not Planned\n";
+          return 1;
+        }
+      }
+      if (counts->destroyed != 1 || counts->bind != 0 || counts->unbind != 0) {
+        std::cerr << "~Engine Planned did not destroy unbound addons\n";
+        return 1;
+      }
+    }
+
+    {
+      auto counts = std::make_shared<HookCounts>();
+      rns::LaunchDraft draft(config);
+      draft.addAddon(
+          std::make_unique<RecordingAddon>("no-bundle", counts),
+          "no-bundle",
+          rns::AddonRequestOrigin::Test);
+      auto candidates = rns::prepareExplicitAddons(draft);
+      auto plan = rns::finalizeLaunchPlan(std::move(draft), std::move(candidates));
+      rns::Engine engine;
+      engine.applyLaunchPlan(std::move(plan));
+      const auto result = engine.run();
+      if (result.exitCode == 0 ||
+          result.error.find("at least one bundle is required") ==
+              std::string::npos ||
+          counts->destroyed != 1 || counts->bind != 0) {
+        std::cerr << "run() without bundles leaked addons: " << result.error
+                  << '\n';
+        return 1;
+      }
+      const auto again = engine.run();
+      if (again.exitCode == 0 ||
+          again.error.find("Planned") == std::string::npos) {
+        std::cerr << "run() in Finished was accepted: " << again.error << '\n';
+        return 1;
+      }
+    }
+
+    {
+      rns::LaunchDraft draft(config);
+      draft.addBundle(rns::test::memoryBundle(
+          "RN$SimulatorWorkload.ready();\nRN$SimulatorWorkload.complete();\n",
+          "memory://second-plan.js"));
+      auto candidates = rns::prepareExplicitAddons(draft);
+      auto plan = rns::finalizeLaunchPlan(std::move(draft), std::move(candidates));
+      rns::Engine engine;
+      engine.applyLaunchPlan(std::move(plan));
+      rns::LaunchDraft extra(config);
+      extra.addBundle(rns::test::memoryBundle(
+          "RN$SimulatorWorkload.ready();\nRN$SimulatorWorkload.complete();\n",
+          "memory://second-plan-2.js"));
+      auto extraCandidates = rns::prepareExplicitAddons(extra);
+      auto extraPlan =
+          rns::finalizeLaunchPlan(std::move(extra), std::move(extraCandidates));
+      try {
+        engine.applyLaunchPlan(std::move(extraPlan));
+        std::cerr << "applyLaunchPlan in Planned was accepted\n";
+        return 1;
+      } catch (const std::logic_error&) {
+      }
+      if (engine.state() != rns::EngineState::Planned) {
+        std::cerr << "applyLaunchPlan in Planned mutated state\n";
         return 1;
       }
     }

@@ -62,7 +62,8 @@ other SDK modules remain unavailable unless a separate addon provides them.
 
 ## RN Tester addon
 
-The default `rns-addon-rntester.dylib` contains only contracts owned by RN's
+The default `rns-addon-rntester` MODULE (`rns-addon-rntester.dylib` on macOS,
+`rns-addon-rntester.so` on Linux) contains only contracts owned by RN's
 official demo application:
 
 - `RNTReportFullyDrawnView`, `RNTMyNativeView`, `RNTMyLegacyNativeView`, and

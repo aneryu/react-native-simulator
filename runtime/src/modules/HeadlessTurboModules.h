@@ -9,7 +9,6 @@
 #include <string>
 
 class SimulatorEventLoop;
-class RuntimeProfile;
 
 void setDevSettingsReloadHandler(std::function<void()> handler);
 

@@ -37,7 +37,6 @@
 #include "HeadlessOfficialComponents.h"
 #include "HeadlessRNModules.h"
 #include "HeadlessTurboModules.h"
-#include "RuntimeProfile.h"
 #include "HostPlatform.h"
 #include <react/featureflags/ReactNativeFeatureFlags.h>
 #include <react/featureflags/ReactNativeFeatureFlagsDynamicProvider.h>
@@ -69,7 +68,9 @@
 #include <span>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
+#include <exception>
 
 #include <sys/resource.h>
 #include <unistd.h>
@@ -206,6 +207,7 @@ class rns::Engine::Impl {
   std::atomic<bool> finished{false};
   std::atomic<bool> stopRequested{false};
   std::atomic<bool> reloadRequested{false};
+  std::thread::id runThread{};
   std::string lastInitialPropsJson{"{}"};
   std::mutex actionMutex;
   std::deque<QueuedInteractionAction> actions;
@@ -1795,6 +1797,12 @@ rns::Engine::~Engine() {
   if (impl_->engineState == rns::EngineState::Running &&
       impl_->running.load()) {
     impl_->stopRequested.store(true);
+    if (impl_->runThread != std::thread::id{} &&
+        impl_->runThread != std::this_thread::get_id()) {
+      while (impl_->running.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+    }
     return;
   }
   if (impl_->plan && impl_->plan.impl_ &&
@@ -1907,6 +1915,7 @@ rns::EngineResult rns::Engine::run() {
   impl_->engineState = rns::EngineState::Running;
   impl_->ran.store(true);
   impl_->running.store(true);
+  impl_->runThread = std::this_thread::get_id();
   impl_->setRuntimePhase(rns::RuntimePhase::Initializing);
   struct RunState final {
     rns::Engine::Impl& impl;
@@ -1919,6 +1928,9 @@ rns::EngineResult rns::Engine::run() {
     }
   } runState{*impl_};
   if (impl_->bundles.empty()) {
+    if (impl_->plan && impl_->plan.impl_) {
+      rns::destroyCommittedAddons(impl_->plan.impl_->addons);
+    }
     return {.exitCode = 1, .error = "at least one bundle is required"};
   }
 #if RNS_ENABLE_SKIA
@@ -1975,6 +1987,7 @@ rns::EngineResult rns::Engine::run() {
       options.mode == rns::SimulatorMode::Interactive;
   const bool conformanceMode =
       options.mode == rns::SimulatorMode::Conformance;
+  std::string runError;
   try {
     {
       static std::once_flag featureFlagsOnce;
@@ -2050,7 +2063,7 @@ rns::EngineResult rns::Engine::run() {
         .reduceMotion = options.reduceMotion.value_or(false),
     };
     rns::EngineAddonHost addonHost(hostSnapshot);
-    std::exception_ptr bindError;
+    std::string bindError;
     size_t boundCount = 0;
     try {
       for (auto& addon : launch.addons) {
@@ -2059,21 +2072,18 @@ rns::EngineResult rns::Engine::run() {
         addon.addon->bind(addonHost);
       }
     } catch (...) {
-      bindError = std::current_exception();
+      bindError = rns::hostOwnedExceptionMessage("addon bind() failed");
+    }
+    if (!bindError.empty()) {
       for (size_t i = boundCount; i > 0; --i) {
         auto& addon = launch.addons[i - 1];
         if (addon.bindEntered && addon.addon) {
           addon.addon->unbind();
+          addon.bindEntered = false;
         }
       }
       rns::destroyCommittedAddons(launch.addons);
-      if (bindError) {
-        try {
-          std::rethrow_exception(bindError);
-        } catch (const std::exception& error) {
-          return {.exitCode = 1, .error = error.what()};
-        }
-      }
+      return {.exitCode = 1, .error = std::move(bindError)};
     }
     if (launch.compatibility.compatAddon) {
       std::cerr
@@ -2790,6 +2800,12 @@ rns::EngineResult rns::Engine::run() {
                       : classification->second,
                   owner->second.owner));
               return module;
+            } catch (const rns::AddonContractViolation& error) {
+              if (!pendingAddonFatal) {
+                pendingAddonFatal = std::make_exception_ptr(error);
+              }
+              turboModuleCache.emplace(name, nullptr);
+              return nullptr;
             } catch (const std::exception& error) {
               if (!pendingAddonFatal) {
                 pendingAddonFatal = std::make_exception_ptr(
@@ -2799,6 +2815,18 @@ rns::EngineResult rns::Engine::run() {
                         name,
                         generationContext.generation,
                         error.what()));
+              }
+              turboModuleCache.emplace(name, nullptr);
+              return nullptr;
+            } catch (...) {
+              if (!pendingAddonFatal) {
+                pendingAddonFatal = std::make_exception_ptr(
+                    rns::AddonContractViolation(
+                        "",
+                        "moduleProvider",
+                        name,
+                        generationContext.generation,
+                        "non-std::exception"));
               }
               turboModuleCache.emplace(name, nullptr);
               return nullptr;
@@ -2954,6 +2982,7 @@ rns::EngineResult rns::Engine::run() {
               rns::AddonFabricRegistrar registrar(
                   fabricSession, addon.manifest.name, addon.manifest);
               addon.addon->configureFabric(generationContext, registrar);
+              registrar.releaseSession();
               ++configuredAddons;
               for (const auto& component : addon.manifest.components) {
                 if (component.kind !=
@@ -3091,27 +3120,75 @@ rns::EngineResult rns::Engine::run() {
                 "__fbBatchedBridgeConfig",
                 "console",
             };
-            std::vector<std::pair<const char*, jsi::Value>> protectedGlobals;
+            struct ProtectedGlobal {
+              const char* name{nullptr};
+              jsi::Value value;
+              std::vector<std::pair<std::string, jsi::Value>> properties;
+            };
+            std::vector<ProtectedGlobal> protectedGlobals;
             protectedGlobals.reserve(
                 sizeof(protectedNames) / sizeof(protectedNames[0]));
             for (const char* name : protectedNames) {
-              protectedGlobals.emplace_back(
-                  name,
-                  jsi::Value(
-                      runtime, runtime.global().getProperty(runtime, name)));
+              ProtectedGlobal snapshot;
+              snapshot.name = name;
+              snapshot.value = jsi::Value(
+                  runtime, runtime.global().getProperty(runtime, name));
+              if (snapshot.value.isObject()) {
+                auto object = snapshot.value.getObject(runtime);
+                auto names = object.getPropertyNames(runtime);
+                const auto count = names.size(runtime);
+                snapshot.properties.reserve(count);
+                for (size_t index = 0; index < count; ++index) {
+                  auto keyValue = names.getValueAtIndex(runtime, index);
+                  if (!keyValue.isString()) {
+                    continue;
+                  }
+                  auto key = keyValue.getString(runtime).utf8(runtime);
+                  snapshot.properties.emplace_back(
+                      key,
+                      jsi::Value(
+                          runtime, object.getProperty(runtime, key.c_str())));
+                }
+              }
+              protectedGlobals.push_back(std::move(snapshot));
             }
             for (auto& addon : launch.addons) {
               addon.addon->installJSI(generationContext, runtime, jsInvoker);
             }
-            for (const auto& [name, previous] : protectedGlobals) {
-              auto current = runtime.global().getProperty(runtime, name);
-              if (!jsi::Value::strictEquals(runtime, current, previous)) {
+            for (const auto& previous : protectedGlobals) {
+              auto current = runtime.global().getProperty(runtime, previous.name);
+              if (!jsi::Value::strictEquals(runtime, current, previous.value)) {
                 throw rns::AddonContractViolation(
                     "",
                     "installJSI",
-                    name,
+                    previous.name,
                     generationContext.generation,
-                    std::string("protected global mutated: ") + name);
+                    std::string("protected global mutated: ") + previous.name);
+              }
+              if (!previous.value.isObject() || !current.isObject()) {
+                continue;
+              }
+              auto object = current.getObject(runtime);
+              auto names = object.getPropertyNames(runtime);
+              if (names.size(runtime) != previous.properties.size()) {
+                throw rns::AddonContractViolation(
+                    "",
+                    "installJSI",
+                    previous.name,
+                    generationContext.generation,
+                    std::string("protected global mutated: ") + previous.name);
+              }
+              for (const auto& [key, value] : previous.properties) {
+                auto now = object.getProperty(runtime, key.c_str());
+                if (!jsi::Value::strictEquals(runtime, now, value)) {
+                  throw rns::AddonContractViolation(
+                      "",
+                      "installJSI",
+                      previous.name,
+                      generationContext.generation,
+                      std::string("protected global mutated: ") + previous.name +
+                          "." + key);
+                }
               }
             }
             hostChrome().onInvalidate = [
@@ -3130,7 +3207,8 @@ rns::EngineResult rns::Engine::run() {
             };
             runtimeInitialized = true;
           } catch (...) {
-            generationSetupError = std::current_exception();
+            generationSetupError = std::make_exception_ptr(std::runtime_error(
+                rns::hostOwnedExceptionMessage("generation setup failed")));
             (void)configuredAddons;
           }
         });
@@ -4299,7 +4377,9 @@ rns::EngineResult rns::Engine::run() {
               << "\"eventLoopTasks\":" << eventLoopTasks << ','
               << "\"jsErrors\":" << jsErrorCount << ','
               << "\"jsErrorDetails\":"
-              << folly::toJson(jsErrorMetadata) << "}\n";
+              << folly::toJson(jsErrorMetadata) << ','
+              << "\"droppedPosts\":"
+              << executorState->droppedPosts.load() << "}\n";
     const auto metricsJson = metrics.str();
     auto scene = makeSceneSnapshot(
         options,
@@ -4420,22 +4500,16 @@ rns::EngineResult rns::Engine::run() {
         .scene = std::move(scene),
     };
     }
-  } catch (const std::exception& error) {
-    if (inspectorTransport) {
-      inspectorTransport->sendJson(folly::toJson(folly::dynamic::object
-          ("type", "error")
-          ("message", error.what())));
-    }
-    if (impl_->plan && impl_->plan.impl_) {
-      auto& addons = impl_->plan.impl_->addons;
-      for (auto it = addons.rbegin(); it != addons.rend(); ++it) {
-        if (it->bindEntered && it->addon) {
-          it->addon->unbind();
-          it->bindEntered = false;
-        }
-      }
-      rns::destroyCommittedAddons(addons);
-    }
-    return {.exitCode = 1, .error = error.what()};
+  } catch (...) {
+    runError = rns::hostOwnedExceptionMessage("unknown runtime error");
   }
+  if (inspectorTransport) {
+    inspectorTransport->sendJson(folly::toJson(folly::dynamic::object
+        ("type", "error")
+        ("message", runError)));
+  }
+  if (impl_->plan && impl_->plan.impl_) {
+    rns::unbindAndDestroyCommittedAddons(impl_->plan.impl_->addons);
+  }
+  return {.exitCode = 1, .error = std::move(runError)};
 }
