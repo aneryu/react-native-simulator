@@ -312,9 +312,12 @@ target_include_directories(react-native-simulator-engine
 target_link_libraries(react-native-simulator-engine PRIVATE
   hermesvm_a
   Boost::boost
-  FastFloat::fast_float
   Threads::Threads)
 target_link_libraries(react-native-simulator-engine PUBLIC yogacore)
+# RN public headers (CSSTokenizer) include <fast_float/fast_float.h>. Tests and
+# addons that compile those headers through the engine must see the same path
+# on macOS, where Homebrew Folly does not re-export FastFloat.
+target_link_libraries(react-native-simulator-engine PUBLIC FastFloat::fast_float)
 # Folly headers need FOLLY_NO_CONFIG on Linux. Keep this PUBLIC so the CLI,
 # tests, and frontend inherit the same include path and compile definitions.
 target_link_libraries(react-native-simulator-engine PUBLIC rns_folly)
