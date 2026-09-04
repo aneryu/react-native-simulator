@@ -356,6 +356,16 @@ if(RNS_ENABLE_SANITIZERS)
     -fno-omit-frame-pointer)
   target_link_options(react-native-simulator-engine PUBLIC
     -fsanitize=address,undefined)
+  if(NOT APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # GCC discards ConcreteShadowNode typeinfo COMDATs for
+    # LayoutConformanceShadowNode (internal-linkage component name) when
+    # this TU is ASan/UBSan instrumented without vptr. Leave the file
+    # uninstrumented so sanitized Linux can link; ABI fingerprint stays
+    # address,undefined,no-vptr.
+    set_source_files_properties(
+      "${RN_ROOT}/ReactCommon/react/renderer/components/view/YogaLayoutableShadowNode.cpp"
+      PROPERTIES COMPILE_OPTIONS "-fno-sanitize=address,undefined")
+  endif()
 endif()
 
 rns_discover_and_add_addons()
