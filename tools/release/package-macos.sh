@@ -66,7 +66,10 @@ fi
 mkdir -p "$output_dir"
 dmg_name="rnsim-${channel}-macos-arm64.dmg"
 dmg="$output_dir/$dmg_name"
-rm -f "$dmg" "$dmg.sha256"
+manifest="$output_dir/rnsim-${channel}-macos-arm64.manifest.json"
+rm -f "$dmg" "$dmg.sha256" "$manifest"
+"$project_root/tools/release/generate-release-manifest.sh" \
+  "$manifest" runtime "$stage/rnsim"
 "$project_root/tools/release/sign-and-notarize.sh" "$stage/rnsim" "$dmg"
 (cd "$output_dir" && shasum -a 256 "$dmg_name" >"$dmg_name.sha256")
 

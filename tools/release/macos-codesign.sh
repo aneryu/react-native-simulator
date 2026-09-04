@@ -132,10 +132,10 @@ rns_codesign_verify_file() {
   if rns_codesign_needs_entitlements "$binary"; then
     entitlements_dump=$(mktemp)
     codesign -d --entitlements "$entitlements_dump" "$binary" >/dev/null 2>&1 || true
-    if ! grep -Fq 'com.apple.security.cs.disable-library-validation' \
+    if grep -Fq 'com.apple.security.cs.disable-library-validation' \
         "$entitlements_dump"; then
       rm -f "$entitlements_dump"
-      echo "rnsim is missing disable-library-validation: $binary" >&2
+      echo "rnsim still carries disable-library-validation: $binary" >&2
       return 1
     fi
     rm -f "$entitlements_dump"
