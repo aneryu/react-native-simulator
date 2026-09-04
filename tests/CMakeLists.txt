@@ -237,7 +237,8 @@ set_tests_properties(hmr-protocol PROPERTIES
     "HMR_EVAL function.*HMR_SETUP android index.bundle")
 add_test(NAME cli-help COMMAND $<TARGET_FILE:react-native-simulator> --help)
 set_tests_properties(cli-help PROPERTIES
-  PASS_REGULAR_EXPRESSION "rnsim interactive.*rnsim headless.*rnsim doctor")
+  PASS_REGULAR_EXPRESSION
+    "rnsim interactive.*rnsim headless.*rnsim doctor.*--list-addons.*--no-addon.*safe-area")
 add_test(NAME cli-version
   COMMAND "${CMAKE_COMMAND}"
     -DRNSIM=$<TARGET_FILE:react-native-simulator>
@@ -355,6 +356,13 @@ add_test(NAME cli-list-addons
 set_tests_properties(cli-list-addons PROPERTIES
   PASS_REGULAR_EXPRESSION
     "\"name\":\"expo\".*\"name\":\"safe-area\".*\"name\":\"compat-rn73\"")
+add_test(NAME cli-unknown-addon-rntester
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    -DBUNDLE=${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js
+    "-DARGS=--bundle;${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js;--addon;rntester;--timeout-ms;1000"
+    "-DEXPECTED=unknown addon name"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliFailure.cmake")
 add_test(NAME cli-no-addon-safe-area
   COMMAND $<TARGET_FILE:react-native-simulator> headless
     --bundle "${RNS_TEST_FIXTURES_DIR}/safe-area-disabled.js"
@@ -584,7 +592,8 @@ set_tests_properties(runtime-source runtime-bytecode runtime-multi-bundle
   addon-rejects-short-descriptor addon-rejects-fingerprint
   addon-rejects-null-create addon-rejects-throwing-create
   addon-rejects-name-mismatch addon-rejects-null-callbacks
-  cli-list-addons cli-no-addon-safe-area cli-no-addon-safe-area-fallback
+  cli-list-addons cli-unknown-addon-rntester
+  cli-no-addon-safe-area cli-no-addon-safe-area-fallback
   compat-rn73-constants local-config-schema1 local-config-bare-addon
   local-config-tagged-compat local-config-addon-origin
   local-config-cli-addon-append local-config-cli-disable-explicit
