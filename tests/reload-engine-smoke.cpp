@@ -1,4 +1,5 @@
 #include <react-native-simulator/Engine.h>
+#include "EngineTestSupport.h"
 
 #include "TestEngineThread.h"
 
@@ -10,15 +11,24 @@
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::cerr << "usage: reload-engine-smoke bundle.js\n";
+    std::cerr << "usage: reload-engine-smoke bundle.js [addon-module]\n";
     return 1;
   }
   ReactNativeSimulator::EngineConfig config;
   config.mode = ReactNativeSimulator::SimulatorMode::Interactive;
   config.timeoutMs = 15000;
   config.autoRunApplication = false;
-  ReactNativeSimulator::Engine engine(config);
-  engine.loadBundle(std::filesystem::path(argv[1]));
+  config.profile = "android-rn87";
+  std::string addonPath = argc > 2 ? argv[2] : "";
+  auto engine = ReactNativeSimulator::test::makeEngine(
+      std::move(config),
+      {ReactNativeSimulator::test::fileBundle(argv[1])},
+      [&](ReactNativeSimulator::LaunchDraft& draft) {
+        if (!addonPath.empty()) {
+          draft.addAddonPath(
+              addonPath, ReactNativeSimulator::AddonRequestOrigin::Test);
+        }
+      });
 
   std::string runError;
   TestEngineThread runner([&] {

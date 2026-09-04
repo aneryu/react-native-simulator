@@ -133,7 +133,7 @@ def main():
             (override_root / "rnsim.json").write_text(
                 json.dumps(
                     {
-                        "schemaVersion": 1,
+                        "schemaVersion": 2,
                         "reactNative": "0.87.0",
                         "bundle": "offline.jsbundle",
                     }
@@ -172,7 +172,7 @@ def main():
             (missing_root / "rnsim.json").write_text(
                 json.dumps(
                     {
-                        "schemaVersion": 1,
+                        "schemaVersion": 2,
                         "reactNative": "0.87.0",
                         "bundle": missing_bundle.name,
                     }

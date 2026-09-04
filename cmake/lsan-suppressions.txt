@@ -1,0 +1,5 @@
+# FontConfig caches matched fonts for process lifetime. Skia's fontconfig
+# port never calls FcFini, so LeakSanitizer reports those caches as leaks
+# on Linux sanitized runs. This is third-party process-lifetime state, not
+# a simulator allocation.
+leak:libfontconfig

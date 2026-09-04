@@ -310,13 +310,15 @@ const runtimeBundle = bytecodePath ?? bundlePath;
 const addonPath = path.join(
   options.buildDir,
   'runtime',
-  'rns-addon-rntester.dylib',
+  process.platform === 'darwin'
+    ? 'rns-addon-rntester.dylib'
+    : 'rns-addon-rntester.so',
 );
 const configPath = path.join(options.outDir, 'rnsim.json');
 const relativeBundle = path.relative(options.outDir, runtimeBundle);
 const relativeAddon = path.relative(options.outDir, addonPath);
 const config = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   reactNative: '0.87.0',
   platform: options.platform,
   appKey: 'RNTesterApp',
@@ -326,7 +328,7 @@ const config = {
     height: 753.4545,
     pointScaleFactor: 2.75,
   },
-  addons: [relativeAddon.split(path.sep).join('/')],
+  addons: [{path: relativeAddon.split(path.sep).join('/')}],
 };
 writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 

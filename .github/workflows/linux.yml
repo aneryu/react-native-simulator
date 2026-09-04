@@ -80,6 +80,8 @@ jobs:
             -DRNS_ENABLE_SOURCE_DEVTOOLS_FRONTEND=OFF
           cmake --build build/ci-release --parallel
           ctest --test-dir build/ci-release --output-on-failure
+          ctest --test-dir build/ci-release --output-on-failure --no-tests=error \
+            -R '^(fabric-module-so|addon-abi-lifecycle)$'
 
   gui:
     runs-on: ubuntu-24.04

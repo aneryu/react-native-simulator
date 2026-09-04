@@ -1,297 +1,419 @@
 # Addon Host Architecture
 
-| Field | Value |
-| --- | --- |
-| Status | Final design — architecture GO; implementation gated per PR |
-| Date | 2026-09-03 |
-| Reviewed tree | Clean HEAD `42e4c2d696bdcaed8a16faf5b260a57911afff97` |
-| Review scope | Source review; `third_party` submodules were uninitialized and no build was executed |
-| Product | React Native Simulator (`rnsim` / `ReactNativeSimulator::Engine`) |
-| Native runtime | React Native 0.87.0, Hermes v1 260318099.0.1 |
-| Replaces | Addon ABI 3 (`react_native_simulator_addon_v2`) as a TurboModule stub loader; `android-rn73` as a second framework-provider profile |
-| Related | [SIMULATOR_DESIGN.md](SIMULATOR_DESIGN.md), [VERSIONING.md](VERSIONING.md), [ADDONS.md](../guides/ADDONS.md) |
+| Field          | Value                                                                                                                                                 |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Status         | Final design — product decisions closed 2026-09-03; review consensus; single delivery                                                                 |
+| Date           | 2026-09-03                                                                                                                                            |
+| Author         | React Native Simulator                                                                                                                                |
+| Reviewed tree  | `ec35995c8f734f924b62d2c15245141a6c5ad43d`; every claim about current code and the pinned React Native source below was checked against this checkout |
+| Product        | React Native Simulator (`rnsim` / `ReactNativeSimulator::Engine`)                                                                                     |
+| Native runtime | React Native 0.87.0, Hermes v1 260318099.0.1                                                                                                          |
+| Replaces       | Addon ABI 3 (`react_native_simulator_addon_v2`); the `android-rn73` profile; metrics schema 2; `rnsim.json` schema 1; `Engine::addAddon`; `Engine::loadBundle` |
+| Related        | [SIMULATOR_DESIGN.md](SIMULATOR_DESIGN.md), [VERSIONING.md](VERSIONING.md), [ADDONS.md](../guides/ADDONS.md)                                          |
 
-## Executive decision
+## Overview
 
-The architecture is approved. The simulator will have one native semantic
-engine, built from this checkout's pinned React Native and Hermes revisions.
-Profiles will continue to own the current upstream React Native contract for a
-platform. Application, company, community-library, and older-JavaScript
-compatibility contracts will live in isolated addons.
+The current addon surface can vend TurboModules, evaluate a JSI bootstrap, and
+declare component names, but every declared component is registered as
+`UnimplementedViewComponentDescriptor`. It cannot register a real Fabric
+descriptor, observe a committed `ShadowNode`, emit a typed event, or wrap a
+framework TurboModule. That gap forced `RNCSafeArea*` into the framework
+profile and encouraged `android-rn73` to become a second framework provider.
 
-The current plugin surface is not an addon host. It can vend TurboModules,
-evaluate a JSI bootstrap, and declare component names, but every declared
-component is registered as `UnimplementedViewComponentDescriptor`. It cannot
-register a real Fabric descriptor, receive an owner-scoped command, or safely
-emit a generation-scoped Fabric event. This forced `RNCSafeArea*` into the
-framework profile and encouraged `android-rn73` to become a second framework
-provider.
+This design replaces ABI 3 with ABI 4: a single-open transactional planner, one
+executable `FrameworkSurfaceInventory`, a frozen session snapshot, owner-directed
+TurboModule lookup, real Fabric descriptors with a host ledger and mandatory
+preflight, and generated catalog discovery. RN 0.73.10 JavaScript runs on the
+pinned RN 0.87 native engine through `compat-rn73`. `safe-area` auto-loads for
+every project. There is no legacy schema, no root-owned allowlist, and no
+multi-PR cutover: one change set, one Definition of Done.
 
-ABI 4 replaces that surface with:
+## Product decisions
 
-- a single-open, transactional addon planner;
-- one executable `FrameworkSurfaceInventory` for ownership and availability;
-- a frozen, session-lifetime `AddonHostSnapshot`;
-- an immutable manifest and complete addon lifecycle;
-- owner- and generation-scoped Fabric registration, commands, and events;
-- a closed capability class plus host-derived evidence;
-- a host-owned, narrowly allowlisted compatibility overlay;
-- schema-2-safe additive metrics; and
-- an eight-PR rollout whose behavioral cutovers are atomic.
+These decisions were made by the project lead after review and are normative.
+They are not open for reinterpretation during implementation.
 
-Architecture approval is not blanket implementation approval. Each PR has an
-independent merge gate. In particular, the `android-rn73` profile must not be
-deleted until a real caller-built React Native 0.73.2 source/Metro fixture runs
-successfully in an independent CI lane.
+1. **RN 0.73.10 JavaScript is a supported business target.** It runs on the
+   RN 0.87 native engine through the `compat-rn73` addon. The `android-rn73`
+   profile is deleted in the same delivery. The acceptance gate is the real
+   business bundle, not a synthetic fixture.
+2. **`safe-area` is default-on for every project.** New RN 0.87 projects depend
+   on `react-native-safe-area-context`; the host for it auto-loads regardless
+   of Expo detection and can be disabled explicitly.
+3. **Anyone can extend the engine.** Any addon directory — in-tree
+   `runtime/addons/<name>/` or an out-of-tree directory passed through
+   `RNS_ADDON_DIRS` — may declare itself built-in and/or MODULE. There is no
+   root-owned allowlist. The catalog is generated from discovered declarations.
+4. **ABI 4 is flexible.** Addons register real Fabric descriptors, observe
+   committed `ShadowNode`s, emit events and update state through React
+   Native's own APIs, run asynchronous work through a generation-bound runtime
+   executor, wrap framework TurboModules, and declare bundle-compatibility
+   claims in their manifest.
+5. **No external consumers, no legacy.** Metrics move to schema 3 (structured
+   only), `rnsim.json` moves to schema 2 (tagged entries only), the typed
+   launch API replaces `Engine::addAddon`, and ABI 3 is removed without a
+   migration path.
+6. **Simple over policed.** No evidence tiers, no legacy metric projections,
+   no transitional adapters. Honesty comes from owner attribution in every
+   contract and from asserted route counters, not from certification
+   bureaucracy.
+7. **Single delivery.** One change set, one merge gate (the Definition of
+   Done). The build order in this document is a dependency order for the
+   implementer, not a PR sequence.
+8. **Zero insets and a session-constant viewport in v1.** The host snapshot is
+   revisioned and the ABI carries the change hook so that real device insets
+   and rotation can arrive later without redoing SafeArea.
 
-## Product invariants
+## Key Decisions
 
-The following constraints are normative throughout the rollout:
+Architectural choices that follow from the product decisions and from the
+pinned engine. Implementers treat these as closed.
 
-1. `rnsim` remains the production executable and
-   `ReactNativeSimulator::Engine` remains the embedding API.
-2. The process contains one `ReactInstance`, one RuntimeScheduler, and one
-   Hermes VM per runtime generation. It never loads a second React Native C++
-   implementation or a second Hermes engine to match a caller bundle.
-3. Caller JavaScript remains external. The repository does not acquire a
-   production Metro, Babel, TypeScript, or application-bundling pipeline.
-4. Core configure, build, test, and runtime paths remain Node.js/npm-free.
-   Existing optional diagnostics may continue to use Node built-ins.
-5. Profiles own only the current pinned React Native platform contract.
-   Application, company, community, and compatibility names never leak into
-   the generic framework provider.
-6. Unknown TurboModules remain unavailable. Unknown components remain
-   observable fallbacks and cannot become certified merely because a bundle
-   requested them.
-7. Every capability claim identifies both its behavioral class and the source
-   of its evidence. Compatibility, registration, and execution evidence are
-   separate concepts.
-8. Reload reuses one sealed launch plan. It creates a new runtime generation;
-   it does not re-open, re-plan, add, disable, or reorder addons.
-9. Nightly remains one self-contained macOS arm64 file named `rnsim`. It is not
-   an addon SDK. Linux remains a source-build host for the same engine.
-10. `.dylib` and `.so` MODULE behavior must be exercised by real dynamic loads,
-    not inferred from static or in-process tests.
+| Decision | Choice | Rationale |
+| -------- | ------ | --------- |
+| 1. RN 0.73.10 JS on RN 0.87 native | `compat-rn73` overlay on `android-rn87`; delete `android-rn73` in the same delivery | One native engine. The business bundle is the gate. |
+| 2. `safe-area` default-on | CMake `AUTO always`; `LaunchDraft` defaults `autoAddons == true`, `ProjectKind::Plain`; disable with `--no-addon safe-area` | Embedders and CLI both get `safe-area` unless they opt out. RN 0.87 apps depend on `react-native-safe-area-context` regardless of Expo. |
+| 3. Open catalog | Generated from `runtime/addons/*/CMakeLists.txt` and `RNS_ADDON_DIRS`; no root allowlist | Anyone can extend the engine; duplicate keys fail configure. |
+| 4. Flexible ABI 4 | Real descriptors, committed `ShadowNode`s, RN emitters/state, generation-bound executor, TurboModule wrap, manifest compatibility claims | ABI 3 cannot host SafeArea events or a real 0.73 JS adapter. |
+| 5. No legacy | Metrics schema 3, `rnsim.json` schema 2 tagged entries, typed launch API; ABI 3, `Engine::addAddon`, and `Engine::loadBundle` deleted | No external consumers; dual serializers and post-construction mutation are the bugs. |
+| 6. Simple over policed | Owner strings and route counters; no evidence tiers or schema-2 projections | Certification bureaucracy does not make a MODULE safer. |
+| 7. Single delivery | One independently mergeable PR; internal steps are a dependency order | Transitional adapters and dual-profile windows are out of scope. |
+| 8. v1 insets and viewport | Snapshot insets `0,0,0,0`; viewport session-constant; `revision` + `hostSnapshotChanged` unused | SafeArea can grow real insets later without an ABI redo. |
+| 9. Single-open MODULE lifecycle | `dlopen` once; RAII handle held through `destroy` then `dlclose`; never peek/close/reopen | Static constructors must not run twice; path TOCTOU is rejected. |
+| 10. Owner-directed TurboModule lookup | Sealed O(1) owner map; generation-scoped name cache; only the owner is asked; overlays call `wrapTurboModule` once | First-wins walks and `TurboModule::name_` inspection are incorrect. RN attaches `jsRepresentation` to the cached `shared_ptr`. |
+| 11. Host ledger + mandatory preflight | Host-owned component ledger; preflight every real descriptor before publishing the RN registry | RN silently ignores duplicate handles and strips name/handle asserts in release. |
+| 12. Teardown order | `quiesce` → `stopSurface` → Fabric `shutdown` → `instance.reset()` → `fabricHost.reset()` → `unbind` → `destroy` → `dlclose` | `ComponentDescriptorRegistry` holds a reference to the provider registry; destroying the Fabric host first dangles. |
+| 13. Generated catalog | `BuiltinAddonCatalog.cpp` from `rns_declare_addon`; strong factory refs | Archive linking must not dead-strip built-ins; Nightly catalog is exactly `expo`, `safe-area`, `compat-rn73`. |
+| 14. Schema 3 structured only | Arrays of `{name, class, owner, …}`; no flat fidelity maps | `classifyRuntimeCapability` substring inference is deleted. |
+| 15. Fingerprint is compatibility, not security | Exact string of public-header hash, pins, compiler, stdlib, language mode, sanitizer, ABI flags | The simulator is not a sandbox (`SECURITY.md`). Fingerprint mismatch is "rebuild", not "untrusted". |
+| 16. ABI 4 vtable is complete and pure virtual | Every slot is `= 0`; no-ops are written by the addon | A future default in the base class would be an ABI change. |
+| 17. `InProcess` skips MODULE validation | Tests inject `unique_ptr`; no `dlopen`, descriptor, or fingerprint | Invariant 10: MODULE behavior is proven by real `.dylib`/`.so` loads. |
+| 18. `wrapTurboModule` identity no-op | Host calls it only for declared overlays; otherwise implement `return framework;` | The slot is part of ABI 4 even when `moduleOverlays` is empty. |
+| 19. JSI after protected globals | Addon `installJSI` runs after host globals; identities are verified | Running Expo `installJSI` before `nativeModuleProxy` exists makes identity checks impossible. |
+| 20. Expo via `nativeModuleProxy` | `globalThis.expo.modules[name]` aliases `nativeModuleProxy[name]` (the `jsRepresentation`); no second `getTurboModule` | Dual HostObjects break `===`. `nativeModuleProxy` does not return the C++ HostObject. |
+| 21. `moduleProvider` is a catch boundary | Lookup-time null/throw becomes `nullptr` + `pendingAddonFatal`; never throws through `TurboModuleBinding` | RN's `TurboModuleBinding::getModule` is an RN frame. JSI must not see a C++ exception. |
+| 22. `SimulatorMode` lives in `SimulatorAddon.h` | `Engine.h` includes `SimulatorAddon.h`; the reverse include is forbidden | Snapshot is addon-facing. A header cycle would make the ABI uncompilable. |
 
-## Background and current state
+## Goals & Non-Goals
 
-### Runtime ownership
+### Goals
 
-React Native 0.87 `ReactInstance` owns Hermes/JSI, RuntimeScheduler, bundle
-loading, error handling, and shutdown. Fabric commits real ShadowTrees, Yoga
-computes layout, and the host consumes MountingTransactions into a typed
-retained scene that Skia paints. Interactive, headless, and conformance modes
-must drive this same semantic engine rather than reimplementing it.
+- Preserve the profile/addon ownership split: profiles own the pinned RN
+  platform contract; addons own application, company, community, and
+  compatibility names.
+- Open each MODULE exactly once and hold its handle until every
+  module-owned object is destroyed.
+- Fail plan-level collisions before bind, Fabric registration, addon JSI, or
+  caller JavaScript.
+- Drive owners, providers, `hasComponent`, metrics, chrome, and isolation
+  from one executable framework inventory.
+- Freeze host inputs (viewport, insets, color scheme, app state, reduce
+  motion, initial URL, asset/font directories) into a revisioned snapshot
+  before bind.
+- Stage and preflight every Fabric provider before publishing a registry.
+- Move `RNCSafeArea*` out of the profile in the same delivery that lands ABI 4.
+- Retire `android-rn73` in the same delivery that lands `compat-rn73`, gated
+  by the real RN 0.73.10 business bundle.
+- Keep source builds first-class on macOS and Linux while Nightly remains one
+  self-contained `rnsim` file that loads no external MODULE.
 
-### ABI 3 limitations
-
-The current surface in
-`runtime/include/react-native-simulator/SimulatorAddon.h` has these properties:
-
-- `kSimulatorAddonAbiVersion == 3`, while the entry symbol is named
-  `react_native_simulator_addon_v2`;
-- virtual capability APIs return free-form fidelity strings;
-- `SimulatorAddonRegistry::load` calls `dlopen`, checks ABI/RN/Hermes, and then
-  constructs a C++ object;
-- TurboModule lookup is first-wins across addons;
-- every addon component name becomes an `UnimplementedViewComponentDescriptor`;
-- `viewManagerConfigs()` exposes legacy constants, but Fabric command names do
-  not route to the addon;
-- addons do not receive a viewport, event target, or EventDispatcher-mediated
-  event path; and
-- capability classification is inferred from substrings such as `host-`,
-  `adapter`, `mock`, and `tester-stub`.
-
-The loader's ABI/RN/Hermes checks happen after the library is mapped. They are
-compatibility checks, not a pre-`dlopen` safety boundary.
-
-### Relevant current call order
-
-The implementation details below constrain the migration:
-
-- addon paths are loaded in `SimulatorEngine.cpp` before the full runtime
-  profile is constructed;
-- `rnsim.json` addon strings are currently resolved unconditionally as paths
-  relative to the config file;
-- `installJSI` currently runs before legacy UIManager globals and the Fabric
-  binding exist;
-- `__nativeComponentRegistry__hasComponent` currently checks only addon names;
-- final and reload teardown reset the Fabric host before the `ReactInstance`;
-- `hostEnvironment()` is reset and configured inside each generation;
-- the Fabric command delegate has early returns that can swallow an addon
-  command such as `setNativeValue`;
-- interactive preparation currently treats every exception as retryable;
-- `include(CTest)` currently follows `add_subdirectory(runtime)`;
-- `verify-runtime.mjs` requires exact legacy values such as
-  `NativeMicrotasksCxx === "real-headless"`; and
-- `tools/release/generate-release-manifest.sh` hardcodes an obsolete addon ABI.
-
-### Why the superseded rollout was not executable
-
-The earlier seven-PR sequence is rejected for the following concrete reasons:
-
-1. Peeking a MODULE name with `dlopen`/`dlsym`/`dlclose` and then loading it
-   again runs static constructors twice and creates a path TOCTOU window.
-2. A registry cannot validate against a "live profile" before the profile
-   inventory exists.
-3. Changing values in schema-2 flat capability maps is not additive and breaks
-   existing consumers.
-4. A closed capability enum alone does not prevent a path MODULE from declaring
-   itself `Implemented`.
-5. Reinterpreting every schema-1 config string as name-or-path silently changes
-   the meaning of existing configuration.
-6. Removing explicit names from the auto set and then appending explicit specs
-   changes deterministic order, placing `expo` behind `safe-area`.
-7. Binding to mutable generation state before it is initialized yields defaults
-   or state from the previous generation.
-8. Global mount listeners and `emitEvent(tag, ...)` are neither owner-scoped nor
-   generation-safe.
-9. React Native's provider registry silently ignores duplicate handles; it
-   cannot be used as the collision oracle.
-10. A real descriptor receives `ComponentDescriptorParameters`, including the
-    context container and event dispatcher. The host cannot claim otherwise.
-11. Existing command-control flow must be refactored into a handled chain;
-    addon handlers cannot simply be appended to the function.
-12. Destroying the Fabric host before the `ReactInstance` risks dangling
-    provider-registry references.
-13. Protected-global identity checks are impossible while addon `installJSI`
-    runs before the host globals exist.
-14. A virtual `overlayTurboModule` would let addon code replace a reserved
-    framework module rather than request a narrow host-owned overlay.
-
-## Goals
-
-- Preserve the profile/addon ownership split.
-- Open each MODULE exactly once and hold its handle through final addon
-  destruction.
-- Fail all plan-level collisions before bind, Fabric registration, addon JSI,
-  or caller JavaScript.
-- Build one executable framework inventory before addon validation.
-- Preserve every existing schema-2 flat-map key/value semantic while adding
-  structured contracts.
-- Separate capability class from host-derived evidence.
-- Keep addon source, selection origin, and manifest role as distinct concepts.
-- Preserve schema-1 string addon entries as paths and add tagged objects for
-  built-in names.
-- Make interactive launch explicitly three-phase, with only network discovery
-  retryable.
-- Freeze host state only after bundles, assets, and initial URL are known.
-- Stage and preflight all Fabric providers before publishing the registry.
-- Scope Fabric callbacks, events, commands, and targets to one owner and one
-  runtime generation.
-- Move community SafeArea out of the profile in one atomic cutover.
-- Retire `android-rn73` only with an evidence-backed `compat-rn73` cutover.
-- Keep source builds first-class on macOS and Linux while retaining a one-file
-  Nightly package.
-
-## Non-goals
+### Non-Goals
 
 - A second compiled React Native ABI, second Hermes VM, or version-selected
-  native engine MODULE.
-- Claiming that RN 0.87 native behavior is RN 0.73 native behavior.
-- Translating incompatible Hermes bytecode.
-- Replacing Fabric with Paper or changing Bridgeless/TurboModule runtime mode.
-- Conjuring Reanimated worklets, Screens, Gesture Handler, Expo Go, Expo Router,
-  or `expo-image` compatibility through the 0.73 adapter.
+  native engine.
+- Claiming that RN 0.87 native behavior is RN 0.73 native behavior, or
+  translating incompatible Hermes bytecode.
+- Evidence tiers, schema-2 flat-map projections, schema-1 addon strings, ABI 3
+  loading, `Engine::addAddon`, or `Engine::loadBundle`.
+- A root-owned allowlist, token/epoch event sink, or overlay-only Fabric
+  model.
+- Eight independently mergeable PRs or transitional dual-profile windows.
+- Replacing Fabric with Paper, or changing Bridgeless/TurboModule mode.
+- Conjuring Reanimated worklets, Screens, Gesture Handler, Expo Go, Expo
+  Router, or `expo-image` through `compat-rn73` or the Expo boot adapter.
 - Out-of-process sandboxing. Addons remain trusted, same-process native code.
 - A stable public C++ ABI across compilers, standard libraries, commits,
-  sanitizer modes, or Nightly builds.
-- A Nightly header/library SDK.
-- Addon-defined Skia painters in ABI 4 v1.
-- Dynamic viewport or environment updates during a session in v1.
+  sanitizer modes, or Nightly builds. Nightly ships no headers.
+- Addon-defined Skia painters (deferred).
+- Dynamic viewport, inset, color-scheme, app-state, or reduce-motion updates
+  during a v1 session (the hook exists; nothing emits it).
 - Mixing two caller-JavaScript React Native families in one VM.
+- Serving or replacing a framework module or component name from an addon
+  (wrapping a framework module is allowed).
+
+## Invariants
+
+1. `rnsim` remains the production executable and `ReactNativeSimulator::Engine`
+   remains the embedding API.
+2. One `ReactInstance`, one RuntimeScheduler, one Hermes VM per runtime
+   generation. The process never loads a second React Native C++
+   implementation or a second Hermes to match a caller bundle.
+3. Caller JavaScript is external. The repository owns no Metro, Babel,
+   TypeScript, or application-bundling pipeline.
+4. Core configure, build, test, and runtime paths stay Node.js/npm-free.
+   Optional diagnostics may use Node built-ins.
+5. Profiles own only the current pinned React Native platform contract.
+   Application, company, community, and compatibility names never enter the
+   generic framework provider. Addons may _wrap_ a framework module; they
+   never _serve_ a framework module or component name.
+6. Unknown TurboModules are unavailable. Unknown components are observable
+   fallbacks and never become available merely because a bundle asked.
+7. Every capability contract names its owner. Framework surfaces are owned by
+   `host` or a profile; everything else is owned by a named addon.
+8. Reload reuses one sealed launch plan and opens a new runtime generation. It
+   never re-plans, adds, disables, or reorders addons.
+9. Nightly is one self-contained macOS arm64 file named `rnsim`. Linux is a
+   source-build host for the same engine. Nightly ships no headers and loads
+   no externally built MODULE; extension is a source build.
+10. `.dylib` and `.so` MODULE behavior is proven by real dynamic loads on both
+    platforms, never inferred from in-process tests.
+
+## Current state (verified against the reviewed tree)
+
+Runtime and loader:
+
+- `runtime/include/react-native-simulator/SimulatorAddon.h` declares
+  `kSimulatorAddonAbiVersion = 3` (line 68) while the entry symbol is
+  `react_native_simulator_addon_v2` (line 81). Capability APIs return free-form
+  `{name, fidelity}` strings. `SimulatorAddonViewManagerConfig` (lines 34–38)
+  already exists as `{name, numericConstants, commands}` and is the ABI 3
+  ancestor of ABI 4 `AddonViewManagerConfig`.
+- `SimulatorAddonRegistry::load` (`runtime/src/core/SimulatorAddon.cpp:40–84`)
+  calls `dlopen`, then checks ABI/RN/Hermes, then `create()`. TurboModule
+  lookup (`:86–97`) is first-wins across addons. `Engine::addAddon(std::string)`
+  and `Engine::addAddon(unique_ptr)` (`Engine.h:185–186`,
+  `SimulatorEngine.cpp:1761–1776`) mutate the engine after construction.
+- `SimulatorEngine.cpp` loads addon paths (`:2000–2003`) before
+  `createRuntimeProfile` (`:2167`); runs addon `installJSI` (`:2599`) before
+  the `RN$LegacyInterop_UIManager_*` globals (`:2603`),
+  `__nativeComponentRegistry__hasComponent` (`:2684–2708`, addon names only)
+  and the Fabric binding (`:2736`); resets the Fabric host before the
+  `ReactInstance` on reload (`:3356` / `:3362`) and final teardown (`:4083` /
+  `:4091`); resets `hostEnvironment()` inside every generation (`:2111–2112`);
+  and keeps a second schema-2 serializer in `makeLiveInspectorSnapshot`
+  (`:1376–1387`). `classifyRuntimeCapability` (`:153–224`) infers class from
+  substrings such as `mock`, `descriptor-only`, `tester-stub`, `fixed-fixture`,
+  `adapter`, `headless`, and `host-`.
+- `runtime/src/modules/HeadlessRNModules.cpp` serves `RNCSafeAreaContext` for
+  every profile (`:1797–1798`) and reads `RNSIM_INITIAL_URL` with `getenv` on
+  each `getInitialURL` call (`IntentAndroid` `:1218`, `LinkingManager`
+  `:1328`). `android-rn73` differs from `android-rn87` only by
+  `PlatformConstantsAndroidRN73` (`:64–100`, `:1730–1731`, fidelity
+  `fixed-fixture`); `runtime/src/profiles/RuntimeProfile.cpp:77–83` reports it
+  as `0.73.10` / `partial-compatibility-adapter`.
+- `runtime/src/fabric/HeadlessOfficialComponents.h:56–60` lists official
+  `SafeAreaView` plus `RNCSafeAreaProvider` and `RNCSafeAreaView` in the
+  official table. `HeadlessReactFabric.cpp` registers every addon component as
+  `UnimplementedViewComponentDescriptor` (`:1463–1472`), hardcodes the
+  `topInsetsChange` emission in `emitSafeAreaInsetsIfNeeded` (`:3098–3122`),
+  and returns early from `uiManagerDidDispatchCommand` for `setNativeValue`
+  and non-TextInput nodes (`:1696–1779`). The host owns
+  `ComponentDescriptorProviderRegistry providers_`, `registry_`,
+  `uiManager_`, and `eventDispatcher_` (`:3526–3529`), and a
+  `gHeadlessUIManager` global (`:88`; getter `:3607`). Fallback names are recorded when RN requests an unknown
+  provider (`:1371–1380`) and serialized as `fallbackComponents`
+  (`SimulatorEngine.cpp:3570–3573`); `failOnComponentFallback` /
+  conformance fails if that list is non-empty (`:3810–3818`).
+- `runtime/addons/expo/ExpoAddon.cpp` `installJSI` calls `getTurboModule`
+  again to build `globalThis.expo.modules[...]` (`:491–504`). `ExpoAddon.cpp`
+  is compiled twice: into the executable (`runtime/CMakeLists.txt:411–414`)
+  and into its MODULE (`:400–405` with `RNS_EXPO_ADDON_DYLIB=1`).
+  `ExpoLinkingModule::getLinkingURL` currently returns `null` (`:160–166`)
+  and does not read the initial URL.
+- `frontend/InteractiveFrontend.cpp:1959–1967` treats every preparation
+  `std::exception` as retryable.
+
+Build, config, tools:
+
+- Root `CMakeLists.txt` has `include(CTest)` after `add_subdirectory(runtime)`
+  (`:280` / `:282`). `runtime/CMakeLists.txt` guards a company addon with
+  `if(EXISTS .../addons/shopee/...)` (`:390–395`) and has no hidden-visibility
+  setting; there is no `RNS_EXPORT` macro. macOS links with
+  `cmake/macos-engine-exported-symbols.txt` (`:442–445`); Linux uses
+  `-rdynamic` (`:448–449`).
+- `SimulatorConfig.cpp` resolves every `addons` string as a config-relative
+  path (`:145–152`). Schema version is 1 (`:82–83`); unknown fields are
+  rejected (`:25–40`).
+- `tools/diagnostics/verify-runtime.mjs` asserts
+  `nativeCapabilities.modules.NativeMicrotasksCxx === "real-headless"` and
+  `schemaVersion === 2` (`:61–73`). `verify-addons.mjs:16–17` hardcodes
+  `.dylib`. `tools/release/generate-release-manifest.sh` hardcodes
+  `addonAbi: 2` (`:43`) plus RN and Hermes version strings. 
+  `cmake/ValidateCliMetadata.cmake:39` asserts `addonAbi == 3`.
+  `package-macos.sh` copies the build-tree binary into the DMG; it does not
+  run `cmake --install`.
+- Root CMake already has `RNS_RN0732_FIXTURE_BUNDLE` (`CMakeLists.txt:38–39`),
+  `RNS_RNTESTER_BUNDLE` (`:40–41`), and `RNS_REQUIRE_RNTESTER_BUNDLE`
+  (`:42–43`).
+- Nightly signing currently includes
+  `com.apple.security.cs.disable-library-validation`
+  (`tools/release/rnsim.entitlements:9–10`).
+
+Pinned React Native facts that constrain the design (submodule
+`4bc2473f5d0233ea5384c1ef24f6a55615de2220`):
+
+- `ComponentDescriptorProviderRegistry::add` silently returns on a duplicate
+  handle (`ComponentDescriptorProviderRegistry.cpp:25–29`).
+- `ComponentDescriptorRegistry::add` asserts name/handle equality only under
+  `react_native_assert` (`ComponentDescriptorRegistry.cpp:41–46`), which
+  `#define`s to `((void)0)` when `REACT_NATIVE_DEBUG` is unset
+  (`react_native_assert.h:27–29`). Release builds strip it.
+- `ComponentDescriptorRegistry` stores
+  `const ComponentDescriptorProviderRegistry& providerRegistry_`
+  (`ComponentDescriptorRegistry.h:77`; constructor parameter `:39`; `.cpp`
+  initializers `:29–31`). The provider registry must outlive every descriptor
+  registry.
+- `componentNameByReactViewName` strips one `RCT` prefix with a three-iterator
+  `std::mismatch` (`componentNameByReactViewName.cpp:18–23`) that reads past
+  the end of one- or two-character names.
+- `EventEmitter::normalizeEventType` writes `prefixedType[0]`
+  (`EventEmitter.cpp:35`); an empty event type is undefined behavior.
+- `RootShadowNode`'s component name is `RootView`
+  (`RootShadowNode.cpp:16`, `RootComponentName`); `Root` is only the
+  simulator's retained-scene label (`HeadlessReactFabric.cpp:1367`).
+- `TurboModule::name_` is protected (`TurboModule.h:79`).
+- `ComponentDescriptorParameters` carries `eventDispatcher`, `contextContainer`,
+  and `flavor` (`ComponentDescriptor.h:153–158`); every real descriptor
+  receives them.
+- RN 0.87 `Libraries/Core/ReactNativeVersionCheck.js` (and RN 0.73.x the same
+  way) compares major/minor only and reports a mismatch with `console.error`,
+  not a throw (`:24–39`). `compat-rn73` therefore exposes JS-visible
+  `0.73.10` and satisfies any 0.73.x bundle's check.
+
+### Superseded approaches
+
+| Approach                                                                   | Why it is rejected                                                       |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Peek a MODULE name with `dlopen`/`dlsym`/`dlclose`, then load again        | Static constructors run twice; TOCTOU on the path                        |
+| Subtract explicit names from the auto set, then append explicit specs      | Reorders `expo` behind `safe-area`                                       |
+| Reuse RN's provider registry as the collision oracle                       | It silently ignores duplicate handles                                    |
+| Append addon command handlers after the current framework function         | Early returns swallow them                                               |
+| Destroy the Fabric host before the `ReactInstance`                         | Dangling `providerRegistry_` reference                                   |
+| Run addon `installJSI` before host globals                                 | Protected-global identity checks become impossible                       |
+| Evidence tiers, legacy projections, root allowlists, transitional adapters | Removed by decisions 3, 5, 6, 7                                          |
+| Token/epoch-scoped event sink with ten rejection codes                     | Removed by decision 4; RN's own emitter and state APIs are used directly |
+| Keep `android-rn73` as a thin profile                                      | Removed by decision 1: one mechanism                                     |
+| Schema-2 flat maps with dual serializers                                   | Removed by decision 5                                                    |
+| Eight staged PRs with independently mergeable intermediate states          | Removed by decision 7                                                    |
 
 ## Architecture
 
 ```text
 caller source/HBC bundle
         |
-PreparedLaunchPlan (one selected profile, ordered addons, initial bundles)
+PreparedLaunchPlan (profile, ordered addons, initial bundles, frozen host inputs)
         |
 ReactInstance + RuntimeScheduler + Hermes (always this native pin)
         |
 +-----------------------------+-------------------------------+
 | FrameworkSurfaceInventory   | CommittedAddonRegistry        |
-| host/base/profile/platform  | expo / safe-area / compat     |
-| executable factories       | rntester / in-tree MODULEs    |
+| host / profile executable   | expo / safe-area / compat-*   |
+| factories and providers     | business addons / rntester    |
 +-----------------------------+-------------------------------+
         |                                      |
         +---------------+----------------------+
                         |
-             TurboModuleBinding + UIManagerBinding
+       TurboModuleBinding (owner map + overlay wrappers)
+       UIManagerBinding  (staged provider ledger)
                         |
                  Fabric ShadowTree + Yoga
                         |
-          validated mounting transaction consumer
+      validated mounting transaction consumer -> addon mount callbacks
                         |
               typed retained scene + Skia
 ```
 
-The plan, inventory, module-owner table, component ledger, metrics contracts,
-and runtime generation all describe the same selected surface. Parallel lists
-with different ownership or availability semantics are forbidden.
-
-## Engine state and launch transaction
-
-### Closed engine state machine
-
-```cpp
-enum class EngineState {
-  Draft,
-  Planned,
-  Running,
-  Finished,
-};
+```mermaid
+flowchart TD
+  bundle[Caller source or HBC bundle]
+  plan[PreparedLaunchPlan]
+  rn["ReactInstance + RuntimeScheduler + Hermes"]
+  inv[FrameworkSurfaceInventory]
+  addons[CommittedAddonRegistry]
+  tm[TurboModuleBinding]
+  ui[UIManagerBinding]
+  fabric[Fabric ShadowTree + Yoga]
+  mount[Validated mounting consumer]
+  scene[Typed retained scene + Skia]
+  bundle --> plan --> rn
+  plan --> inv
+  plan --> addons
+  inv --> tm
+  addons --> tm
+  inv --> ui
+  addons --> ui
+  tm --> fabric
+  ui --> fabric
+  fabric --> mount --> scene
+  mount -->|committed ShadowNode clones| addons
 ```
 
-| Current state | Operation | Result |
-| --- | --- | --- |
-| `Draft` | successful `applyLaunchPlan` | `Planned` |
-| `Draft` | failed `applyLaunchPlan` | remains observably `Draft` |
-| `Planned` | `run` starts generation 1 | `Running` |
-| `Planned` | `run` fails while binding or opening generation 1 | full rollback, then `Finished` |
-| `Running` | reload | remains `Running`; generation changes |
-| `Running` | stop or fatal failure | full teardown, then `Finished` |
-| `Planned`, `Running`, or `Finished` | apply another plan | rejected |
-| `Finished` | call `run` again | rejected |
+The plan, the inventory, the module-owner map, the component ledger, the
+metrics contracts, and the runtime generation describe one selected surface.
+Parallel lists with different ownership or availability semantics are
+forbidden.
 
-Existing fine-grained runtime phases remain subordinate status. They do not add
-new ownership states to this lifecycle.
+Public headers after this delivery:
 
-### Launch data types
+| Header | Contents |
+| ------ | -------- |
+| `runtime/include/react-native-simulator/SimulatorAddon.h` | `SimulatorMode`, ABI 4 vtable, manifest, snapshot, registrar, executor, descriptor, `RNS_EXPORT` |
+| `runtime/include/react-native-simulator/Engine.h` | `Engine`, `EngineState`, `EngineConfig`, `LaunchDraft`, specs, plan types, launch errors |
+| generated `AddonApiFingerprint.h` | `kSimulatorAddonApiFingerprint` string; not shipped in Nightly |
+
+`Engine.h` includes `SimulatorAddon.h`. `SimulatorAddon.h` must not include
+`Engine.h`. `SimulatorMode` moves from `Engine.h:17–21` into
+`SimulatorAddon.h` so `AddonHostSnapshot` can mention it without a cycle.
+A third public header under `runtime/include/react-native-simulator/` is
+allowed later and changes the fingerprint (every public ABI header in that
+directory is hashed). This delivery does not add one.
+
+Nightly ships none of these headers.
+
+## Launch transaction
+
+### Engine state machine
 
 ```cpp
-enum class AddonSource {
-  BuiltIn,
-  Module,
-  InProcess,
-};
+enum class EngineState { Draft, Planned, Running, Finished };
 
-enum class AddonRequestOrigin {
-  Auto,
-  Config,
-  Cli,
-  Embedder,
-  Test,
-};
+enum class RuntimeGenerationState { Opening, Open, Quiescing, Closed };
+```
 
-struct BuiltInAddonSpec {
-  std::string catalogKey;
-};
+Existing `RuntimePhase` values (`Idle`, `Initializing`, `LoadingBundle`, …)
+remain subordinate status and add no ownership states.
 
-struct ModuleAddonSpec {
-  std::filesystem::path path;
-};
+| Current state                    | Operation                                                            | Result                                                                                                    |
+| -------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `Draft`                          | `applyLaunchPlan` with a live plan from `finalizeLaunchPlan`         | consumes the plan, becomes `Planned`; always succeeds; runs no addon code                                 |
+| `Draft`                          | `applyLaunchPlan` with a moved-from / default plan                   | `std::logic_error`; remains `Draft`; plan argument untouched                                              |
+| `Planned`                        | `run` opens generation 1                                             | `Running`                                                                                                 |
+| `Planned`                        | `run` fails during bind or generation 1                              | full rollback and teardown, then `Finished`                                                               |
+| `Running`                        | reload succeeds                                                      | remains `Running`; generation increments                                                                  |
+| `Running`                        | reload fails to open generation N+1                                  | generation N is already quiesced; full teardown, then `Finished`; the error is reported as the run result |
+| `Running`                        | stop or fatal failure                                                | full rollback and teardown, then `Finished`                                                               |
+| `Planned`, `Running`, `Finished` | apply another plan                                                   | rejected without consuming the plan                                                                       |
+| `Finished`                       | `run` again                                                          | rejected                                                                                                  |
+| `Running`                        | `~Engine`                                                            | generation teardown, then unbind/destroy/`dlclose`, then `Finished`                                       |
+| `Planned`                        | `~Engine`                                                            | destroy addons and `dlclose` only (no `quiesce` / `stopSurface` / `unbind`; bind never ran)               |
+| `Draft` or `Finished`            | `~Engine`                                                            | destruction only (no addon/`dlclose` work remains in `Finished`)                                          |
 
+### Launch types
+
+```cpp
+enum class AddonSource { BuiltIn, Module, InProcess };
+enum class AddonRequestOrigin { Auto, Config, Cli, Embedder, Test };
+enum class ProjectKind { Plain, Expo };
+enum class AddonAutoPolicy { Always, Expo, Never };
+
+struct BuiltInAddonSpec { std::string catalogKey; };
+struct ModuleAddonSpec { std::filesystem::path path; };
 struct InProcessAddonSpec {
   std::unique_ptr<class SimulatorAddon> addon;
   std::string diagnosticLabel;
 };
-
-using AddonSpec = std::variant<
-    BuiltInAddonSpec,
-    ModuleAddonSpec,
-    InProcessAddonSpec>;
+using AddonSpec =
+    std::variant<BuiltInAddonSpec, ModuleAddonSpec, InProcessAddonSpec>;
 
 struct AddonRequest {
   AddonSpec spec;
@@ -300,134 +422,216 @@ struct AddonRequest {
 
 struct AddonOrigin {
   AddonSource source;
-  std::string locator;
-  std::optional<std::string> catalogKey;
+  std::string locator;                    // catalog key, canonical path, or label
   std::vector<AddonRequestOrigin> requestedBy;
+};
+
+struct InitialBundleSpec {
+  std::string sourceUrl;                       // reported to RN as the script URL
+  std::optional<std::filesystem::path> path;   // HBC or JS on disk
+  std::optional<std::string> body;             // fetched Metro output
+};                                             // exactly one of path/body
+
+struct ResolvedBundleCompatibility {
+  std::string nativeReactNativeVersion;        // always the pin, "0.87.0"
+  std::string targetFamily;                    // "0.87.x" or "0.73.x"
+  std::string jsVisibleReactNativeVersion;     // "0.87.0" or "0.73.10"
+  std::string level;                           // see resolution matrix
+  std::optional<std::string> compatAddon;      // "compat-rn73" or nullopt
+  bool hbcTranslation{false};                  // always false in this delivery
+};
+
+class TerminalLaunchPlanError : public std::runtime_error {
+ public:
+  explicit TerminalLaunchPlanError(std::string message);
+};
+
+class RetryableNetworkError : public std::runtime_error {
+ public:
+  explicit RetryableNetworkError(std::string message);
+};
+
+class AddonContractViolation : public std::runtime_error {
+ public:
+  AddonContractViolation(std::string addon,
+                         std::string operation,
+                         std::string surface,
+                         std::uint64_t generation,
+                         std::string message);
+  const std::string& addon() const noexcept;
+  const std::string& operation() const noexcept;
+  const std::string& surface() const noexcept;
+  std::uint64_t generation() const noexcept;
 };
 
 class LaunchDraft {
  public:
   explicit LaunchDraft(EngineConfig config);
-
-  void addBuiltInAddon(
-      std::string_view catalogKey,
-      AddonRequestOrigin origin = AddonRequestOrigin::Embedder);
-  void addAddonPath(
-      const std::filesystem::path& path,
-      AddonRequestOrigin origin = AddonRequestOrigin::Embedder);
-  void addAddon(
-      std::unique_ptr<SimulatorAddon> addon,
-      std::string diagnosticLabel,
-      AddonRequestOrigin origin = AddonRequestOrigin::Embedder);
+  // Defaults after construction: ProjectKind::Plain, autoAddons == true.
+  // Every finalized plan therefore loads `safe-area` unless the caller
+  // disables it. Embedders do not opt in.
+  void setProjectKind(ProjectKind kind);      // legal until finalizeLaunchPlan
+  void addBuiltInAddon(std::string_view catalogKey,
+                       AddonRequestOrigin origin = AddonRequestOrigin::Embedder);
+  void addAddonPath(const std::filesystem::path& path,
+                    AddonRequestOrigin origin = AddonRequestOrigin::Embedder);
+  void addAddon(std::unique_ptr<SimulatorAddon> addon, std::string diagnosticLabel,
+                AddonRequestOrigin origin = AddonRequestOrigin::Embedder);
+  void disableAddon(std::string_view catalogKey);       // legal until finalize
+  void setAutoAddons(bool enabled);                     // legal until finalize
   void addBundle(InitialBundleSpec bundle);
+  void setInitialUrl(std::optional<std::string> url);   // CLI/env read once by the caller
 };
-```
 
-`AddonSource` states how implementation code entered the process.
-`AddonRequestOrigin` states why it was selected. `AddonRole` in the immutable
-manifest describes its intended product role but grants no privilege.
+// Move-only. Holds every explicit MODULE handle, constructed addon, and frozen
+// manifest. Destroying it destroys addons and releases handles in reverse order.
+class PreparedAddonCandidates;
 
-`PreparedLaunchPlan` is move-only and immutable. It owns prepared addon
-instances, MODULE handles, frozen manifests, resolved origins, the selected
-profile inventory, the sealed expected module/component ledgers, compatibility
-requests, and all initial bundle inputs needed by `run()`.
+// Move-only and immutable. Owns candidates, the selected profile inventory,
+// the sealed module-owner and component ledgers, the resolved bundle
+// compatibility, the frozen host inputs, and all initial bundles.
+class PreparedLaunchPlan;
 
-### Preparation and application
-
-```cpp
+// Non-const: moves InProcess unique_ptrs and MODULE-constructed addons into
+// candidates. After return, explicit addon-request mutation (addBuiltInAddon,
+// addAddonPath, addAddon) is observable at finalize and fails closed.
+// setProjectKind, setAutoAddons, disableAddon, addBundle, and setInitialUrl
+// remain legal until finalizeLaunchPlan.
 PreparedAddonCandidates prepareExplicitAddons(LaunchDraft& draft);
-
-PreparedLaunchPlan finalizeLaunchPlan(
-    LaunchDraft&& draft,
-    PreparedAddonCandidates&& candidates,
-    const LaunchDiscoveryResult& discovery);
+PreparedLaunchPlan finalizeLaunchPlan(LaunchDraft&& draft,
+                                      PreparedAddonCandidates&& candidates);
 
 class Engine final {
  public:
   Engine();
+  ~Engine();                                 // see destructor contract below
   EngineState state() const noexcept;
-
-  // Valid only in Draft. It moves a fully prepared plan into the engine.
-  void applyLaunchPlan(PreparedLaunchPlan&& plan);
-
-  // Valid only in Planned; returns after teardown has reached Finished.
-  EngineResult run();
+  void applyLaunchPlan(PreparedLaunchPlan&& plan);   // Draft only; runs no addon code
+  EngineResult run();                                 // Planned only; returns at Finished
 };
 ```
 
-`LaunchDraft` is the only mutable launch-input owner. `Engine` does not keep a
-second internal draft. The ABI 3 embedding calls
-`Engine::addAddon(std::string)` and `Engine::addAddon(unique_ptr)` are replaced
-by the corresponding typed `LaunchDraft` methods; the class name and production
-embedding boundary remain `ReactNativeSimulator::Engine`, but callers must seal
-a plan before running it.
+`AddonSource` states how code entered the process. `AddonRequestOrigin` states
+why it was selected. `AddonRole` in the manifest is descriptive metadata.
 
-Typical embedding is therefore:
+`LaunchDraft` is the only mutable launch-input owner; `Engine` keeps no second
+draft. Deleted with no migration path: `Engine::addAddon(std::string)`,
+`Engine::addAddon(unique_ptr)`, both `Engine::loadBundle` overloads, and
+`Engine(EngineConfig)`. `EngineConfig` moves to `LaunchDraft`. Initial bundles
+enter only through `LaunchDraft::addBundle`. The only runtime load that remains
+is `RN$Simulator.loadBundle` during an open generation: it queues work on the
+existing `ReactInstance` and does not mutate the plan or the snapshot.
+
+`LaunchDraft` defaults: `ProjectKind::Plain`, `autoAddons == true`. A
+plain embedder that never mentions addons still gets `safe-area` (decision 2).
+`tests/headless-api-modules-smoke.cpp` keeps seeing `RNCSafeAreaContext`
+without naming an addon.
+
+After `prepareExplicitAddons`, the explicit-request fingerprint (catalog keys,
+canonical MODULE paths, InProcess labels) is frozen. `addBuiltInAddon` /
+`addAddonPath` / `addAddon` after prepare fail at `finalizeLaunchPlan`.
+`setProjectKind`, `setAutoAddons`, and `disableAddon` stay legal until
+finalize, subject to the existing explicit/disabled contradiction (disabling a
+prepared explicit name is terminal). The CLI must call
+`setProjectKind(ProjectKind::Expo)` when Metro discovery finds an Expo
+project, even if cwd was `Plain` (`main.cpp` today loads Expo from the Metro
+project at `:1403–1405`).
+
+Remaining `Engine` methods and when they are legal:
+
+| Method | Legal states |
+| ------ | ------------ |
+| `setSceneUpdateCallback` / `setActionResultCallback` | `Draft`, `Planned`, `Running`; rejected in `Finished` |
+| `EngineConfig.onSceneUpdate` / `onActionResult` | sealed into the plan at `finalizeLaunchPlan`; not mutated later |
+| `enqueueAction`, `requestReload` | `Running` |
+| `runApplication` | `Running` and `ChoosingApplication` (as today) |
+| `requestStop` | `Planned`, `Running` |
+| `runtimeStatus`, `applicationLaunchState` | while `run()` is active, as today |
+| `runApplication` on a default `Engine()` before `run()` | rejected (`tests/runtime-api-smoke.cpp:460–465`) |
+
+`~Engine` performs the full generation teardown order if state is `Running`,
+then unbinds, destroys addons, and `dlclose`s. If state is `Planned`, bind has
+not run: skip generation teardown and `unbind`, but still destroy addons and
+`dlclose` MODULE handles in reverse order, then finish. `Draft` and `Finished`
+destructors have no remaining addon/`dlclose` work.
+
+Typical embedding:
 
 ```cpp
 ReactNativeSimulator::LaunchDraft draft(config);
-draft.addBuiltInAddon("expo");
+draft.setProjectKind(ProjectKind::Expo);
+draft.addBuiltInAddon("compat-rn73", AddonRequestOrigin::Config);
 draft.addAddonPath("build/runtime/rns-addon-rntester.dylib");
-draft.addBundle(bundle);
-
 auto candidates = prepareExplicitAddons(draft);
-auto plan = finalizeLaunchPlan(
-    std::move(draft), std::move(candidates), discovery);
+draft.addBundle(bundle);                        // e.g. after Metro fetch
+auto plan = finalizeLaunchPlan(std::move(draft), std::move(candidates));
 
 ReactNativeSimulator::Engine engine;
 engine.applyLaunchPlan(std::move(plan));
 engine.run();
 ```
 
-Preparation performs every fallible operation that does not require a live
-runtime generation:
+Tests that today call `Engine::addAddon(unique_ptr)` use
+`LaunchDraft::addAddon(..., AddonRequestOrigin::Test)`. Test helpers that wrap
+this sequence may live under `tests/` only; they are not a public Engine API
+and are not transitional adapters.
+
+### Preparation
+
+Preparation performs every fallible operation that needs no live runtime:
 
 - normalize CLI/config/embedder inputs and config-relative paths;
-- identify all initial bundle paths or fetched bodies;
-- resolve exact catalog names;
-- canonicalize MODULE paths and `dlopen` each explicit MODULE once;
-- validate the ABI descriptor before `create()`;
-- construct each addon and copy `manifest()` exactly once;
-- build the framework inventory for the selected profile;
-- validate names, source collisions, ownership, overlay policy, legacy
-  projections, events, commands, and view-manager references;
-- derive host-owned evidence;
-- merge auto and explicit selections deterministically; and
+- resolve exact catalog keys;
+- canonicalize MODULE paths and `dlopen` each explicit MODULE exactly once;
+- validate the ABI descriptor before `create()` (MODULE only; see InProcess);
+- construct each explicit addon and copy `manifest()` exactly once;
+- at finalize: construct auto built-ins in catalog order, copy their
+  manifests, merge with explicit selections, build the framework inventory
+  for the selected profile;
+- validate names, ownership, overlays, profiles, compatibility claims, events,
+  commands, and view-manager references;
+- resolve one `ResolvedBundleCompatibility`;
 - seal module owners and expected component/provider rows.
 
 Preparation does not create Hermes, `ReactInstance`, RuntimeScheduler, JSI,
-Fabric, a ShadowTree, or a surface. Addon construction and `manifest()` happen
-during preparation, so they must not perform activation work or external side
-effects. Activation begins at `bind()`.
+Fabric, a ShadowTree, or a surface. Addon constructors and `manifest()` must
+not perform activation work or external side effects. Activation begins at
+`bind()`.
 
-This paragraph describes the ABI 4 end state. During PR 2 and PR 3, while the
-runtime still accepts ABI 3, a transitional adapter calls each legacy
-`name`/module-capability/component-capability/view-manager getter once, copies
-those results into one frozen declaration, and never calls the getter set again.
-PR 4 replaces that adapter with the single `manifest()` call and removes ABI 3.
+`Engine::applyLaunchPlan` invokes no addon code; it only moves the plan.
+Binding happens at `run()` start after the host snapshot exists.
 
-`Engine::applyLaunchPlan` invokes no addon code. It stages the entire move and
-publishes it atomically, with the strong exception guarantee for `Engine`: on
-failure the engine remains `Draft` with no partially installed plan. Binding
-occurs at `run()` start after the final host snapshot exists.
+The host records a bind as entered before the virtual call. If `bind()` throws,
+the host calls `unbind()` on the throwing addon, then on previously bound addons
+in reverse order, copies the diagnostic while the MODULE is mapped, destroys
+plan resources, and finishes without evaluating caller JavaScript. Addons whose
+`bind()` was never entered receive no `unbind()`.
 
-The host records a bind as entered before making the virtual call. `unbind()`
-must safely roll back a partially completed bind. If `bind()` throws, the host
-calls `unbind()` first on the throwing addon and then on previously bound addons
-in reverse order, captures a host-owned copy of the original diagnostic while
-the MODULE remains mapped, destroys all plan resources, and transitions through
-full teardown to `Finished` without evaluating caller JavaScript. Addons whose
-`bind()` was never entered receive no `unbind()` call.
+### Source-specific validation
+
+| Check | `BuiltIn` | `Module` | `InProcess` |
+| ----- | --------- | -------- | ----------- |
+| `dlopen` flags / entry symbol `react_native_simulator_addon_v4` | no (same image) | `dlopen(path, RTLD_NOW \| RTLD_LOCAL)`; missing symbol → "not an ABI 4 addon"; older symbols are not probed. macOS MODULEs still link with `-undefined dynamic_lookup` | no |
+| `descriptorSize`, `abiVersion == 4`, fingerprint, RN, Hermes strings | no | required exact | no |
+| `create` / `destroy` | catalog factory; destructor of `unique_ptr` | descriptor callbacks. If `create()` throws: catch while the MODULE is mapped, copy a host-owned diagnostic (operation, path, addon name when known, exception text), destroy the caught exception by leaving the catch, invoke `destroy` if a pointer was returned, then `dlclose`. Do not store a MODULE `exception_ptr` in `TerminalLaunchPlanError`. Null `create()` is the non-throwing failure form | caller `unique_ptr`; no C `destroy`; a throwing constructor is the caller's problem before `addAddon` |
+| `manifest()` copied once; name `[a-z][a-z0-9-]*`. If `manifest()` throws: catch while mapped, copy a host-owned diagnostic, leave the catch, then `destroy`/`dlclose` | name equals catalog key | name equals descriptor name | name unique in the plan; `diagnosticLabel` is the locator, not the name |
+| collisions, overlays, `allowedProfiles`, at-most-one `bundleCompatibility` | yes | yes | yes |
+| proves `.dylib` / `.so` behavior | no | yes, on both platforms | **no** — invariant 10 |
+
+`InProcess` exists so unit tests can inject a `unique_ptr<SimulatorAddon>`
+without `dlopen`. It is not a Nightly or CLI path. A green InProcess test is
+not evidence that a MODULE would load, that hidden visibility works, or that
+RTTI crosses the dynamic boundary.
 
 ### Single-open MODULE lifecycle
 
 ```text
 ParsedRequest
-  -> PreparedCandidate       MODULE dlopen once; RAII handle retained
-  -> FrozenManifest          create once; manifest copied once
-  -> ValidatedPlan           all names and policy checked
+  -> PreparedCandidate       dlopen(path, RTLD_NOW | RTLD_LOCAL) once; RAII handle retained
+  -> FrozenManifest          create() once; manifest() copied once
+  -> ValidatedPlan           names and policy checked
   -> PlannedEngine           ownership moved atomically
-  -> BoundSession            frozen AddonHostSnapshot available
+  -> BoundSession            frozen AddonHostSnapshot readable
   -> RuntimeGeneration N     per-generation JSI/Fabric state
   -> QuiescedGeneration N
   -> RuntimeGeneration N+1
@@ -436,198 +640,203 @@ ParsedRequest
   -> dlclose MODULE
 ```
 
-No `peekModuleAddonName` operation exists. Collision failure is guaranteed
-before bind, Fabric registration, addon JSI, or caller JavaScript, but not before
-`dlopen`, static constructors, `create()`, or `manifest()`.
+```mermaid
+sequenceDiagram
+  participant CLI
+  participant Draft as LaunchDraft
+  participant Cand as PreparedAddonCandidates
+  participant Plan as PreparedLaunchPlan
+  participant Engine
+  participant Gen as RuntimeGeneration
+  CLI->>Draft: profile, addon requests (ProjectKind defaults Plain)
+  CLI->>Cand: prepareExplicitAddons (dlopen once)
+  CLI->>Draft: Metro fetch, addBundle, setInitialUrl
+  CLI->>Draft: setProjectKind Expo if Metro project is Expo
+  CLI->>Plan: finalizeLaunchPlan
+  CLI->>Engine: applyLaunchPlan
+  Engine->>Engine: run builds snapshot, bind
+  Engine->>Gen: configureFabric, preflight, installJSI
+  Engine->>Gen: evaluate caller bundles
+  Engine->>Gen: quiesce, stopSurface, instance.reset, fabricHost.reset
+  Engine->>Engine: unbind, destroy, dlclose
+```
 
-## CLI, configuration, and deterministic selection
+Collision failure is guaranteed before bind, Fabric registration, addon JSI,
+and caller JavaScript — not before `dlopen`, static constructors, `create()`, or
+`manifest()`.
 
-### CLI token classification
+## CLI, configuration, selection
 
-| Token form | Interpretation |
-| --- | --- |
-| Exact compiled catalog key, for example `expo` | `BuiltInAddonSpec` |
-| Contains `/`, starts with `.` or `..`, or has `.so`/`.dylib` suffix | `ModuleAddonSpec` |
-| Any other bare token | terminal `unknown addon name` error |
+### CLI
 
-A bare unknown token is never passed to `dlopen` as an accidental relative
-path. A path whose descriptor name happens to match a catalog key remains a
-MODULE source with `AddonDeclared` evidence.
+| Token form                                                                           | Interpretation                      |
+| ------------------------------------------------------------------------------------ | ----------------------------------- |
+| Exact catalog key (`expo`, `safe-area`, `compat-rn73`, any discovered `BUILTIN` key) | `BuiltInAddonSpec`                  |
+| Contains `/`, starts with `.` or `..`, or ends in `.so`/`.dylib`                     | `ModuleAddonSpec`                   |
+| Any other bare token                                                                 | terminal `unknown addon name` error |
 
-CLI selection controls are:
+`rntester` is MODULE-only and is **not** a catalog key. `--addon rntester`
+without a path is `unknown addon name`. Callers pass
+`--addon path/to/rns-addon-rntester.dylib` (or `.so`).
 
-| Flag | Meaning |
-| --- | --- |
-| `--addon NAME_OR_PATH` | Append one explicit typed request |
-| `--no-addon NAME` | Remove one known catalog name from auto selection |
-| `--no-auto-addons` | Disable every automatic slot |
+| Flag                     | Meaning                                     |
+| ------------------------ | ------------------------------------------- |
+| `--addon NAME_OR_PATH`   | append one explicit typed request           |
+| `--no-addon NAME`        | remove one catalog key from auto selection  |
+| `--no-auto-addons`       | disable every automatic slot                |
+| `--list-addons [--json]` | print the compiled catalog with auto policy |
+| `--initial-url URL`      | freeze `LaunchDraft::setInitialUrl`; overrides `RNSIM_INITIAL_URL` |
 
-`--no-addon` accepts only a known catalog key. Repeating the same disable in
-config and/or CLI is idempotent set-union. An unknown disabled name is terminal,
-and an explicit request for a disabled name remains a contradiction.
+A bare unknown token never reaches `dlopen`. `--no-addon` accepts only catalog
+keys; repeating a disable is idempotent set union; an unknown disabled name is
+terminal; an explicit request for a disabled name is a terminal contradiction.
 
-### `rnsim.json` schema 1
+The CLI reads `RNSIM_INITIAL_URL` once at option-parse time. `--initial-url`
+overrides it. Neither is read again from the environment. Expo detection stays
+in the CLI (`main.cpp`, `detectExpoProject`). The engine never inspects cwd,
+`package.json`, Metro, or bundle URLs; it receives `ProjectKind`. The CLI
+sets `ProjectKind::Expo` when either the launch cwd or a later Metro-discovered
+project is Expo, and it does so before `finalizeLaunchPlan` even if
+`prepareExplicitAddons` already ran.
 
-Schema version remains 1. Existing strings preserve their current path-only
-meaning. Names use tagged objects:
+`--list-addons --json` prints the generated catalog, not discovered MODULE
+files:
 
 ```json
 {
-  "schemaVersion": 1,
-  "reactNative": "0.87.0",
-  "platform": "android",
-  "addons": [
-    {"name": "compat-rn73"},
-    {"path": "../local-addons/rns-addon-company.so"},
-    "../legacy-addon-path/rns-addon-rntester.so"
-  ],
-  "disabledAddons": ["expo"],
-  "autoAddons": true
+    "addonAbi": 4,
+    "reactNative": "0.87.0",
+    "hermes": "260318099.0.1",
+    "addons": [
+        { "name": "expo", "auto": "expo", "builtin": true },
+        { "name": "safe-area", "auto": "always", "builtin": true },
+        { "name": "compat-rn73", "auto": "never", "builtin": true }
+    ]
 }
 ```
 
-- String and `{ "path": ... }` entries resolve relative to the config file.
-- `{ "name": ... }` is an exact built-in catalog key and is not path-resolved.
-- `disabledAddons` contains catalog names and controls planner-owned auto
-  selection.
-- `autoAddons` defaults to `true`.
-- Unknown fields and malformed tagged objects fail closed.
-- An explicit request intersecting `disabledAddons` is a terminal
-  contradiction.
-- CLI `--addon` entries append after config explicit order. CLI
-  `--no-addon` values union with config disables, and `--no-auto-addons`
-  overrides `autoAddons: true`, after config merge.
+Nightly's packaged catalog is exactly those three rows. A source build that
+declares additional `BUILTIN` addons lists them after the upstream trio.
 
-`disableAddon` is deliberately absent from `Engine`: disabling is selection
-policy, not a runtime mutation.
+### `rnsim.json` schema 2
 
-### Deterministic auto/explicit merge
+```json
+{
+    "schemaVersion": 2,
+    "reactNative": "0.87.0",
+    "platform": "android",
+    "addons": [{ "name": "compat-rn73" }, { "path": "../local-addons/rns-addon-company.so" }],
+    "disabledAddons": ["expo"],
+    "autoAddons": true
+}
+```
 
-Expo detection remains caller-owned. The engine does not inspect cwd, Metro,
-package files, or bundle URLs. The catalog auto order is `expo`, then
-`safe-area` after that addon exists. `compat-rn73` is never automatic.
+Allowed top-level keys: `schemaVersion`, `reactNative`, `platform`, `appKey`,
+`initialProps`, `bundle`, `viewport`, `fonts`, `environment`, `addons`,
+`disabledAddons`, `autoAddons`. Unknown fields and malformed entries fail
+closed, as today.
 
-The planner performs this exact algorithm:
+- `{ "name": ... }` is an exact catalog key and is never interpreted as a
+  MODULE path, even if the string contains `/` or ends in `.so` / `.dylib`.
+  `{ "path": ... }` resolves relative to the config file. An object must
+  contain exactly one of `name` or `path` and no other keys. Bare strings
+  are rejected.
+- `schemaVersion: 1` fails with a one-line upgrade message
+  (`rnsim.json schemaVersion 1 is no longer accepted; use schemaVersion 2 with tagged addons entries`).
+- CLI `--addon` entries append after config order; CLI disables union with
+  config disables; `--no-auto-addons` overrides `autoAddons: true`.
 
-1. Resolve each explicit MODULE to a stable file identity. Reject a repeated
-   canonical path, symlink target, or platform file ID before a second
-   `dlopen`.
-2. Prepare every remaining explicit MODULE exactly once and freeze every
-   explicit name.
+### Deterministic merge
+
+Each built-in declares an auto policy in its CMake declaration:
+`always`, `expo`, or `never`. Catalog order:
+
+1. Upstream in-tree keys in this exact order when present: `expo`,
+   `safe-area`, `compat-rn73`.
+2. Remaining `runtime/addons/<name>/` keys in lexicographic order.
+3. Each `RNS_ADDON_DIRS` directory in cache-list order, keys lexicographic
+   within a directory.
+
+Duplicate keys fail configure.
+
+Merge:
+
+1. Resolve each explicit MODULE to a stable file identity; reject a repeated
+   canonical path or inode before any second `dlopen`.
+2. Prepare every explicit MODULE once and freeze every explicit name.
 3. Reject duplicate explicit names, including built-in/MODULE collisions.
-4. Create auto slots in catalog order for the detected project type.
-5. If one explicit request has the same name as an auto slot, that explicit
+4. Create auto slots in catalog order: `always` policies for every project,
+   `expo` policies only for `ProjectKind::Expo`, never for `never`.
+5. If an explicit request has the same name as an auto slot, that explicit
    implementation occupies the slot and records both origins.
 6. Append remaining explicit requests in caller order.
 7. Drop disabled auto-only slots; reject every explicit/disabled intersection.
-8. Apply a stable topological dependency sort if dependencies are introduced in
-   a future ABI. ABI 4 v1 declares no dependencies.
+8. Reserved: stable topological sort if addon dependencies are ever declared.
+   ABI 4 declares none.
 
-Thus an Expo cwd plus explicit `--addon expo` keeps `expo` first and loads it
-once. An explicit MODULE whose manifest is `expo` may occupy the `expo` auto
-slot, but it remains a MODULE and never gains built-in evidence.
+Thus a plain project gets `[safe-area]`, an Expo project gets
+`[expo, safe-area]`, and `--addon compat-rn73` appends after both.
 
 ### Interactive and headless launch
 
-Interactive startup has three explicit phases:
-
 ```text
-1. prepare explicit addon candidates once
-2. fetch/probe every Metro input without mutating Engine
-3. finalize the complete plan and apply it once
+1. prepare explicit addon candidates once          (errors terminal)
+2. fetch/probe Metro inputs without touching Engine (only retryable phase)
+   if Metro discovery finds Expo, draft.setProjectKind(ProjectKind::Expo)
+3. add bundles to the draft, finalize, apply once, run
 ```
 
-Only phase 2 is retryable:
+| Failure                                                                                                 | Class                     | Retry |
+| ------------------------------------------------------------------------------------------------------- | ------------------------- | ----- |
+| Metro unavailable, HTTP failure, cancelled wait                                                         | `RetryableNetworkError`   | yes   |
+| Unknown token, ABI/fingerprint mismatch, duplicate, disabled contradiction, invalid manifest, collision | `TerminalLaunchPlanError` | no    |
 
-| Failure | Error class | Retry |
-| --- | --- | --- |
-| Metro unavailable, HTTP failure, cancelled wait | `RetryableNetworkError` | yes |
-| Unknown token, ABI/fingerprint mismatch, duplicate, disabled contradiction, invalid manifest, collision | `TerminalLaunchPlanError` | no |
-
-An interactive retry reuses the already prepared explicit candidates and their
-open MODULE handles. It does not call `dlopen`, `create()`, `manifest()`, or
-`applyLaunchPlan()` again. Headless fetches Metro first, finalizes one plan,
-applies it once, and calls `run()`.
-
-Reload never runs selection or preparation again.
+A retry reuses the prepared candidates and their open handles; it never calls
+`dlopen`, `create()`, `manifest()`, or `applyLaunchPlan()` again. Auto built-ins
+are constructed in step 3, once, after Metro succeeds.
+`InteractiveFrontend.cpp` stops treating every `std::exception` as retryable;
+only `RetryableNetworkError` from step 2 re-enters the wait loop. Failures from
+`finalizeLaunchPlan`, `applyLaunchPlan`, or `run` are terminal for that
+window session.
 
 ## Framework surface inventory
 
-### Executable single source of truth
-
-The framework inventory is not a metadata-only reserved-name list. Every
-available framework module or component carries its executable binding:
-
 ```cpp
 enum class RuntimeCapabilityClass {
-  Implemented,
-  HostAdapted,
-  Mocked,
-  LayoutOnly,
-  Unavailable,
+  Implemented, HostAdapted, Mocked, LayoutOnly, Unavailable
 };
 
-enum class CapabilityEvidence {
-  EngineVerified,
-  InTreeVerified,
-  AddonDeclared,
-};
-
-struct LegacyMetricProjection {
-  std::string metricsName;
-  std::string fidelity;
-};
+enum class AddonComponentKind { DescriptorOnlyMock, FabricDescriptor };
 
 struct RuntimeProfileDescriptor {
-  std::string name;
+  std::string name;                      // "android-rn87"
   std::string platform;
-  std::string nativeReactNativeVersion;
-  std::string compatibilityLevel;
-};
-
-struct ResolvedBundleCompatibility {
-  std::string nativeReactNativeVersion;
-  std::string targetFamily;
-  std::string jsVisibleReactNativeVersion;
-  std::string level;
-  std::optional<std::string> compatAddon;
-  bool hbcTranslation;
+  std::string nativeReactNativeVersion;  // always the pin
+  std::string compatibilityLevel;        // native-headless or native-headless-platform-adapter
 };
 
 struct ModuleContract {
   std::string name;
   RuntimeCapabilityClass classification;
-  std::string owner;
-  CapabilityEvidence evidence;
+  std::string owner;                     // "host" | profile name | "addon:<name>"
   std::string note;
-  std::vector<LegacyMetricProjection> legacyMetrics;
 };
 
 struct ComponentContract {
-  std::string name;
+  std::string name;                      // canonical RN provider name
   RuntimeCapabilityClass classification;
   std::string owner;
-  CapabilityEvidence evidence;
   AddonComponentKind kind;
   std::string note;
-  std::vector<LegacyMetricProjection> legacyMetrics;
 };
 
-struct FrameworkModuleEntry {
-  ModuleContract contract;
-  TurboModuleFactory factory;
-};
+using TurboModuleFactory = std::function<std::shared_ptr<facebook::react::TurboModule>(
+    facebook::jsi::Runtime&, const std::shared_ptr<facebook::react::CallInvoker>&)>;
 
+struct FrameworkModuleEntry { ModuleContract contract; TurboModuleFactory factory; };
 struct FrameworkComponentEntry {
   ComponentContract contract;
   facebook::react::ComponentDescriptorProvider provider;
-};
-
-struct FrameworkComponentRequest {
-  // Raw name presented by React Native/JS before RN normalization.
-  std::string requestedName;
-  // Expected canonical provider after exactly one normalization pass.
-  std::string canonicalProviderName;
 };
 
 struct FrameworkSurfaceInventory {
@@ -637,183 +846,188 @@ struct FrameworkSurfaceInventory {
   std::vector<FrameworkComponentEntry> baseComponents;
   std::vector<FrameworkComponentEntry> officialComponents;
   std::vector<FrameworkComponentEntry> platformComponents;
-  std::vector<FrameworkComponentRequest> componentRequests;
+};
+
+struct ModuleOwnerRow {
+  std::string name;
+  std::string owner;                     // "host" | profile name | "addon:<name>"
+  std::optional<std::string> overlayOwner; // "addon:<name>"; wrapping does not change owner
+};
+
+struct ComponentLedgerRow {
+  std::string requestedName;
+  std::string normalizedName;            // after componentNameByReactViewName
+  std::string canonicalName;             // RN provider name
+  facebook::react::ComponentHandle handle;
+  std::string owner;
+  AddonComponentKind kind;
+  ComponentContract contract;
+  std::uint64_t generation{0};
 };
 ```
 
-`PreparedLaunchPlan` seals exactly one `ResolvedBundleCompatibility` after the
-profile and any allowed compatibility request are resolved. The host snapshot,
-TurboModule wrapper, doctor output, final metrics, and live Inspector all read
-that record. The profile descriptor never changes its native RN identity to
-represent an older caller bundle.
+The inventory is executable: a null factory or provider makes it invalid. It is
+built during preparation from the selected profile and `EngineConfig`, and it
+is the only source for reserved-name validation, the O(1) TurboModule owner
+map, framework provider staging, `hasComponent`, metrics, chrome, and the
+isolation checks. `getHeadlessTurboModule` string branches, capability arrays,
+provider arrays, and metrics tables no longer keep independent lists; helper
+functions may implement factories, but routing rows originate here.
 
-Every framework factory, provider name, classification, legacy projection, and
-owner is declared once. A null factory/provider makes the inventory invalid.
-The same inventory feeds:
+Component contracts use React Native's canonical provider names. The root row
+is `RootView` (RN `RootComponentName`); `Root` is the retained-scene label and
+appears nowhere in Fabric or metrics names.
 
-- reserved-name validation;
-- the O(1) TurboModule owner map;
-- framework provider staging;
-- the `hasComponent` availability ledger;
-- final and live metrics;
-- interactive capability chrome; and
-- isolation checks.
+Classification for framework rows is declared explicitly per row.
+`classifyRuntimeCapability` and every fidelity substring are deleted.
 
-String branches in module lookup, capability arrays, provider arrays, and
-metrics initializer tables must not retain independent ownership lists. Helper
-functions may implement factories, but their routing rows originate in the
-inventory.
+`PreparedLaunchPlan` seals exactly one `ResolvedBundleCompatibility`. The host
+snapshot, PlatformConstants wrapper, doctor, stderr, final metrics, and live
+Inspector all read that record. `RuntimeProfileDescriptor` always keeps the
+native pin and is never a second compatibility source.
 
-### Legacy projection is per surface
+Wrapping does not change the served-name owner. `PlatformConstants` remains a
+profile/host inventory row (`owner` = profile name). `moduleOverlays` records
+that `addon:compat-rn73` wraps it. Metrics emit both the module row and the
+overlay row. Addons never appear as `owner` of a framework module name.
 
-Schema-2 fidelity strings are not derivable from the closed enum. Each surface
-has explicit zero-or-more `LegacyMetricProjection` values. This preserves
-historic aliases and values byte-for-byte while allowing a canonical contract.
+JSON spellings used by metrics, chrome, and `--list-addons`:
 
-For example, the canonical root provider is `Root`, while the existing flat
-component map uses `RootView`:
-
-```cpp
-FrameworkComponentEntry{
-    .contract = {
-        .name = "Root",
-        .classification = RuntimeCapabilityClass::Implemented,
-        .owner = "host",
-        .evidence = CapabilityEvidence::EngineVerified,
-        .legacyMetrics = {{"RootView", "real-fabric-root"}},
-    },
-    .provider = rootComponentDescriptorProvider,
-};
-```
-
-`RootView` is a serialization alias only. It does not register another
-provider, add another handle, or make `hasComponent("RootView")` true unless a
-separate host-owned request alias is deliberately defined.
-
-Two final surfaces projecting the same flat-map key are a planning error. ABI 3
-addons use a temporary exact migration table during PR 3; PR 4 deletes that
-table with ABI 3 loading.
-
-### Capability evidence
-
-Evidence is computed by the engine and cannot be supplied by a manifest:
-
-| Resolved surface | Evidence |
-| --- | --- |
-| Host/profile executable inventory entry | `EngineVerified` |
-| Built-in resolved through the compiled catalog and matching catalog policy | `InTreeVerified` |
-| Path MODULE | `AddonDeclared` |
-| In-process addon | `AddonDeclared` |
-
-Evidence and class are orthogonal. A built-in descriptor-only component may be
-`LayoutOnly` with `InTreeVerified` evidence. A path MODULE may declare an
-`Implemented` class, but its evidence remains `AddonDeclared`, and chrome must
-not present it as simulator-certified. A path under the source tree, a matching
-name, a signature, an ABI fingerprint, or `AddonRole::VersionCompat` cannot
-elevate evidence.
-
-Actual execution observations and route counters remain separate from both
-class and evidence.
-
-A catalog may mark a built-in `Implemented` or `HostAdapted` only when the
-catalog policy names its required routing test and that gate is mandatory for
-the introducing PR. `InTreeVerified` means the implementation and claimed
-boundary are maintained and tested in this tree; it still does not assert that
-the route executed in a particular run. Per-run counters provide that separate
-observation.
+| C++ | JSON |
+| --- | ---- |
+| `RuntimeCapabilityClass::Implemented` | `"implemented"` |
+| `RuntimeCapabilityClass::HostAdapted` | `"host-adapted"` |
+| `RuntimeCapabilityClass::Mocked` | `"mocked"` |
+| `RuntimeCapabilityClass::LayoutOnly` | `"layout-only"` |
+| `RuntimeCapabilityClass::Unavailable` | `"unavailable"` |
+| `AddonComponentKind::DescriptorOnlyMock` | `"descriptor-only-mock"` |
+| `AddonComponentKind::FabricDescriptor` | `"fabric-descriptor"` |
+| `AddonSource::BuiltIn` | `"built-in"` |
+| `AddonSource::Module` | `"module"` |
+| `AddonSource::InProcess` | `"in-process"` |
+| `AddonRequestOrigin::Auto` | `"auto"` |
+| `AddonRequestOrigin::Config` | `"config"` |
+| `AddonRequestOrigin::Cli` | `"cli"` |
+| `AddonRequestOrigin::Embedder` | `"embedder"` |
+| `AddonRequestOrigin::Test` | `"test"` |
+| `AddonAutoPolicy::Always` | `"always"` |
+| `AddonAutoPolicy::Expo` | `"expo"` |
+| `AddonAutoPolicy::Never` | `"never"` |
+| `AddonRole::Application` | `"application"` |
+| `AddonRole::Community` | `"community"` |
+| `AddonRole::VersionCompat` | `"version-compat"` |
+| `SimulatorMode::Headless` | `"headless"` |
+| `SimulatorMode::Interactive` | `"interactive"` |
+| `SimulatorMode::Conformance` | `"conformance"` |
+| `AddonMountKind::Mounted` | `"mounted"` |
+| `AddonMountKind::Updated` | `"updated"` |
+| `AddonMountKind::Unmounted` | `"unmounted"` |
 
 ## ABI 4 addon contract
 
-### Immutable manifest
+### Manifest
 
 ```cpp
-enum class AddonRole {
-  Application,
-  Community,
-  VersionCompat,
-};
-
-enum class AddonComponentKind {
-  DescriptorOnlyMock,
-  FabricDescriptor,
-};
-
-enum class ModuleOverlayKind {
-  PlatformConstantsReactNativeVersion,
-};
+enum class AddonRole { Application, Community, VersionCompat };   // descriptive
 
 struct AddonModuleDeclaration {
   std::string name;
   RuntimeCapabilityClass classification;
-  std::vector<LegacyMetricProjection> legacyMetrics;
   std::string note;
 };
 
 struct AddonModuleOverlayDeclaration {
-  std::string moduleName;
-  ModuleOverlayKind kind;
-  std::string targetFamily;
-};
-
-struct AddonComponentDeclaration {
-  std::string name;
-  RuntimeCapabilityClass classification;
-  AddonComponentKind kind;
-  std::vector<std::string> events;
-  std::vector<std::string> fabricCommands;
-  std::vector<LegacyMetricProjection> legacyMetrics;
+  std::string moduleName;          // framework module the addon wraps
   std::string note;
 };
 
-struct AddonManifest {
+struct AddonComponentDeclaration {
+  std::string name;                // canonical fixed point (see Fabric section)
+  RuntimeCapabilityClass classification;
+  AddonComponentKind kind;
+  std::vector<std::string> events;         // informational; drives metrics/chrome
+  std::vector<std::string> commands;       // Fabric commands, routed exactly
+  std::string note;
+};
+
+struct AddonNumericConstant {
   std::string name;
+  double value{0};
+};
+
+struct AddonCommand {
+  std::string name;
+  std::int32_t id{0};                      // legacy UIManager numeric id
+};
+
+// Legacy Paper interop constants. Distinct from AddonComponentDeclaration.commands,
+// which are Fabric command names. A config may exist for a DescriptorOnlyMock.
+struct AddonViewManagerConfig {
+  std::string name;                        // must equal a component of this addon
+  std::vector<AddonNumericConstant> numericConstants;
+  std::vector<AddonCommand> commands;
+};
+
+struct AddonBundleCompatibilityClaim {
+  std::string targetFamily;                // "0.73.x"
+  std::string jsVisibleReactNativeVersion; // "0.73.10"
+  std::string level;                       // "best-effort-source-js"
+};
+
+struct AddonManifest {
+  std::string name;                        // [a-z][a-z0-9-]*
   std::string addonVersion;
   AddonRole role;
+  std::vector<std::string> allowedProfiles;              // empty = all
   std::vector<AddonModuleDeclaration> modules;
   std::vector<AddonModuleOverlayDeclaration> moduleOverlays;
   std::vector<AddonComponentDeclaration> components;
-  std::vector<SimulatorAddonViewManagerConfig> legacyViewManagerConfigs;
+  std::vector<AddonViewManagerConfig> viewManagerConfigs; // legacy interop constants
+  std::optional<AddonBundleCompatibilityClaim> bundleCompatibility;
 };
 ```
 
-The host calls `manifest()` once and copies the result. The copy is the only
-manifest consulted by planning, routing, generation setup, metrics, and chrome.
-`legacyMetrics` exists solely to preserve schema-2 flat maps. It can explicitly
-rename a legacy key or be empty to omit the surface from a flat map; it does not
-influence class, evidence, availability, or certification.
+The host calls `manifest()` once and copies it; the copy is the only manifest
+consulted anywhere.
 
-Manifest validation is fail-closed:
+Validation is fail-closed:
 
-1. The addon name is non-empty, matches `[a-z][a-z0-9-]*`, and equals the ABI
-   descriptor name for a MODULE.
-2. Module names, component names, events, commands, legacy command names, and
-   numeric constant names are non-empty and unique in their applicable scope;
-   legacy command IDs are unique in their numeric scope.
+1. `name` is non-empty, matches `[a-z][a-z0-9-]*`, and equals the descriptor
+   name for a MODULE and the catalog key for a built-in. InProcess names must
+   still match the regex and be unique in the plan.
+2. Module, overlay, component, event, command, and view-manager names are
+   unique within their scope; legacy command IDs are unique numerically inside
+   one `AddonViewManagerConfig`. Numeric-constant names are unique inside one
+   config. Empty names are rejected.
 3. A served module cannot also be an overlay target in the same addon.
-4. `Unavailable` cannot describe a served manifest surface.
-5. A descriptor-only component is `LayoutOnly` or `Mocked` and must not provide
-   a real provider.
-6. Every real component must provide exactly one provider in every generation.
-7. Every view-manager config references a component owned by that addon.
-8. Non-compat addons cannot request an overlay.
-9. `VersionCompat` role is accepted only for the exact built-in catalog source
-   authorized by engine policy; a MODULE or in-process addon cannot self-assign
-   that role. At most one compat policy may be active for the engine.
-10. Application/community modules and all addon components are disjoint from
-    framework-owned names.
-11. Overlay requests are accepted only when an engine-owned catalog policy
-    grants that exact built-in addon, profile, module, overlay kind, and target
-    family.
-12. Every legacy projection has a non-empty name and fidelity, and no two final
-    surfaces project to the same key in the same flat map.
+4. `Unavailable` cannot describe a served surface.
+5. `DescriptorOnlyMock` components are `LayoutOnly` or `Mocked` and must not
+   register a provider; `FabricDescriptor` components must register exactly one
+   provider in every generation.
+6. Every view-manager config references a component of that addon.
+7. Served modules and all components are disjoint from framework-owned names.
+   Overlay targets must be framework-owned modules available on the selected
+   profile.
+8. Across the plan: addon names, served module names, component names, and
+   overlay targets are unique; at most one addon carries
+   `bundleCompatibility`.
+9. If `allowedProfiles` is non-empty, the selected profile must be listed;
+   otherwise planning fails before bind.
 
-Self-reported `AddonRole` is descriptive. It never grants reserved-name or
-overlay privilege.
+`AddonRole` grants no privilege. A MODULE named `compat-rn73` is an ordinary
+addon: it may declare `bundleCompatibility` like any other addon, and the
+engine grants nothing by name. At most one such claim is active per plan.
 
-### Complete virtual interface
+### Virtual interface
 
 ```cpp
 class AddonFabricRegistrar;
+class AddonRuntimeExecutor;
+
+struct AddonGenerationContext {
+  std::uint64_t generation;
+  AddonRuntimeExecutor executor;   // generation-bound; see Fabric section
+};
 
 class SimulatorAddon {
  public:
@@ -821,76 +1035,121 @@ class SimulatorAddon {
 
   virtual AddonManifest manifest() const = 0;
 
-  // Entered at most once per run session, before generation 1. If it throws,
-  // unbind() is still called on this addon to roll back partial activation.
+  // Once per run session before generation 1. If it throws, unbind() still runs.
   virtual void bind(const AddonHost& host) = 0;
 
-  // Runtime thread; only the final owner is called for an owned module.
+  // Exactly once after an entered bind, after all generations are closed.
+  virtual void unbind() noexcept = 0;
+
+  // Runtime thread; only the final owner is asked for an owned module.
   virtual std::shared_ptr<facebook::react::TurboModule> getTurboModule(
+      const AddonGenerationContext& context,
       facebook::jsi::Runtime& runtime,
       const std::string& moduleName,
       const std::shared_ptr<facebook::react::CallInvoker>& jsInvoker) = 0;
 
-  // At most once for an opened generation. The host stops the configure pass
-  // at the first failure.
-  virtual void configureFabric(AddonFabricRegistrar& registrar) = 0;
-
-  // At most once per generation, only after every addon configured and the
-  // complete provider ledger passed preflight.
-  virtual void installJSI(
+  // Runtime thread; called iff this addon declared an overlay for moduleName.
+  // See wrapTurboModule contract below.
+  virtual std::shared_ptr<facebook::react::TurboModule> wrapTurboModule(
+      const AddonGenerationContext& context,
       facebook::jsi::Runtime& runtime,
+      const std::string& moduleName,
+      std::shared_ptr<facebook::react::TurboModule> framework,
       const std::shared_ptr<facebook::react::CallInvoker>& jsInvoker) = 0;
 
-  // Mandatory for every opened generation, even when setup failed partway.
-  virtual void quiesceGeneration(std::uint64_t generation) noexcept = 0;
+  // Successful generation: exactly once, in plan order.
+  // Failed generation: only the reached prefix; see generation lifecycle.
+  virtual void configureFabric(const AddonGenerationContext& context,
+                               AddonFabricRegistrar& registrar) = 0;
 
-  // Exactly once after an entered bind, including a bind that threw, and only
-  // after all opened generations are closed. Must tolerate partial bind state.
-  virtual void unbind() noexcept = 0;
+  // Successful generation: exactly once after every configure and preflight.
+  // Failed generation: only if this addon's configure ran and preflight passed.
+  virtual void installJSI(const AddonGenerationContext& context,
+                          facebook::jsi::Runtime& runtime,
+                          const std::shared_ptr<facebook::react::CallInvoker>& jsInvoker) = 0;
+
+  // Reserved for dynamic viewport/environment. Never called in v1.
+  virtual void hostSnapshotChanged(const AddonHostSnapshot& snapshot) = 0;
+
+  // Exactly once per opened generation, including generations that failed setup.
+  virtual void quiesceGeneration(std::uint64_t generation) noexcept = 0;
 };
 ```
 
-All slots are part of ABI 4, including no-op lifecycle implementations. An
-addon may not omit a slot by relying on a future base-class default.
+All slots are part of ABI 4. There are **no default implementations**. An
+addon implements every method. Empty bodies are allowed where the host will
+not call the method, or where the documented no-op is correct:
 
-`create`, `manifest`, `bind`, `getTurboModule`, `configureFabric`, and
-`installJSI` may throw. The host catches each boundary while all implementing
-code is still mapped and records addon, operation, surface, and generation.
-Destructors, `quiesceGeneration`, `unbind`, `destroy`, and the descriptor
-accessor are non-throwing. A violation of a non-throwing boundary is fatal
-process corruption, not a recoverable addon diagnostic.
+| Method | Required no-op when unused | Host call rule |
+| ------ | -------------------------- | -------------- |
+| `bind` / `unbind` | empty body | always, once per entered bind |
+| `getTurboModule` | `return nullptr;` | only for names this addon owns; null then is `AddonContractViolation` |
+| `wrapTurboModule` | `return framework;` (identity) | only for declared overlay targets; null is `AddonContractViolation` |
+| `configureFabric` | empty body | successful generation: every bound addon once; failed: reached prefix only. `DescriptorOnlyMock` providers are registered by the host from the manifest |
+| `installJSI` | empty body | successful generation: every bound addon once after preflight; failed: only addons whose configure ran and only if preflight passed |
+| `hostSnapshotChanged` | empty body | **never in v1** |
+| `quiesceGeneration` | empty body | every opened generation, including failed ones |
 
-`CallInvoker` is generation-local and appears only in runtime-thread methods.
-It is never part of `AddonHost` and must not be cached across reload.
+A future base-class default would be an in-tree ABI bump. Tests may call
+`wrapTurboModule` on an addon with empty `moduleOverlays` and assert identity
+(`returned.get() == framework.get()`).
 
-A generation becomes `Opening` immediately before the first addon
-`configureFabric` call. Configure runs in plan order and stops at the first
-failure. Only after every configure call and mandatory provider preflight
-succeed does `installJSI` run in plan order; that pass also stops at the first
-failure. The generation becomes `Open` only after all install calls and
-protected-global verification succeed. Therefore configure/install are each
-**at most once** per addon per opened generation. Every bound addon receives
-exactly one `quiesceGeneration(generation)`, including addons whose configure or
-install hook was never reached. Successful generations assert one configure and
-one install call for every addon; failed generations assert the attempted
-prefix and one quiesce call for every bound addon.
+`create`, `manifest`, `bind`, `getTurboModule`, `wrapTurboModule`,
+`configureFabric`, and `installJSI` may throw; the host catches at each
+boundary while the MODULE is mapped and records addon, operation, surface, and
+generation. For `getTurboModule` / `wrapTurboModule` that boundary is the host
+`moduleProvider` (return `nullptr`, set `pendingAddonFatal`); it must not
+propagate through `TurboModuleBinding`. Destructors, `quiesceGeneration`,
+`unbind`, `destroy`, and the descriptor accessor are non-throwing; a throw
+there is `std::terminate`, not a recoverable diagnostic.
 
-Rollout note: PR 4 freezes the ABI-facing `AddonFabricRegistrar` type and calls
-`configureFabric` with a generation-scoped rejecting backend. Descriptor-only
-mocks continue through the host-owned manifest path, while any attempt to
-register a real provider, mount handler, or command handler fails explicitly as
-"Fabric addon registration is not available until the registrar backend is
-enabled." This makes the complete vtable and generation counts testable in PR 4
-without pretending the backend exists. PR 5 replaces only that rejecting
-backend with the staged provider/event/command implementation; it does not
-change ABI 4.
+`CallInvoker`, `jsi::Runtime`, and `AddonGenerationContext` are generation-local
+and must not be cached across reload.
 
-### ABI descriptor and fingerprint
+Generation lifecycle: a generation becomes `Opening` before the first
+`configureFabric`. Configure runs in plan order and stops at the first failure;
+provider preflight follows; `installJSI` runs in plan order and stops at the
+first failure; protected-global verification follows; only then is the
+generation `Open`.
+
+Call counts:
+
+- **Successful generation:** every bound addon gets `configureFabric` exactly
+  once, then (after preflight) `installJSI` exactly once, then
+  `quiesceGeneration` exactly once.
+- **Failed generation:** `configureFabric` / `installJSI` run only for the
+  reached prefix (install never runs if configure or preflight failed);
+  `quiesceGeneration` still runs once for every bound addon, including addons
+  whose configure or install hook was never reached.
+
+Do not assert `configureFabric == 1` on a generation whose configure pass
+stopped at an earlier addon.
+
+### `wrapTurboModule` contract
+
+1. `framework` is non-null (the constructed framework module).
+2. The host calls `wrapTurboModule` if and only if this addon is the unique
+   overlay owner for `moduleName` in the sealed plan.
+3. The host never calls it for addons with empty `moduleOverlays`, and never
+   for names the addon does not overlay.
+4. The return must be non-null. Null is a lookup-time contract failure (see
+   Owner-directed lookup): recorded, cached as unavailable, `pendingAddonFatal`
+   set, `nullptr` returned to JS. The host `moduleProvider` does **not** throw
+   through `TurboModuleBinding`. No other addon is asked.
+5. The wrapper forwards every method and constant it does not intentionally
+   change. Returning `framework` unchanged is valid identity (the required
+   no-op; overlay addons should not do this for a declared target).
+6. The wrapper must not read `TurboModule::name_`.
+7. The host calls `wrapTurboModule` at most once per name per generation
+   (generation-scoped cache).
+
+### Descriptor and fingerprint
 
 ```cpp
 inline constexpr std::uint32_t kSimulatorAddonAbiVersion = 4;
-inline constexpr const char* kSimulatorAddonEntryPoint =
-    "react_native_simulator_addon_v4";
+inline constexpr const char* kSimulatorAddonEntryPoint = "react_native_simulator_addon_v4";
+
+#define RNS_EXPORT __attribute__((visibility("default")))
 
 struct SimulatorAddonDescriptor {
   std::uint32_t descriptorSize;
@@ -905,83 +1164,71 @@ struct SimulatorAddonDescriptor {
 
 using GetSimulatorAddonDescriptorV4 =
     const SimulatorAddonDescriptor* (*)() noexcept;
-```
 
-Entry symbol:
-
-```cpp
 extern "C" RNS_EXPORT
 const ReactNativeSimulator::SimulatorAddonDescriptor*
 react_native_simulator_addon_v4() noexcept;
 ```
 
-The validation order is fixed:
+Validation order: resolve the v4 symbol (missing symbol → "not an ABI 4
+addon"; no probing of older symbols); call the accessor and reject null; check
+`descriptorSize` covers every v4 field; require `abiVersion == 4`; require the
+exact fingerprint; require exact RN and Hermes strings; require a non-empty name
+and non-null `create`/`destroy`; call `create()` and reject null; call
+`manifest()` once and require its name to equal the descriptor name.
 
-1. Resolve the v4 symbol.
-2. Call the non-throwing v4 accessor and reject a null descriptor pointer.
-3. Check that `descriptorSize` covers every required v4 field before reading
-   fields beyond the size prefix.
-4. Require `abiVersion == 4`.
-5. Require a non-null, exact fingerprint.
-6. Require exact non-null React Native and Hermes strings.
-7. Require non-empty descriptor name and non-null `create`/`destroy` callbacks.
-8. Call `create()` and reject a null instance.
-9. Call `manifest()` once, copy it, and require its name to equal the descriptor
-   name.
+`create()` may throw. The loader catches inside a scope that still owns the
+mapped MODULE, copies a host-owned diagnostic (operation, path, addon name
+when known, exception text), destroys the caught exception by leaving the
+catch, and only then releases the RAII handle. It must not store a
+MODULE-defined `exception_ptr` in `TerminalLaunchPlanError`.
 
-No addon virtual call other than `manifest()` occurs before full plan
-validation. A failure after construction invokes `destroy()` while the MODULE
-handle is still mapped.
+CMake generates `kSimulatorAddonApiFingerprint` at configure time as the
+lowercase hex SHA-256 of a canonical newline-separated document containing:
 
-`create()` may throw. The loader catches it inside a scope that still owns the
-mapped MODULE, copies only host-owned diagnostic data (operation, path, addon
-name when known, and exception text), destroys the caught exception object by
-leaving that catch scope, and only then releases the RAII handle. It must not
-store a MODULE-defined `exception_ptr` in `TerminalLaunchPlanError`. A null
-return is the non-throwing construction-failure form. Both paths are tested.
+- SHA-256 of every public ABI header under
+  `runtime/include/react-native-simulator/` (`SimulatorAddon.h` including
+  `SimulatorMode`, and `Engine.h`; adding a header changes the fingerprint);
+- `RNS_REACT_NATIVE_VERSION` and `RNS_HERMES_VERSION`;
+- RN and Hermes git commits;
+- `CMAKE_CXX_COMPILER_ID` and `CMAKE_CXX_COMPILER_VERSION`;
+- `CMAKE_CXX_STANDARD`;
+- stdlib ABI (`libc++` / `libstdc++`; Apple defaults to `libc++`, Linux
+  defaults to `libstdc++` even for Clang unless `-stdlib=libc++` is set);
+- sanitizer mode (`none` or `address,undefined,no-vptr`);
+- ABI-affecting flags (`-fvisibility=hidden` on MODULEs, language mode).
 
-The same ownership rule applies to `manifest`, `bind`, TurboModule, Fabric, and
-JSI exceptions. A host-owned error record may survive cleanup; a native
-exception object, `exception_ptr`, RTTI reference, or `what()` pointer from a
-MODULE may not survive its handle. Generation errors may retain an
-`exception_ptr` only while the MODULE registry is guaranteed mapped, and
-teardown converts and clears it before `unbind`, destruction, and `dlclose`.
+The engine and every MODULE built in that tree compile with the same
+`-DRNS_ADDON_API_FINGERPRINT=...`. Comparison is exact string equality. A
+Release MODULE cannot load into a sanitized engine. The fingerprint is a
+compatibility identifier only: not a signature, not a trust signal, not a
+capability claim. Consequently a Nightly binary can never load a MODULE built
+elsewhere; extension is an in-tree or `RNS_ADDON_DIRS` source build, and the
+macOS `com.apple.security.cs.disable-library-validation` entitlement is removed
+from the Nightly signing profile.
 
-If v4 is absent, the loader may call `dlsym` for
-`react_native_simulator_addon_v2` only to identify an ABI 3 binary and emit a
-directed rebuild diagnostic. It must not call the old accessor or construct the
-old addon.
+Exception ownership: a host-owned error record may survive cleanup; a native
+exception object, `exception_ptr`, RTTI reference, or `what()` pointer
+implemented by a MODULE may not survive its handle. Generation errors may hold
+an `exception_ptr` only while the MODULE is guaranteed mapped; teardown converts
+and clears it before `unbind`, destruction, and `dlclose`.
 
-The fingerprint includes the public-header hash, exact RN/Hermes source pins,
-compiler and version, standard-library ABI, C++ language mode, sanitizer mode,
-and relevant ABI-affecting flags. It is a compatibility identifier, not a
-signature, trust signal, or capability-evidence source.
-
-### Frozen host snapshot
+### Host snapshot
 
 ```cpp
 struct AddonViewport {
-  float width;
-  float height;
-  float pointScaleFactor;
-  float insetTop;
-  float insetRight;   // v1: 0; EngineConfig has no right-inset field
-  float insetBottom;
-  float insetLeft;    // v1: 0; EngineConfig has no left-inset field
+  float width, height, pointScaleFactor;
+  float insetTop, insetRight, insetBottom, insetLeft;
 };
 
 struct AddonHostSnapshot {
+  std::uint64_t revision;                  // v1: always 1
   std::string profileName;
   std::string platform;
-
-  // Native source/ABI identity; always the compiled pin.
-  std::string reactNativeVersion;
+  std::string reactNativeVersion;          // native pin
   std::string hermesVersion;
-
-  // Compatibility identity. See the compat section.
-  std::string bundleTargetFamily;
-  std::string jsVisibleReactNativeVersion;
-
+  std::string bundleTargetFamily;          // from ResolvedBundleCompatibility
+  std::string jsVisibleReactNativeVersion; // from ResolvedBundleCompatibility
   SimulatorMode mode;
   AddonViewport viewport;
   std::optional<std::filesystem::path> assetDirectory;
@@ -999,936 +1246,554 @@ class AddonHost {
 };
 ```
 
-The snapshot owns every string and path and is immutable from successful bind
-through `unbind`. It is constructed at `run()` start after the selected bundles
-determine the final asset directory. `RNSIM_INITIAL_URL` is copied once at that
-point. Addons must not re-read process environment or mutable
-`hostEnvironment()` state.
+Snapshot vocabulary and v1 constants:
 
-The snapshot's native version, target family, and JS-visible version are copied
-from the plan's single `ResolvedBundleCompatibility`; they are not independently
-recomputed from profile or addon names.
+| Field | Allowed values | v1 source | v1 constant? |
+| ----- | -------------- | --------- | ------------ |
+| `revision` | monotonic `uint64` | always `1` | yes |
+| `viewport.width/height/pointScaleFactor` | finite, `> 0` | `EngineConfig` (defaults `300 × 80 @ 1`) | session-constant |
+| `viewport.insetTop/Right/Bottom/Left` | finite, `≥ 0` | window-relative insets | **all four `0`** |
+| `colorScheme` | `"light"` \| `"dark"` | `EngineConfig.colorScheme` or `"light"` | session-constant |
+| `appState` | `"active"` \| `"background"` \| `"inactive"` | `EngineConfig.appState` or `"active"` | session-constant |
+| `reduceMotion` | `bool` | `EngineConfig.reduceMotion` or `false` | session-constant |
+| `initialUrl` | optional string | CLI `--initial-url` / `RNSIM_INITIAL_URL` copied once | session-constant |
+| `reactNativeVersion` | pin | `"0.87.0"` | yes |
+| `jsVisibleReactNativeVersion` | from `ResolvedBundleCompatibility` | `"0.87.0"` or `"0.73.10"` | session-constant |
 
-The snapshot is session-constant in v1. Dynamic viewport, color-scheme,
-app-state, and reduced-motion updates require a future versioned API.
+`EngineConfig.insetTop` / `insetBottom` remain host chrome *around* the RN
+window (status/nav drawn by the shell). They are not copied into
+`AddonViewport`. SafeArea reads snapshot insets, which are window-relative and
+zero on all four sides in v1. Invalid `colorScheme` / `appState` values fail
+at config parse or `finalizeLaunchPlan`.
 
-ExpoLinking copies `initialUrl` into generation-local state and clears it during
-generation quiescence. No JSI value or generation object enters the snapshot.
+The snapshot owns every string and path and is built at `run()` start after the
+initial bundles determine the asset directory. It is constant for the session
+in v1 (`revision == 1`; `hostSnapshotChanged` is never invoked). Dynamically
+loaded bundles (`RN$Simulator.loadBundle`) do not change it.
 
-## TurboModules, overlays, and JSI
+`hostEnvironment()` is configured once from the snapshot before generation 1
+and is no longer reset per generation. Interactive Appearance/AppState/a11y
+controllers may still mutate `hostEnvironment()` for framework modules; those
+mutations do not bump `revision` or call `hostSnapshotChanged` in v1.
+`initialUrl` is read once by the CLI into the draft; the framework
+`LinkingManager`, `IntentAndroid`, and Expo `ExpoLinking` all read the plan
+value. `getenv` at call time is removed.
+
+## TurboModules and JSI
 
 ### Owner-directed lookup
 
-The final plan contains one owner for every served module. Lookup is O(1) and
-calls only that owner:
+The plan contains one owner for every served module and at most one overlay
+per framework module. Lookup is O(1). The host keeps a **generation-scoped**
+`name → shared_ptr<TurboModule>` cache in the `moduleProvider` (same role as
+today's `turboModuleCache` in `SimulatorEngine.cpp:2565–2573`).
+`getTurboModule` / `wrapTurboModule` run at most once per name per generation.
+The cache is cleared during generation teardown (step 7). RN's
+`TurboModuleBinding::getModule` then attaches a `jsRepresentation` on that
+`shared_ptr` and returns the **representation object** to JS, not the C++
+HostObject (`TurboModuleBinding.cpp:187–214`). Without the cache, a second
+property read would construct a new wrapper, get a new `jsRepresentation`, and
+break `globalThis.expo.modules.ExpoAsset === nativeModuleProxy.ExpoAsset`.
 
-1. Ignore known `$$typeof` and `__esModule` probes.
-2. Resolve the selected framework factory or addon owner from the sealed map.
-3. Construct the current profile module when the name is a framework module.
-4. Apply an engine-owned structured wrapper if the plan contains an approved
-   overlay for that module.
-5. Return the result and record usage from the resolved contract.
-6. Return `nullptr` and record unavailable for an unknown name.
+The host `moduleProvider` is a **catch boundary**. It is invoked from RN's
+`TurboModuleBinding::getModule` (`TurboModuleBinding.cpp:170–177`), which is
+an RN frame. Lookup-time contract failures must not throw through it.
 
-The registry never walks addons and never falls through to a different addon.
-If an addon owns a manifest module but returns null, the host records
-`AddonContractViolation`, marks that surface unavailable, and does not ask
-another addon. The host does not inspect `TurboModule::name_`, which is protected
-in the pinned React Native API.
+Steps:
 
-Framework factories remain framework-owned. A compatibility addon cannot
-receive or replace the inner module object.
+1. Ignore `$$typeof` and `__esModule` probes (no cache entry).
+2. If the generation cache has `name`, return the cached `shared_ptr` (or
+   cached-unavailable `nullptr`).
+3. Resolve the framework factory or addon owner from the sealed map.
+4. Construct the framework module when the name is framework-owned.
+5. If an addon declared an overlay for that module, call that addon's
+   `wrapTurboModule` with the framework instance.
+6. Otherwise call only the owning addon's `getTurboModule`. No other addon is
+   asked.
+7. Unknown names: cache `nullptr`, record unavailable, return `nullptr`. Not a
+   contract violation.
 
-### Host-owned overlays
+Lookup-time contract failure (declared owner/overlay returned null, or
+`getTurboModule` / `wrapTurboModule` threw):
 
-ABI 4 v1 has one structured overlay kind:
+1. Catch inside `moduleProvider` while the MODULE is mapped.
+2. Record `addon`, `operation`, `surface`, `generation` as a host-owned
+   diagnostic. Convert any MODULE `exception_ptr` immediately; do not store it.
+3. Cache `nullptr` for `name` so later property reads do not re-enter the addon.
+4. Set `pendingAddonFatal` (first wins). The module is unavailable to JS.
+5. Return `nullptr`. **Do not throw** through `TurboModuleBinding` or JSI.
+6. The engine surfaces `pendingAddonFatal` at its next owned boundary (same
+   channel as a throwing mount/command callback). A declared-but-missing module
+   fails the run; it does not unwind through RN.
 
-```cpp
-ModuleOverlayKind::PlatformConstantsReactNativeVersion
+```mermaid
+flowchart TD
+  name[Module name]
+  probe{"$$typeof or __esModule?"}
+  cache{"generation cache hit?"}
+  map[Sealed owner map]
+  fw{Framework-owned?}
+  overlay{Overlay declared?}
+  wrap["addon.wrapTurboModule"]
+  get["owner.getTurboModule"]
+  unknown["cache nullptr + unavailable"]
+  catchBound["moduleProvider catch: record, cache nullptr, pendingAddonFatal, return nullptr"]
+  name --> probe
+  probe -->|yes| ignore[Ignore probe]
+  probe -->|no| cache
+  cache -->|yes| returnCached[Return cached shared_ptr or nullptr]
+  cache -->|no| map
+  map --> fw
+  fw -->|yes| construct[Construct framework module]
+  construct --> overlay
+  overlay -->|yes| wrap
+  overlay -->|no| storeFW[Cache and return framework module]
+  wrap -->|non-null| storeWrap[Cache and return wrapper]
+  wrap -->|null or throw| catchBound
+  fw -->|addon-owned| get
+  get -->|non-null| storeAddon[Cache and return addon module]
+  get -->|null or throw| catchBound
+  fw -->|unknown| unknown
 ```
 
-An addon requests this kind in its frozen manifest. The engine-owned built-in
-catalog decides whether the exact request is privileged. The engine constructs
-the current profile's `PlatformConstants` and wraps it with host code that
-rewrites only the nested `reactNativeVersion` constant (and equivalent property
-access paths backed by the same constant). Every other constant, method, and
-platform-shaped field forwards to the current RN 0.87 module.
-
-There is no virtual `overlayTurboModule` hook.
+The host never inspects `TurboModule::name_`.
 
 ### JSI installation order and protected globals
-
-Each generation installs in this order:
 
 ```text
 TurboModuleBinding
   -> legacy UIManager globals
   -> unified __nativeComponentRegistry__hasComponent
   -> Fabric / UIManagerBinding
-  -> snapshot protected-global identities and descriptors
-  -> addon installJSI in deterministic plan order
-  -> verify protected globals are unchanged
+  -> snapshot protected-global identities
+  -> addon installJSI in plan order
+  -> verify protected globals unchanged
   -> evaluate caller bundles
 ```
 
-Protected globals include at least:
+Protected globals: `RN$Simulator`, `nativeModuleProxy`, `__turboModuleProxy`,
+`nativeRuntimeScheduler`, every `RN$LegacyInterop_UIManager_*`,
+`__nativeComponentRegistry__hasComponent`, `__fbBatchedBridgeConfig`, and the
+host-installed `console` methods. Identity and property descriptors are
+compared; a mutation is `AddonContractViolation` and aborts before caller JS.
+An addon may create globals it owns; if one exists with an incompatible type,
+installation fails rather than overwriting.
 
-- `RN$Simulator`;
-- `nativeModuleProxy`;
-- `__turboModuleProxy`;
-- `nativeRuntimeScheduler`;
-- all `RN$LegacyInterop_UIManager_*` globals;
-- `__nativeComponentRegistry__hasComponent`;
-- `__fbBatchedBridgeConfig`; and
-- host-installed `console` methods.
-
-The host snapshots identity and relevant property descriptors, not merely the
-truthiness of each value. A mutation is `AddonContractViolation` and aborts
-initialization before caller JavaScript.
-
-An addon may create only documented globals it owns. If an owned global already
-exists with an incompatible type, installation fails rather than overwriting it
-silently.
-
-Expo builds `globalThis.expo.modules[name]` from the already-installed
-`nativeModuleProxy[name]`. It must not call `getTurboModule` again to create a
-second HostObject. A required identity assertion is:
+Expo `installJSI` reads `nativeModuleProxy[name]` — the `jsRepresentation`
+object already installed by `TurboModuleBinding` — and assigns that value onto
+`globalThis.expo.modules[name]`. It must not call `getTurboModule` again and
+must not `createFromHostObject` of a second C++ instance. `nativeModuleProxy`
+does not return the HostObject. Required identity for TurboModule-backed names
+holds because both sides are the same representation, which exists only if the
+generation cache returned the same `shared_ptr`:
 
 ```js
 globalThis.expo.modules.ExpoAsset === nativeModuleProxy.ExpoAsset
 ```
 
+The same aliasing applies to `ExpoKeepAwake`, `ExpoSplashScreen`,
+`ExpoFontLoader`, `ExpoSystemUI`, `ExponentConstants`, and `ExpoLinking`.
+`ExpoFetchModule`'s JS `NativeRequest` / `NativeResponse` classes remain
+bootstrap-owned on `expo.modules.ExpoFetchModule` and are not required to
+`===` the TurboModule HostObject. `ExpoModulesCore` is not copied onto
+`expo.modules`.
+
 ## Fabric addon host
 
-### Registration surface
-
-Every addon receives a distinct owner-scoped registrar for one runtime
-generation:
+### Registration
 
 ```cpp
-class AddonEventSink;
-
-// Copyable weak facade. It never keeps a generation or MODULE alive.
-class MountedTargetToken {
- public:
-  MountedTargetToken(const MountedTargetToken&) = default;
-  MountedTargetToken& operator=(const MountedTargetToken&) = default;
-
- private:
-  struct State;
-  explicit MountedTargetToken(std::weak_ptr<const State> state) noexcept
-      : state_(std::move(state)) {}
-  std::weak_ptr<const State> state_;
-  friend class AddonFabricSessionState;
-};
-
-enum class AddonMountKind {
-  Mounted,
-  Updated,
-  Unmounted,
-};
-
-struct AddonMountedTargetSnapshot {
+struct AddonMountedNode {
   std::uint64_t generation;
   facebook::react::SurfaceId surfaceId;
   facebook::react::Tag tag;
   std::string componentName;
+  facebook::react::ShadowNode::Shared shadowNode;   // committed clone at notification
   facebook::react::LayoutMetrics layoutMetrics;
 };
 
-struct AddonMountEvent {
-  AddonMountKind kind;
-  AddonMountedTargetSnapshot target;
-  MountedTargetToken token;
-};
+enum class AddonMountKind { Mounted, Updated, Unmounted };
 
-struct AddonCommandContext {
-  AddonMountedTargetSnapshot target;
-  MountedTargetToken token;
-  std::string commandName;
-};
-
-using AddonMountHandler = std::function<void(
-    const AddonMountEvent& event,
-    AddonEventSink& events)>;
-
+using AddonMountHandler =
+    std::function<void(AddonMountKind kind, const AddonMountedNode& node)>;
 using AddonCommandHandler = std::function<void(
-    const AddonCommandContext& context,
-    const folly::dynamic& args,
-    AddonEventSink& events)>;
+    const AddonMountedNode& node, std::string_view command, const folly::dynamic& args)>;
 
 class AddonFabricRegistrar {
  public:
-  void registerDescriptor(
-      facebook::react::ComponentDescriptorProvider provider);
+  void registerDescriptor(facebook::react::ComponentDescriptorProvider provider);
+  void onMount(std::string_view ownedComponent, AddonMountHandler handler);
+  void onCommand(std::string_view ownedComponent, std::string_view declaredCommand,
+                 AddonCommandHandler handler);
+};
 
-  void onMount(
-      std::string_view ownedComponent,
-      AddonMountHandler handler);
-
-  void onCommand(
-      std::string_view ownedComponent,
-      std::string_view declaredCommand,
-      AddonCommandHandler handler);
+class AddonRuntimeExecutor {
+ public:
+  // Runs fn on the runtime thread inside this generation. Returns false and
+  // drops fn if the generation is quiescing or closed. Safe from any thread.
+  bool post(std::function<void(facebook::jsi::Runtime&)> fn) const noexcept;
 };
 ```
 
-The registrar is valid only during `configureFabric`. It cannot be retained.
-Registration is staged; it never mutates an already-live RN registry.
+The registrar is valid only during `configureFabric`; the host nulls its
+session pointer when that call returns. Registration is staged and never
+mutates a live RN registry. An addon registers only its manifest
+components; at most one mount handler per component; exactly one handler per
+declared command; no undeclared or duplicate handlers. `DescriptorOnlyMock`
+components are registered by the host as `UnimplementedViewComponentDescriptor`
+with a stable flavor. The addon must not call `registerDescriptor` for them.
 
-`MountedTargetToken` and `AddonEventSink` have no public default constructor.
-Only the generation session state can construct them from weak backing state;
-addons can copy the resulting facades but cannot forge an owner, generation,
-mount serial, or callback epoch.
+### Events, state, and threads
 
-Descriptor-only mocks are registered by the host directly from the frozen
-manifest. They use `UnimplementedViewComponentDescriptor` with a stable flavor.
-The addon does not also register them. Every `FabricDescriptor` declaration
-must contribute exactly one provider in every generation, and every provider
-must correspond to exactly one declaration.
+Addons use React Native directly:
 
-At most one mount handler may be registered for an owned component. Duplicate
-registration is an initialization error. Every command declared by a manifest
-component must have exactly one handler, and no undeclared or duplicate command
-handler may be registered. Components that need no mount observation register
-no mount handler. These bijections are checked before provider preflight.
+- events: `node.shadowNode->getEventEmitter()->dispatchEvent(type, payload)` or
+  the typed emitter of the addon's own `ConcreteViewShadowNode`;
+- state: `ConcreteState<Data>::updateState` on the addon's own state object;
+- props: the addon's own `Props` type via `shadowNode->getProps()`.
 
-### Canonical provider ledger
+Rules the host enforces or documents:
 
-React Native's `ComponentDescriptorProviderRegistry` silently returns on a
-duplicate handle, so the engine must construct one immutable ledger before
-calling `providers.add()`.
+- Every addon callback, TurboModule call, `installJSI`, and posted executor
+  task runs on the runtime thread. Addon-owned threads, timers, and device
+  adapters must hop through `AddonRuntimeExecutor::post`. The host records the
+  runtime thread per generation; a delegate callback on another thread sets
+  `pendingAddonFatal` and disables addon callbacks. Dropped posts increment
+  `droppedPosts`, which the final metrics envelope reports.
+- Event types must be non-empty; `EventEmitter::normalizeEventType` writes
+  `type[0]`. The addon's declared `events` list is informational and appears
+  in metrics and chrome.
+- Stale nodes are harmless by RN design: an unmounted node's emitter is
+  disabled and its state coordinator's dispatcher is weak. The host adds no
+  second policy.
+- Retention: an addon may hold `ShadowNode::Shared` and `State::Shared` for the
+  lifetime of the generation. It must drop every RN object reference, JSI
+  value, `CallInvoker`, runtime pointer, and executor copy in
+  `quiesceGeneration`, and drop everything else in `unbind`. Nothing
+  implemented by a MODULE may survive `dlclose`.
 
-Each row records at least:
+### Provider ledger and preflight
 
-```text
-requested React view name
-RN-normalized name
-canonical provider name
-ComponentHandle
-owner kind and owner name
-implementation kind
-capability contract
-runtime generation
-provider/flavor lifetime owner
-```
+Because RN silently ignores duplicate handles and strips its name/handle
+asserts in release builds, the host builds one immutable ledger before any
+`providers.add()`. Framework and addon providers pass through the same builder.
+Each `ComponentLedgerRow` records requested/normalized/canonical name,
+`ComponentHandle`, owner, kind, contract, generation, and the object that owns
+the provider's storage.
 
-Framework and addon providers pass through the same ledger builder. Validation
-rejects:
+Rejected: empty names, null constructors, zero handles; missing, extra, or
+duplicate providers; duplicate canonical names; duplicate handles even with
+different names; a provider from another owner; a mock declaration with a
+provider; re-entrant registration from a provider constructor.
 
-- empty names, null constructors, or zero handles;
-- a missing, extra, or duplicate provider;
-- duplicate canonical names;
-- duplicate handles, even when the names differ;
-- a provider registered for another owner;
-- descriptor-only declarations that also contribute providers;
-- a duplicate raw request row;
-- one normalized request key resolving to different canonical providers;
-- a request row whose safe one-pass normalization does not equal its declared
-  `canonicalProviderName`;
-- a request row whose canonical target does not exist exactly once; and
-- re-entrant registration from a provider constructor.
+Addon component names must be fixed points of `componentNameByReactViewName`
+(an addon cannot claim `RCTView`, `Text`, `VirtualText`, `ImageView`,
+`AndroidHorizontalScrollView`, `RefreshControl`, `SelectableText`,
+`RKShimmeringView`, `ScrollContentView`, `MultilineTextInputView`,
+`SinglelineTextInputView`, …). Addon-defined aliases do not exist.
 
-The request resolver reproduces pinned RN normalization exactly once. It strips
-one optional `RCT` prefix and then applies the following mappings. The wrapper
-first checks `name.size() >= 3` before comparing the prefix; it does not copy the
-pinned implementation's unbounded second-range `std::mismatch` expression for
-one- or two-character inputs.
+After the final `EventDispatcher`, `ContextContainer`, and flavors exist —
+inside the host's registry factory, immediately before
+`createComponentDescriptorRegistry` (today that call is
+`HeadlessReactFabric.cpp:1421`; it may become a Scheduler
+`componentRegistryFactory`) — the host constructs every real descriptor
+with the exact final `ComponentDescriptorParameters` and verifies non-null
+construction, name and handle equality with the ledger, and exception-free
+destruction. Preflight is mandatory in release and sanitizer builds. RN
+constructs providers again, so constructors must be deterministic and
+side-effect-free. A preflight failure publishes no registry and prevents caller
+JavaScript.
 
-| Name after optional `RCT` removal | Canonical provider name |
-| --- | --- |
-| `Text` | `Paragraph` |
-| `SelectableText` | `SelectableParagraph` |
-| `VirtualText` | `Text` |
-| `ImageView` | `Image` |
-| `AndroidHorizontalScrollView` | `ScrollView` |
-| `RKShimmeringView` | `ShimmeringView` |
-| `RefreshControl` | `PullToRefreshView` |
-| `ScrollContentView` | `View` |
-| `MultilineTextInputView` | `TextInput` |
-| `SinglelineTextInputView` | `TextInput` |
-| any other name | unchanged |
-
-Framework inventory may deliberately declare request rows that normalize to a
-different canonical provider. This is required for upstream pairs such as
-`VirtualText -> Text` and `Text -> Paragraph`. The engine never normalizes the
-result a second time. Every raw request name is unique. Multiple raw names may
-collapse to one normalized key only when they select the same existing
-canonical provider; a normalized key can never select two providers.
-
-Addon manifest and provider names, by contrast, must be canonical fixed points
-under this normalization. An addon cannot claim `RCTView`, `Text`,
-`VirtualText`, `ImageView`, or another mapped request name as its canonical
-identity. Each committed addon component contributes exactly one implicit
-request row `{name, name}` after passing that fixed-point check. ABI 4 v1
-exposes no addon-defined alias facility. Host-owned request rows live only in
-`FrameworkSurfaceInventory::componentRequests` and do not create another
-provider, handle, or capability contract. `RootView` remains a legacy metrics
-projection, not a request alias, in v1.
-
-### Mandatory provider preflight
-
-After the final `EventDispatcher`, `ContextContainer`, and provider flavors
-exist, but before the RN registry is published, the host constructs every real
-descriptor with the exact final `ComponentDescriptorParameters`.
-
-Preflight verifies:
-
-- construction returns non-null;
-- the live descriptor name equals the provider name;
-- the live descriptor handle equals the provider handle;
-- both match the sealed ledger;
-- construction/destruction completes without exception; and
-- all name, flavor, constructor, RTTI, and vtable storage outlives the
-  generation.
-
-Preflight is mandatory in release and sanitizer configurations. Providers may
-be constructed again by RN, so constructors must be deterministic,
-side-effect-free, and safe to invoke more than once.
-
-The host API does not directly expose `ContextContainer` or `EventDispatcher`.
-A real upstream descriptor necessarily receives and retains the corresponding
-objects in `ComponentDescriptorParameters`. Addons are trusted in-process code;
-the host cannot technically prevent descriptor code from accessing them.
-
-All providers are preflighted before the engine creates and publishes the final
-`ComponentDescriptorRegistry`. A failure produces no partially published
-registry and prevents caller bundle evaluation.
-
-### Component availability
-
-`__nativeComponentRegistry__hasComponent(name)` resolves the requested name
-through the same one-pass request-resolution ledger and then queries sealed
-availability. It is true for:
-
-- framework components from the executable inventory;
-- preflighted real addon descriptors; and
-- explicitly committed descriptor-only addon components.
-
-A lazily requested `UnimplementedView`, interop descriptor, or other fallback
-does not enter the ledger and never changes `hasComponent` from false to true.
-Fallback use remains separately observable in `fallbackComponents`.
+`__nativeComponentRegistry__hasComponent(name)` normalizes with RN's
+`componentNameByReactViewName` after a `size() >= 3` guard (shorter names
+cannot carry the `RCT` prefix and none of RN's mapped names are that short) and
+answers from the sealed ledger: framework rows, preflighted addon descriptors,
+and committed mocks. Lazily requested fallbacks never flip it to true; they
+remain observable in `fallbackComponents`.
 
 ### Mount notifications
 
-Addon handlers observe validated committed component state, not raw mutations:
-
 ```text
 pull complete MountingTransaction
-  -> apply all mutations to staged retained state
-  -> validate all retained-tree invariants
-  -> compare validated before/after trees
-  -> derive value-owned notifications and tokens
-  -> atomically publish the validated scene snapshot
+  -> apply mutations to staged retained state
+  -> validate retained-tree invariants
+  -> diff validated before/after trees
+  -> atomically publish the scene snapshot
   -> release every host lock and iterator
-  -> invoke addon callbacks
+  -> invoke addon callbacks with committed ShadowNode clones
 ```
 
-No callback receives `ShadowNode`, `EventEmitter`, `ContextContainer`, a JSI
-value, or a reference into the retained scene.
-
-Notifications are derived from before/after mounted trees. A remove followed by
-an insert in the same transaction is a move, not a false unmount/remount.
-Unmount ordering is child-before-parent; mount ordering is parent-before-child;
-updates preserve deterministic transaction order and multiple updates to one
-tag are coalesced to the final state. Scene publication always completes before
-the first addon observer runs, so a callback failure cannot leave the internal
-mounted tree and public retained scene at different revisions.
-
-The opaque token additionally binds the addon owner and an internal mount
-serial. A tag alone is never an event identity.
-
-- `Mounted` receives a newly live token.
-- `Updated` receives the same live mount-incarnation token.
-- `Unmounted` is cleanup-only: the token is invalidated before callback.
-- Delete performs host cleanup and does not create an emittable token.
-- Tag reuse creates a new mount serial, so an old token cannot address the new
-  node.
-- Generation shutdown invalidates every token before stopping the surface.
-
-### Event sink
-
-Fabric events are synchronous-callback-only in ABI 4 v1. `AddonEventSink` is a
-small copyable weak facade backed by generation-owned state plus a tombstone. It
-never keeps a generation or MODULE alive. The host supplies a facade while
-invoking the owning addon's mount or command callback.
-
-An addon may retain a copy without causing UAF, but emission is accepted only
-during the dynamic extent of that owner's active callback. A retained copy
-returns `OutsideCallback` while its generation remains alive and
-`SessionClosed` after the tombstone is closed. It must not be used as an
-asynchronous delivery mechanism from a background thread, timer, destructor,
-TurboModule callback, or later task.
-
-```cpp
-enum class EmitResult : std::uint8_t {
-  Delivered,
-  SessionClosed,
-  OutsideCallback,
-  WrongThread,
-  StaleGeneration,
-  WrongOwner,
-  TargetUnmounted,
-  EmptyEventType,
-  UndeclaredEvent,
-  InvalidPayload,
-};
-
-class AddonEventSink {
- public:
-  AddonEventSink(const AddonEventSink&) = default;
-  AddonEventSink& operator=(const AddonEventSink&) = default;
-
-  EmitResult emit(
-      const MountedTargetToken& target,
-      std::string_view declaredEvent,
-      folly::dynamic payload) noexcept;
-
- private:
-  struct State;
-  AddonEventSink(
-      std::weak_ptr<State> state,
-      std::uint64_t callbackEpoch) noexcept
-      : state_(std::move(state)), callbackEpoch_(callbackEpoch) {}
-  std::weak_ptr<State> state_;
-  std::uint64_t callbackEpoch_{};
-  friend class AddonFabricSessionState;
-};
+```mermaid
+sequenceDiagram
+  participant RN as UIManager
+  participant Host as HeadlessReactFabricHost
+  participant Scene as Retained scene
+  participant Addon as Addon onMount
+  RN->>Host: MountingTransaction
+  Host->>Host: apply mutations to staged tree
+  Host->>Host: validate retained-tree invariants
+  Host->>Host: diff before/after mounted trees
+  Host->>Scene: atomically publish snapshot
+  Host->>Host: release locks and iterators
+  Host->>Addon: Mounted / Updated / Unmounted with committed clone
 ```
 
-Validation follows the enum order after `Delivered`, giving deterministic
-results for multiply invalid calls:
-
-1. generation/session remains open;
-2. call is within the active callback extent;
-3. call is on the recorded generation callback thread;
-4. target generation matches;
-5. target owner matches;
-6. mount incarnation is live;
-7. event type is non-empty;
-8. event is declared for that component; and
-9. payload is an object.
-
-The empty-name and object-payload checks are mandatory because pinned RN assumes
-both and may otherwise inspect `type[0]` or assert. `Delivered` means RN's
-`EventDispatcher` accepted the event. It does not mean a JS listener existed or
-executed, and the sink must not synchronously re-enter JS or mounting.
-
-Asynchronous Fabric event emission is deliberately absent from v1. An addon
-that later needs it requires a separately designed generation executor and
-owned cancellation contract.
+Notifications derive from before/after mounted trees, so a remove-then-insert
+in one transaction is a move, not a false unmount/remount. Unmount order is
+child-before-parent; mount order is parent-before-child; multiple updates to
+one tag in a transaction coalesce to the final state. `Unmounted` carries the
+last committed clone. Delete mutations produce no callback. Cleanup
+transactions during generation shutdown produce no callbacks.
 
 ### Command routing
 
-Commands are declared and registered by exact `(owner, canonical component,
-command name)`. Legacy numeric IDs resolve to the canonical string before this
-route.
+Commands are routed by exact `(owner, canonical component, command)`. Legacy
+numeric IDs resolve to the string first.
+
+The host's **internal** mounted record (not the public `AddonMountedNode`)
+stores `facebook::react::ShadowNodeFamily::Shared family` alongside
+`(generation, surfaceId, tag, canonicalName)`. `AddonMountedNode` does not
+grow a family field; addons that need it read `node.shadowNode->getFamily()`.
 
 ```cpp
-auto target = resolveCurrentMountedTarget(
-    generation, surfaceId, shadowNodeFamily, tag, componentName);
-if (!target) {
-  recordStaleOrUnknownCommandAndNoop(...);
+auto node = resolveCurrentMountedNode(
+    generation, surfaceId, tag, componentName, commandShadowNode->getFamily());
+if (!node) { recordStaleOrUnknownCommandAndNoop(...); return; }
+if (auto* handler = addonHandlers.findExact(node->owner, node->componentName, commandName)) {
+  invokeAddonCommand(*handler, *node, commandName, args);
   return;
 }
-if (dispatchFrameworkCommand(*target, commandName, args)) {
-  return;
-}
-if (auto* handler = addonHandlers.findExact(
-        target->owner, target->componentName, commandName)) {
-  invokeAddonCommand(*handler, makeCommandContext(*target), copy(args));
-  return;
-}
+if (dispatchFrameworkCommand(*node, commandName, args)) return;
 recordUnknownCommandAndNoop(...);
 ```
 
-A framework handler returns true only for its owned component and valid
-arguments. A generic `setNativeValue` branch must not swallow an addon command.
+`resolveCurrentMountedNode` looks up `(generation, surfaceId, tag)`. The
+command is stale (no-op, counted) when any of these hold: no record; canonical
+name mismatch; `family` pointer identity does not equal the record's family; the
+tag was reused after unmount for a different family. A stale JS wrapper
+therefore cannot reach a new mount.
 
-Before either route, the host resolves the incoming node against the current
-mounted record using generation, surface, tag, canonical component, and the
-host-held ShadowNode-family identity. That record supplies the current mount
-serial and token. A stale wrapper or a tag reused for a new mount incarnation
-cannot route to the new target.
+Framework handlers return true only for their own component with valid
+arguments; a generic `setNativeValue` branch must not swallow an addon
+command.
 
-Addon handlers receive the complete `AddonCommandContext` defined above,
-including the live token, a copied `folly::dynamic` argument value, and an event
-sink facade scoped to that callback epoch. They do not receive the JS wrapper's
-`ShadowNode`, which may be an old clone and would expose unrestricted Fabric
-internals.
+### Exception channels
 
-### Thread and exception boundaries
-
-The host records the actual Fabric callback thread per generation and enforces
-it. An unexpected delegate callback thread is recorded in `pendingAddonFatal`,
-addon callbacks are disabled, and the delegate returns normally; it is not an
-undocumented assumption. An addon that calls a retained event facade from the
-wrong thread receives `WrongThread` without entering RN.
-
-No addon exception may unwind through `UIManagerDelegate`, EventDispatcher, or
-another RN callback frame. Each generation initializes two explicit channels:
+No addon exception may unwind through `UIManagerDelegate`, `EventDispatcher`,
+`TurboModuleBinding`, or another RN frame. Each generation has:
 
 ```cpp
-std::exception_ptr initializationError{};
-std::exception_ptr pendingAddonFatal{};
+std::exception_ptr initializationError{};   // first configure/preflight/install error
+std::exception_ptr pendingAddonFatal{};     // first mount/command/lookup failure
 ```
 
-- `initializationError` preserves the first configure/preflight/install error
-  with addon, surface, operation, and generation context. The engine reports it
-  directly instead of degrading it into an initialization timeout.
-- `pendingAddonFatal` captures the first mount/command callback exception. The
-  catch is around each individual addon callback. It disables the remaining
-  addon callbacks for that transaction and generation, completes all host
-  bookkeeping (the validated scene is already published), returns normally to
-  RN, and the engine surfaces the original exception at its next owned
-  boundary.
+`initializationError` is reported directly instead of degrading into a timeout.
+`pendingAddonFatal` is set by a throwing mount/command callback **or** by a
+lookup-time contract failure inside `moduleProvider` (see Owner-directed
+lookup). On a callback failure the host disables remaining addon callbacks for
+the transaction and generation, completes its bookkeeping (the scene is already
+published), and returns normally to RN. `moduleProvider` catches `std::exception` and `...`, copies a host-owned
+`AddonContractViolation`, and returns `nullptr`. The `exception_ptr` is
+host-owned (copied diagnostic); it must not point at a MODULE-defined
+exception object.
 
-Mount callbacks run only after the entire retained transaction validates, so a
-throw cannot expose a half-applied tree. Event policy failures return
-`EmitResult` and never throw.
+## Generation teardown
 
-## Exact generation teardown
-
-`quiesceGeneration(generation)` is a synchronous, idempotent barrier. When it
-returns, no addon-owned thread, task, CallInvoker closure, device adapter, or
-callback may enter that generation.
-
-Reload, normal shutdown, and initialization-failure cleanup use the same order:
+Reload, normal shutdown, and initialization-failure cleanup share one order:
 
 1. Mark the generation `Quiescing`; reject new actions, commands, bundle loads,
-   and callback intake.
-2. Invalidate external event sinks and every mounted target token.
-3. Call addon `quiesceGeneration` in reverse plan order.
-4. Disable addon mount/command invocation while preserving the host delegate,
-   provider registry, context, and runtime.
-5. Call `stopSurface()` while both `ReactInstance` and the Fabric host remain
-   alive. Consume cleanup transactions without addon callbacks.
-6. Drain only runtime/event-loop work permitted by the shutdown contract.
-7. Call idempotent `HeadlessReactFabricHost::shutdown()` to detach animation and
-   UIManager delegates and clear generation-scoped host globals, weak accessors,
-   and callback registries. After detach it also releases the Fabric host's
-   strong `UIManager` and `ComponentDescriptorRegistry` references, leaving the
-   runtime's `UIManagerBinding` as the last descriptor-registry owner. Provider
-   registry, context, and addon provider storage remain owned by the Fabric
-   host. The normal path assumes the surface is already stopped; the destructor
-   guard stops it first only if an earlier failure skipped step 5.
-8. Clear TurboModule JS representations/caches, reset the external TimerManager
-   owner, and unregister Inspector.
-9. Call `instance.reset()`. JSI, UIManagerBinding, the component descriptor
-   registry (whose last strong owner is the binding), and runtime references die
-   while the provider registry and addon code remain loaded.
-10. Call `fabricHost.reset()`. Providers, context, event infrastructure,
-    handlers, flavors, and preflight objects may now die.
-11. Synchronously quit and clear the generation event loop.
-12. Convert retained errors to host-owned diagnostics, destroy any
-    `exception_ptr` whose dynamic object may live in addon code, clear the
-    generation record, and mark it `Closed`.
+   executor posts, and callback intake.
+2. Call addon `quiesceGeneration` in reverse plan order. Contract: when it
+   returns, no addon-owned thread, timer, executor task, or device adapter
+   will enter the generation. **TurboModule instances remain owned by the
+   runtime and may still be called by JavaScript until step 8** (React
+   unmount effects during `stopSurface` do this); after quiesce they must
+   answer safely — reject promises, return defaults, no-op — rather than free
+   state they still need.
+3. Disable addon mount/command invocation while keeping the host delegate,
+   provider registry, context, and runtime alive.
+4. Call `stopSurface()` **once** while both `ReactInstance` and the Fabric host
+   are alive; consume cleanup transactions without addon callbacks. This is
+   the only planned `stopSurface` on the happy path. `UIManager::stopSurface`
+   on an already-stopped surface is not assumed safe.
+5. Drain only the runtime/event-loop work the shutdown contract permits.
+6. Call idempotent `HeadlessReactFabricHost::shutdown()`: detach animation and
+   UIManager delegates; clear generation-scoped host globals
+   (`gHeadlessUIManager`), weak accessors, and callback registries; release
+   the host's strong `UIManager` and `ComponentDescriptorRegistry` references
+   so the runtime's `UIManagerBinding` is the last registry owner. The
+   provider registry, context, and addon provider storage stay owned by the
+   Fabric host. `shutdown()` does **not** call `stopSurface`. Today's
+   destructor (`HeadlessReactFabric.cpp:1501–1512`) currently `stopSurface`s;
+   after this delivery the destructor is a final guard that calls `shutdown()`
+   and may call `stopSurface` **only if the surface is still running**.
+7. Clear TurboModule JS representations and caches; reset the external
+   TimerManager owner; unregister the Inspector.
+8. Call `instance.reset()`. JSI, `UIManagerBinding`, `UIManager`, the descriptor
+   registry, and every TurboModule die while the provider registry and addon
+   code remain loaded.
+9. Call `fabricHost.reset()`. Providers, context, event infrastructure,
+   handlers, flavors, and preflight objects die.
+10. Quit and clear the generation event loop.
+11. Convert retained errors to host-owned diagnostics, destroy any
+    `exception_ptr` whose object may live in addon code, mark the generation
+    `Closed`.
 
-`HeadlessReactFabricHost::shutdown()` is idempotent, and its destructor invokes
-it as a final guard.
-
-The lifecycle gate instruments both registries and asserts that the
+`HeadlessReactFabricHost::shutdown()` is idempotent and its destructor calls it
+as a final guard. Calling `shutdown()` twice is a no-op. The lifecycle test
+instruments both registries and asserts that the
 `ComponentDescriptorRegistry` is destroyed before the
-`ComponentDescriptorProviderRegistry`; merely asserting
-`ReactInstance`-before-Fabric-host is insufficient.
-
-`quiesceGeneration` is `noexcept`. If native code actually throws through that
-boundary, C++ calls `std::terminate`; the host cannot catch and continue. The
-host continues teardown only for a separately detectable postcondition or
-diagnostic violation that did not escape the non-throwing call.
-
-After the final generation closes, the engine calls addon `unbind()` in reverse
-bind order, destroys each addon instance with its correct deleter, and only then
-releases the MODULE handle. No descriptor, flavor, handler, token, exception,
-RTTI object, or function pointer implemented by the MODULE may survive
-`dlclose()`.
-
-## Community SafeArea cutover
-
-### Ownership
-
-Official React Native `SafeAreaView` remains in the current-RN profile.
-`RNCSafeAreaContext`, `RNCSafeAreaProvider`, and `RNCSafeAreaView` belong to
-`react-native-safe-area-context` and move to the built-in `safe-area` addon.
-
-The cutover is atomic in one PR:
-
-- add the addon implementation, engine catalog entry, and MODULE test shim;
-- move `RNCSafeAreaContext` constants to the addon;
-- register real Provider and View descriptors;
-- declare and emit `topInsetsChange` through the scoped event sink;
-- remove all RNC names from framework inventory/provider/module tables;
-- remove the hardcoded SafeArea event function;
-- add `safe-area` after `expo` in the Expo auto slots; and
-- update all tests, metrics contracts, isolation checks, and behavioral docs.
-
-Dual registration and a profile fallback are forbidden. Without the addon, the
-module is unavailable, component requests become observable fallbacks, and
-strict conformance fails.
-
-### Snapshot and event semantics
-
-`RNCSafeAreaContext.initialWindowMetrics` and Provider events use the same
-frozen viewport snapshot. Insets are window-relative. Simulator chrome sits
-outside the React Native window, so v1 root values are zero on all four sides;
-the frame comes from the validated provider layout.
-
-The Provider emits `topInsetsChange` once on `Mounted`, then only when validated
-frame/insets change on `Updated`. It emits nothing during `Unmounted` or
-teardown. A representative payload is:
-
-```json
-{
-  "insets": {"top": 0, "right": 0, "bottom": 0, "left": 0},
-  "frame": {"x": 0, "y": 0, "width": 390, "height": 844}
-}
-```
-
-`RNCSafeAreaView` remains `LayoutOnly` until it parses `edges`/`mode` and applies
-native inset padding. Provider event routing is `HostAdapted`; it is not Android
-edge-to-edge or iOS device safe-area certification.
-
-The native host-route test proves descriptor registration, layout, event
-delivery, count, and payload without npm. A separate CI lane with a pinned,
-caller-built `react-native-safe-area-context` bundle must prove that real
-Provider children render before documentation claims library integration.
-
-## Older-JavaScript compatibility
-
-### One native engine
-
-`compat-rn73` adapts a caller JavaScript family to the current native engine. It
-does not make the native runtime React Native 0.73. The following three values
-remain distinct:
-
-| Meaning | Example with `compat-rn73` |
-| --- | --- |
-| Native engine/source ABI | `reactNativeVersion = "0.87.0"` |
-| Compatibility family claim | `bundleTargetFamily = "0.73.x"` |
-| Exact value visible to JS version check | `jsVisibleReactNativeVersion = "0.73.0"` |
-
-`ResolvedBundleCompatibility` has this closed resolution matrix across the
-rollout:
-
-| Configuration | Native | Target family | JS-visible exact | Level | Compat owner | Legacy `bundleTargetReactNativeVersion` |
-| --- | --- | --- | --- | --- | --- | --- |
-| `macos-rn87`, no compat | `0.87.0` | `0.87.x` | `0.87.0` | `native-headless` | `null` | `0.87.0` |
-| `android-rn87`, no compat | `0.87.0` | `0.87.x` | `0.87.0` | `native-headless-platform-adapter` | `null` | `0.87.0` |
-| `ios-rn87`, no compat | `0.87.0` | `0.87.x` | `0.87.0` | `native-headless-platform-adapter` | `null` | `0.87.0` |
-| Transitional `android-rn73` before PR 7 | `0.87.0` | `0.73.x` | `0.73.10` | `partial-compatibility-adapter` | `null` | `0.73.10` |
-| `android-rn87` + built-in `compat-rn73` after PR 7 | `0.87.0` | `0.73.x` | `0.73.0` | `best-effort-source-js` | `compat-rn73` | `0.73.0` |
-
-`hbcTranslation` is `false` in every row. Unsupported profile/addon
-combinations fail planning and produce no resolved record. PR 3 introduces the
-record while preserving the transitional profile row; PR 7 removes that row
-atomically with the old profile.
-
-For backward-compatible schema-2 output,
-`bundleTargetReactNativeVersion` is the exact JS-visible value (`0.73.0`). The
-new structured compatibility object carries the family claim (`0.73.x`). This
-avoids presenting an exact 0.73.0 native implementation while satisfying the
-0.73 major/minor JS check.
-
-The sealed `ResolvedBundleCompatibility` in `PreparedLaunchPlan` is the sole
-source for all three values, compatibility level, compat owner, and HBC
-translation flag. `AddonHostSnapshot`, the PlatformConstants wrapper, doctor,
-stderr diagnostics, final JSON, and live Inspector serialize or project this
-same record. `RuntimeProfileDescriptor` always retains the profile's native RN
-identity and never becomes a second compatibility source.
-
-### `compat-rn73` policy
-
-The production policy is engine-owned and exact:
-
-```text
-catalog key: compat-rn73
-required source: built-in
-allowed profile: android-rn87
-allowed overlay: PlatformConstantsReactNativeVersion
-target family: 0.73.x
-JS-visible tuple: 0.73.0
-auto-load: never
-```
-
-A path MODULE or in-process object named `compat-rn73` does not receive overlay
-privilege. `ios-rn87` or `macos-rn87` plus this addon fails during planning,
-before bind or JavaScript.
-
-The host wraps the Android RN 0.87 `PlatformConstants`, rewriting only nested
-`reactNativeVersion`. Non-version constants and methods must be proven identical
-to the unwrapped RN 0.87 module. The overlay applies to the whole Engine/VM, so
-every sequentially loaded bundle must use the same JS RN family.
-
-Additional modules are allowed only when a real 0.73.2 source/Metro fixture is
-observed requesting a name that RN 0.87 does not serve. Each such surface needs
-an explicit implementation/class/test. No speculative 0.73 module inventory is
-accepted.
-
-The addon does not own official Fabric components, `UIManager`, DOM,
-`NativeAnimatedModule`, feature flags, RuntimeScheduler, Hermes, Expo modules,
-or community SafeArea.
-
-### HBC boundary
-
-Compatibility does not translate Hermes bytecode. Caller source/Metro bundles
-may run on the pinned Hermes. HBC must match this binary's bytecode contract or
-fail clearly during bundle load. A bad-HBC failure is not a compat-addon defect.
-
-### Retiring `android-rn73`
-
-The profile is removed only in the same PR that meets all `compat-rn73` hard
-gates. After cutover:
-
-```text
---profile android-rn73
-```
-
-fails with a narrow migration tombstone:
-
-```text
-profile android-rn73 was removed; the native engine is RN 0.87.0.
-Use --profile android-rn87 --addon compat-rn73 for the 0.73.x JS adapter.
-```
-
-There is no alias and no dual-profile window. Active engine/profile code cannot
-contain an `android-rn73` branch after the cutover; the string is permitted only
-in migration diagnostics and negative tests.
-
-If the real 0.73.2 CI lane is not available or not green, PR 7 does not merge.
-Overlay infrastructure may be developed on its branch, but the repository must
-not land a partially completed PR 7, delete the profile, or claim migration is
-complete.
-
-## Built-in catalog
-
-| Name | Product role | Engine catalog | MODULE copy | Nightly | Auto-load |
-| --- | --- | --- | --- | --- | --- |
-| `expo` | application/third-party boot adapter | yes | source-build/test only | linked factory | Expo projects |
-| `safe-area` | community library | added atomically in its PR | source-build/test only | linked factory | Expo projects |
-| `compat-rn73` | version compatibility | added atomically in its PR | source-build/test only, no privilege | linked factory | never |
-| `rntester` | RN Tester application | no | `rntester-demo` component | no | never |
-
-The catalog belongs to the engine beginning with the typed planner PR. Generated
-`BuiltinAddonCatalog.cpp` holds strong references to every factory so static
-archive linking cannot dead-strip them. Each addon PR adds its own row; there is
-no intermediate era in which CLI factories work but `Engine` catalog names do
-not.
-
-Built-in catalog policy contains the expected addon identity, allowed manifest
-surface, evidence source, and any compatibility privilege. A mismatch is a
-terminal plan error, not a downgrade to MODULE behavior.
-
-## CMake, dynamic linking, and packaging
-
-### Build topology
-
-- Move `include(CTest)` before `add_subdirectory(runtime)`.
-- Discover sorted `runtime/addons/*/CMakeLists.txt` entries with
-  `CONFIGURE_DEPENDS`.
-- Create/migrate per-addon `CMakeLists.txt` files for every currently supported
-  addon, including Expo and RN Tester. If an addon directory contains source
-  files but no `CMakeLists.txt`, configuration fails instead of silently
-  dropping a legacy/private addon.
-- Compile each addon's implementation once as PIC OBJECT/static code.
-- Link a small MODULE entry shim against the same implementation object; do not
-  compile implementation sources twice under drifting defines.
-- Compile addon implementation/factory symbols with hidden visibility. A
-  MODULE exports only its C ABI descriptor entry point; built-in catalog
-  references are resolved statically inside the engine.
-- Use global properties for addon/test/install target collection.
-- Keep company names out of core CMake and CTest. Company-specific optional
-  logic lives only in that addon's directory.
-- Treat `BUILTIN`, catalog privilege, evidence, and install class as root-owned
-  policy. An addon directory cannot self-promote itself through CMake metadata.
-  Catalog keys are unique and checked against an engine-owned allowlist.
-- Mark the Fabric probe addon `TEST_ONLY`; it is neither catalogued nor
-  installable. Company addons and RN Tester cannot request built-in or
-  `InTreeVerified` status from their own CMake files.
-- Pass MODULE paths to tests with `$<TARGET_FILE:...>`; suffix inference is a
-  manual fallback only.
-- Generate the built-in catalog from declared addon metadata and retain strong
-  factory references.
-
-### Host symbol model
-
-macOS MODULEs continue to use dynamic lookup against an explicit executable
-export list. Linux source builds use the executable symbol export mechanism
-already selected by the project. The Fabric PR derives the macOS list from the
-actual undefined-symbol closure of a real descriptor MODULE; it does not rely on
-a hand-written guess.
-
-Linux `-rdynamic` must not preempt a MODULE's addon implementation with the
-same built-in symbols already present in the executable. Hidden implementation
-visibility (and local binding where required by the toolchain) leaves only the
-C descriptor entry externally visible. A `dladdr`-based provenance test proves
-that the MODULE accessor, `create` function, object vtable/function addresses,
-and destructor route originate in the loaded MODULE, while RN/Hermes host
-symbols resolve from the executable.
-
-At minimum, the real gate must cover descriptor/props/state/event-emitter RTTI,
-constructors/destructors, Yoga/View base classes, `convertRawProp`, and
-`folly::dynamic` paths actually referenced by the test addon.
-
-Source embedders that want path MODULEs must opt into the executable export
-contract with `rns_enable_addon_module_host(target)`. Built-in and in-process
-addons do not require that helper.
-
-The helper has its own minimal source-tree embedder gate. The executable links
-only `ReactNativeSimulator::Engine` plus the helper, then actually loads the
-real Fabric test MODULE and commits a tree. This proves that link options,
-undefined-symbol/export closure, and otherwise-unreferenced RN static-archive
-members are retained for embedders—not merely for `rnsim`.
-
-Sanitizer builds are necessary but insufficient: the macOS non-sanitized
-Release executable uses a different export path and must load a real `.dylib`.
-Linux must load the corresponding `.so`.
-
-### Installation and Nightly
-
-PR 1 preserves current source-install behavior while normalizing targets. PR 8
-moves every MODULE target—including built-in copies and discovered optional
-company addons—into an explicit non-default component such as
-`addon-development` or `rntester-demo`, and marks each corresponding
-`install(TARGETS ...)` rule `EXCLUDE_FROM_ALL` (or a verified equivalent).
-Assigning only `COMPONENT` is insufficient because a bare `cmake --install`
-otherwise installs every component. Explicit `cmake --install <build>
---component addon-development` or `--component rntester-demo` remains
-supported. A bare/default install and the Nightly install exclude all MODULE
-files, headers, RN trees, Hermes trees, and addon SDK artifacts.
-
-The DMG contains exactly one self-contained `rnsim`. Expo, SafeArea, and compat
-factories are linked into that executable. RN Tester and company addons are not.
-
-`rnsim --version --json` reports RN, Hermes, and `addonAbi: 4`. Release tooling
-captures that command once and derives every repeated identity field from that
-single JSON object; none is hardcoded. `verify-release.sh` reads the generated
-manifest and compares all repeated fields back to the packaged binary. Signing,
-notarization, dependency closure, export-list closure, and the one-file DMG
-verifier all operate on the same production executable.
-
-The packaged catalog is machine-readable (`rnsim --list-addons --json` or an
-equivalent field in version metadata). PR 8 asserts its exact production set is
-`expo`, `safe-area`, and `compat-rn73`; test-only, RN Tester, company, and MODULE
-entries are absent.
-
-## Metrics and observability
-
-### Schema-2 compatibility
-
-Metrics `schemaVersion` remains 2. Every existing flat-map key and fidelity
-value keeps its current meaning. In particular, exact consumers such as
-`NativeMicrotasksCxx === "real-headless"` continue to pass unchanged.
-
-New structured fields are additive:
-
-```json
-{
-  "schemaVersion": 2,
-  "addonAbi": 4,
-  "reactNativeVersion": "0.87.0",
-  "bundleTargetReactNativeVersion": "0.73.0",
-  "compatAddon": "compat-rn73",
-  "bundleCompatibility": {
-    "targetFamily": "0.73.x",
-    "jsVisibleReactNativeVersion": "0.73.0",
-    "level": "best-effort-source-js",
-    "nativeEngine": "0.87.0",
-    "hbcTranslation": false
-  },
-  "addonRecords": [
-    {
-      "name": "expo",
-      "source": "built-in",
-      "origins": ["auto", "cli"],
-      "role": "application"
-    }
-  ],
-  "nativeCapabilities": {
-    "modules": {
-      "NativeMicrotasksCxx": "real-headless",
-      "PlatformConstants": "<unchanged-current-value>"
-    },
-    "components": {
-      "RootView": "real-fabric-root"
-    },
-    "moduleContracts": [
-      {
-        "name": "NativeMicrotasksCxx",
-        "class": "implemented",
-        "legacyMetrics": [
-          {"name": "NativeMicrotasksCxx", "fidelity": "real-headless"}
-        ],
-        "owner": "host",
-        "evidence": "engine-verified"
-      }
-    ],
-    "componentContracts": [
-      {
-        "name": "Root",
-        "class": "implemented",
-        "legacyMetrics": [
-          {"name": "RootView", "fidelity": "real-fabric-root"}
-        ],
-        "owner": "host",
-        "evidence": "engine-verified",
-        "kind": "fabric-descriptor"
-      }
-    ],
-    "moduleOverlays": [
-      {
-        "module": "PlatformConstants",
-        "kind": "platform-constants-react-native-version",
-        "owner": "compat-rn73",
-        "targetFamily": "0.73.x",
-        "jsVisibleReactNativeVersion": "0.73.0"
-      }
-    ],
-    "fallbackComponents": []
-  },
-  "rnFrameworkModules": ["PlatformConstants"],
-  "addonModules": ["ExpoAsset"]
-}
-```
-
-Rules:
-
-- Flat `modules` and `components` are generated only from explicit legacy
-  projections.
-- Chrome reads structured contracts and evidence, never legacy substrings.
-- `addonModules` contains modules introduced by addons. An overlayed
-  `PlatformConstants` remains in `rnFrameworkModules` and appears only in
-  `moduleOverlays` for addon attribution.
-- No last-write-wins exists. Duplicate canonical contracts or legacy
-  projections fail planning.
-- A shared runtime-contract serializer feeds final headless metrics and
-  `makeLiveInspectorSnapshot`, so live and final addon/compat identity cannot
-  drift.
-- Schema 3, including any removal of flat maps, is a separate future design and
-  coordinated consumer migration.
-
-### Diagnostics
-
-Plan/load failures print a precise terminal diagnostic and prevent caller JS:
-
-```text
-Addon collision: module "UIManager" declared by addon "app" is owned by host
-
-Addon collision: component "View" declared by addon "app" is owned by profile android-rn87
-
-Addon collision: duplicate addon name "expo"
-  first: built-in (auto)
-  second: /opt/rns-addon-expo.dylib (cli)
-
-Addon policy: compat-rn73 may overlay PlatformConstants only as the built-in catalog addon on android-rn87
-```
-
-Runtime contract violations retain addon, operation, canonical surface,
-generation, surface ID, and tag when applicable. Rare rejection paths—stale
-token, cross-owner event, undeclared event/command, callback outside its extent,
-or teardown after reload—have explicit counters asserted in tests. A normal
-workload's incidental execution is not accepted as route evidence.
-
-Loading `compat-rn73` always emits an honest native-versus-target diagnostic:
+`ComponentDescriptorProviderRegistry`.
+
+After the final generation closes, the engine calls `unbind()` in reverse bind
+order, destroys each addon with its own deleter, and only then releases the
+MODULE handle.
+
+## Built-in addons
+
+| Key                                                             | Role                                         | Built-in    | MODULE          | Auto        | In Nightly            |
+| --------------------------------------------------------------- | -------------------------------------------- | ----------- | --------------- | ----------- | --------------------- |
+| `expo`                                                          | application boot adapter                     | yes         | tests only      | `expo`      | yes                   |
+| `safe-area`                                                     | community (`react-native-safe-area-context`) | yes         | tests only      | `always`    | yes                   |
+| `compat-rn73`                                                   | version compatibility (0.73.x family)        | yes         | tests only      | `never`     | yes                   |
+| `rntester`                                                      | RN Tester application                        | no          | `rntester-demo` | —           | no                    |
+| downstream `runtime/addons/<name>/` or `RNS_ADDON_DIRS` entries | business                                     | as declared | as declared     | as declared | no (downstream build) |
+
+### `safe-area`
+
+Official RN `SafeAreaView` stays in the profile. `RNCSafeAreaContext`,
+`RNCSafeAreaProvider`, and `RNCSafeAreaView` move to the addon:
+
+- `RNCSafeAreaContext.initialWindowMetrics` is a **snapshot** record, read from
+  `getConstants()` at JS module init, **before any Provider mounts**. Insets
+  are window-relative and zero on all four sides in v1. `frame` is the snapshot
+  viewport at origin `(0, 0)` (`x=0`, `y=0`, `width=snapshot.viewport.width`,
+  `height=snapshot.viewport.height`). This matches today's
+  `RNCSafeAreaContextModule` (`HeadlessRNModules.cpp:316–326`) and
+  `tests/headless-api-modules-smoke.cpp:215–216` (`metrics.frame.width ===`
+  the viewport, not a Provider layout). Taking frame from Provider layout
+  would make `initialWindowMetrics` undefined at the only time JS can read it.
+- The Provider is a real descriptor. Its mount handler emits `topInsetsChange`
+  once on `Mounted` and only on `Updated` when frame or insets changed, through
+  the node's own event emitter. The event payload carries the **committed
+  layout frame** of that Provider (Yoga) plus the same zero insets. It emits
+  nothing on `Unmounted`. `initialWindowMetrics` is not updated from these
+  events in v1.
+- `RNCSafeAreaView` is a real descriptor classified `LayoutOnly` until it
+  applies `edges`/`mode` padding in its own ShadowNode.
+- The profile module, the official-table `RNC*` rows, and
+  `emitSafeAreaInsetsIfNeeded` are deleted in the same change. There is no dual
+  registration and no profile fallback.
+
+`--no-addon safe-area` (and `--no-auto-addons`) interaction:
+
+| Surface | Default (auto `safe-area`) | `--no-addon safe-area` |
+| ------- | -------------------------- | ---------------------- |
+| TurboModule `RNCSafeAreaContext` | available, owner `addon:safe-area` | unavailable (`nullptr`) |
+| `hasComponent("RNCSafeAreaProvider")` | `true` (ledger row, `FabricDescriptor`) | `false` |
+| `hasComponent("RNCSafeAreaView")` | `true` | `false` |
+| `hasComponent("SafeAreaView")` (official RN) | `true`, owner profile | unchanged |
+| If JS still renders `RNCSafeArea*` | not a fallback | observable `fallbackComponents` entry |
+| `--fail-on-component-fallback true` / conformance | pass if no other fallbacks | **fail** once a fallback is recorded |
+
+A host-route test proves descriptor registration, Yoga frame, event type,
+count, and payload without npm. Library integration (real Provider children
+rendering) is proven by the RN Tester lane or a pinned caller bundle before
+documentation claims it.
+
+### `expo`
+
+ABI 4 does not add Expo SDK coverage. The addon still owns only the boot
+modules and the `globalThis.expo` JSI shape.
+
+Served TurboModules (classification `HostAdapted`, owner `addon:expo`):
+
+`ExpoModulesCore`, `ExpoAsset`, `ExpoKeepAwake`, `ExpoSplashScreen`,
+`ExpoFontLoader`, `ExpoSystemUI`, `ExponentConstants`, `ExpoFetchModule`,
+`ExpoLinking`.
+
+JSI (`installJSI`, after protected globals):
+
+- Evaluate the existing bootstrap that defines `EventEmitter`, `NativeModule`,
+  `SharedObject`, `SharedRef`, `uuidv4` / `uuidv5`, `getViewConfig`,
+  `reloadAppAsync`, and `ExpoFetchModule.NativeRequest` / `NativeResponse`.
+- Alias TurboModule-backed names from `nativeModuleProxy[name]` (the
+  `jsRepresentation`), as specified in JSI installation order.
+- Do **not** call `getTurboModule` a second time and do not
+  `jsi::Object::createFromHostObject` of a new C++ module.
+- `ExponentConstants` still reports `executionEnvironment: "bare"` and does
+  not install Expo Go.
+- `ExpoLinking` reads `snapshot().initialUrl` (plan-frozen), not `getenv`.
+
+No Fabric components, no overlays, no `bundleCompatibility`.
+`wrapTurboModule` is identity and is never called by the host.
+`configureFabric` is empty. Auto policy `expo`. Built-in in Nightly; MODULE
+copy is tests-only (`TEST_ONLY` or the existing `RNS_EXPO_ADDON_DYLIB` shim,
+not installed into the DMG).
+
+Expo Router, Reanimated, Screens, Gesture Handler, `expo-image`, and the rest
+of the SDK remain unavailable unless a separate addon provides them.
+
+### `rntester`
+
+`rntester` is an application addon for RN's official demo. It is **not**
+`BUILTIN`, has no auto policy, is not in `--list-addons`, and is not in
+Nightly. CMake builds `rns-addon-rntester.{dylib,so}` and installs it only
+through component `rntester-demo` with `EXCLUDE_FROM_ALL`.
+
+CLI: `--addon $<TARGET_FILE:react-native-simulator-addon-rntester>` (or the
+equivalent path). Bare `--addon rntester` is `unknown addon name`.
+
+ABI 4 manifest (role `Application`):
+
+- modules: `NativeCxxModuleExampleCxx`, `ScreenshotManager` (`Mocked`,
+  tester stubs);
+- components: `RNTReportFullyDrawnView`, `RNTMyNativeView`,
+  `RNTMyLegacyNativeView`, `AndroidPopupMenu` (`DescriptorOnlyMock`);
+- `viewManagerConfigs`: `RNTMyLegacyNativeView` with `PI` and commands
+  `changeBackgroundColor` / `addOverlays` / `removeOverlays` (legacy
+  constants; host still translates them into `RN$LegacyInterop_UIManager_*`).
+
+The host registers the mocks from the manifest. `configureFabric` is empty.
+`wrapTurboModule` is identity. `installJSI` is empty. Isolation checks in
+`verify-addons.mjs` continue to assert that framework sources do not mention
+these names.
+
+### `compat-rn73`
+
+The native engine is RN 0.87. Three values stay distinct everywhere:
+
+| Meaning                         | Value with `compat-rn73`                  |
+| ------------------------------- | ----------------------------------------- |
+| Native engine / source ABI      | `reactNativeVersion = "0.87.0"`           |
+| Compatibility family claim      | `bundleTargetFamily = "0.73.x"`           |
+| Value the JS version check sees | `jsVisibleReactNativeVersion = "0.73.10"` |
+
+Manifest: `role = VersionCompat`, `allowedProfiles = ["android-rn87"]`,
+`moduleOverlays = [PlatformConstants]`,
+`bundleCompatibility = {"0.73.x", "0.73.10", "best-effort-source-js"}`. The
+`PlatformConstants` wrapper rewrites only the nested `reactNativeVersion`
+constant (and equivalent property paths) and forwards everything else to the
+RN 0.87 module; a test proves every non-version constant and method is
+identical to the unwrapped module.
+
+Additional served modules are admitted only from the observed request
+inventory of the real business bundle (today's `android-rn73` differs from
+`android-rn87` only by `PlatformConstants`, so the expected inventory is small).
+Each admitted surface has its own class, implementation, and test; no
+speculative 0.73 names.
+
+Resolution matrix (`hbcTranslation` is always `false`; unsupported
+combinations fail planning):
+
+| Configuration                             | Native                             | Family   | JS-visible | Level                              | Compat owner  |
+| ----------------------------------------- | ---------------------------------- | -------- | ---------- | ---------------------------------- | ------------- |
+| `macos-rn87`                              | `0.87.0`                           | `0.87.x` | `0.87.0`   | `native-headless`                  | —             |
+| `android-rn87` / `ios-rn87`               | `0.87.0`                           | `0.87.x` | `0.87.0`   | `native-headless-platform-adapter` | —             |
+| `android-rn87` + `compat-rn73`            | `0.87.0`                           | `0.73.x` | `0.73.10`  | `best-effort-source-js`            | `compat-rn73` |
+| `ios-rn87` / `macos-rn87` + `compat-rn73` | planning error (`allowedProfiles`) |          |            |                                    |               |
+
+Loading the addon prints once:
 
 ```text
 rnsim: native RN 0.87.0 + Hermes 260318099.0.1 is running JavaScript targeting
@@ -1936,580 +1801,696 @@ the RN 0.73.x family via compat-rn73. This is a best-effort source-JS adapter,
 not an RN 0.73 native engine. Hermes bytecode is not translated.
 ```
 
-Doctor classifies:
+Doctor classifies installed/declared `react-native` versions:
 
-- RN 0.73 without the addon as `needs-compat-addon`;
-- RN 0.73 with the explicit built-in as `compatible-via-addon`;
-- unknown/unsupported families, including 0.76 before a corresponding addon,
-  as unsupported; and
-- no family as automatically compatible merely because Expo was detected.
+| Detected JS family | Without addon | With `--addon compat-rn73` |
+| ------------------ | ------------- | -------------------------- |
+| `0.87.0` exact | `compatible` | `compatible` (addon unused unless requested; still never auto-loaded) |
+| `0.73.x` | `needs-compat-addon` | `compatible-via-addon` |
+| other (including Expo SDK 57 / RN 0.86) | `unsupported` / existing Expo warning | not a compat-addon success |
 
-## Security and trust boundary
+Doctor never auto-loads `compat-rn73`.
 
-React Native Simulator is not a sandbox. A MODULE executes with the process's
-filesystem, network, memory, and user permissions. macOS Nightly entitlements
-disable library validation so caller-built native addons are not rejected by
-Developer ID library validation.
+HBC boundary: the business bundle must be Metro source output or HBC compiled
+with the pinned `hermesc`; other bytecode fails clearly at load and is not a
+compat defect.
 
-Accurate claims are:
+`android-rn73` is deleted in the same change, together with
+`PlatformConstantsAndroidRN73` and its positive tests. `--profile android-rn73`
+prints only:
+
+```text
+profile android-rn73 was removed; the native engine is RN 0.87.0.
+Use --profile android-rn87 --addon compat-rn73 for the 0.73.x JS adapter.
+```
+
+The string survives only in that message and negative tests, including the
+`console.error` mismatch hint in `SimulatorEngine.cpp`.
+
+CMake does **not** rename `RNS_RN0732_FIXTURE_BUNDLE` into the business-bundle
+variable. Two artifacts stay distinct:
+
+| Variable | Artifact | Role |
+| -------- | -------- | ---- |
+| `RNS_RN073_BUSINESS_BUNDLE` + `RNS_RN073_BUSINESS_PROVENANCE` + `RNS_REQUIRE_RN073_BUSINESS_BUNDLE` | real RN 0.73.10 business JS (Metro source or pinned-`hermesc` HBC) | **DoD gate.** `REQUIRE=ON` fails configure if the bundle or provenance file is missing, unreadable, or fails schema/SHA-256 |
+| `RNS_RN0732_FIXTURE_BUNDLE` (unchanged name) | optional synthetic 0.73.2 mutation/TextInput fixture used today | **not the gate.** Tests `rn0732-retained-scene-mutations` and `rn0732-textinput-interaction` are rewritten onto `--profile android-rn87 --addon compat-rn73` and stay optional: unset path → tests not registered. A skip here is not a DoD pass |
+
+Provenance file (`RNS_RN073_BUSINESS_PROVENANCE`) is JSON, checked in or
+supplied next to the private artifact. CI reads the two paths from the
+environment (`RNS_RN073_BUSINESS_BUNDLE`, `RNS_RN073_BUSINESS_PROVENANCE`)
+and passes them as CMake cache entries. This document does not invent a
+private URL or secret name; the org's workflow download step sets the env.
+
+```json
+{
+    "schemaVersion": 1,
+    "family": "0.73.x",
+    "jsVisibleReactNativeVersion": "0.73.10",
+    "source": {
+        "repository": "<string>",
+        "commit": "<hex or empty>",
+        "artifactId": "<string or empty>"
+    },
+    "build": {
+        "command": "<string>",
+        "format": "metro-source"
+    },
+    "sha256": "<lowercase hex of the bundle bytes>",
+    "pass": {
+        "stderrContains": [
+            "native RN 0.87.0 + Hermes 260318099.0.1 is running JavaScript targeting",
+            "the RN 0.73.x family via compat-rn73"
+        ],
+        "metrics": {
+            "schemaVersion": 3,
+            "addonAbi": 4,
+            "reactNativeVersion": "0.87.0",
+            "profile.name": "android-rn87",
+            "bundleCompatibility.targetFamily": "0.73.x",
+            "bundleCompatibility.jsVisibleReactNativeVersion": "0.73.10",
+            "bundleCompatibility.level": "best-effort-source-js",
+            "bundleCompatibility.compatAddon": "compat-rn73",
+            "bundleCompatibility.hbcTranslation": false,
+            "reactFabric": true
+        },
+        "metricsRegex": "<optional; bundle-specific Fabric counters / nativeIds>"
+    }
+}
+```
+
+`build.format` is `"metro-source"` or `"hermesc-hbc"`. Configure hashes the
+bundle file and requires it to equal `sha256`. The optional CTest
+`rn07310-business-bundle` is **not** a default GitHub Actions job. It is
+registered only when the operator supplies both CMake cache inputs
+`RNS_RN073_BUSINESS_BUNDLE` and `RNS_RN073_BUSINESS_PROVENANCE` (local or
+org-private CI). Default `linux.yml` / `macos.yml` workflows run `core` and
+sanitized/GUI jobs only; they must not fetch private bundles. When those
+cache inputs are present, the test runs:
+
+```text
+rnsim headless --profile android-rn87 --addon compat-rn73
+  --bundle ${RNS_RN073_BUSINESS_BUNDLE} --timeout-ms <from provenance or 15000>
+```
+
+and asserts the provenance `pass.stderrContains` strings, the `pass.metrics`
+JSON pointers (dot paths into the metrics object), and `pass.metricsRegex` if
+present. Extra TurboModule names the bundle actually requests are admitted
+only with class, owner, and a test — that inventory is a gate *input* recorded
+beside the provenance file, not a design choice.
+
+Fate of other `android-rn73` tests in `tests/CMakeLists.txt`:
+
+- `rn73-profile` (`:182–185`, `:219–221`) becomes a **negative** tombstone
+  test: `--profile android-rn73` prints the removal message and exits
+  nonzero.
+- `shopee-addon` is not referenced in core CMake or CTest. Company addons
+  live under `RNS_ADDON_DIRS` and register their own tests.
+- `rn0732-*` as in the table above: optional extra, rewritten profile+addon,
+  same CMake variable name, not DoD.
+
+Downstream compatibility addons (`compat-rn76`, …) are ordinary addons with
+their own claim; the engine grants no privilege by name.
+
+## Catalog, CMake, packaging
+
+### Declaration and discovery
+
+```cmake
+rns_declare_addon(
+  NAME safe-area
+  SOURCES SafeAreaAddon.cpp
+  BUILTIN                      # link into the engine; add to the catalog
+  MODULE                       # also build rns-addon-safe-area.{dylib,so}
+  AUTO always                  # always | expo | never   (BUILTIN only)
+  # TEST_ONLY                  # never catalogued or installed
+  # INSTALL_COMPONENT addon-development
+)
+```
+
+- Root `CMakeLists.txt` moves `include(CTest)` before `add_subdirectory(runtime)`.
+- `runtime/CMakeLists.txt` discovers addons by pinning the upstream trio
+  (`expo`, `safe-area`, `compat-rn73`) first, then adding every remaining
+  sorted `runtime/addons/*/CMakeLists.txt` with `CONFIGURE_DEPENDS`, then each
+  directory in the `RNS_ADDON_DIRS` cache list. An addon directory containing
+  sources but no `CMakeLists.txt` fails configure. Duplicate keys fail
+  configure.
+- Every current addon (`expo`, `rntester`, optional company trees via
+  `RNS_ADDON_DIRS`) gets its own `CMakeLists.txt`; core CMake and CTest
+  contain no company names or `EXISTS` guards. `rntester` declares `MODULE` +
+  `INSTALL_COMPONENT rntester-demo` without `BUILTIN`.
+- The implementation compiles once as PIC OBJECT/static; the MODULE is a thin
+  entry shim linked against it. Implementation symbols use hidden visibility;
+  only the C entry is exported, so Linux `-rdynamic` cannot preempt a MODULE's
+  code with the executable's built-in copy. A `dladdr` provenance test proves
+  the MODULE's `create`, vtable calls, `unbind`, and `destroy` execute MODULE
+  code.
+- `BuiltinAddonCatalog.cpp` is generated from declarations with strong factory
+  references so archive linking cannot dead-strip them; it carries key, auto
+  policy, and factory. `rnsim --list-addons --json` prints it.
+- Tests receive MODULE paths via `$<TARGET_FILE:...>`; `verify-addons.mjs`
+  accepts `.dylib` and `.so`.
+
+### Host symbol model
+
+macOS MODULEs use dynamic lookup against `cmake/macos-engine-exported-symbols.txt`,
+regenerated from the undefined-symbol closure of the real Fabric test MODULE
+(descriptor/props/state/emitter RTTI, constructors, Yoga/View bases,
+`convertRawProp`, `folly::dynamic`). Linux keeps the project's executable
+export mechanism (`-rdynamic`). Source embedders that want path MODULEs opt in
+with `rns_enable_addon_module_host(target)`; a minimal executable that links
+only `ReactNativeSimulator::Engine` plus the helper loads the test MODULE and
+commits a tree, proving retention for embedders and not only `rnsim`.
+
+### Installation and Nightly
+
+Every MODULE target — built-in copies, RN Tester, downstream addons — installs
+only through an explicit component (`addon-development`, `rntester-demo`, or
+the declared `INSTALL_COMPONENT`) with `EXCLUDE_FROM_ALL`, so a bare
+`cmake --install` contains no MODULE, header, RN tree, or Hermes tree.
+`package-macos.sh` continues to copy the single build-tree `rnsim` into the
+DMG; `verify-release.sh` checks the DMG contains exactly `rnsim`.
+
+`rnsim --version --json` reports RN, Hermes, commit, and `addonAbi: 4`.
+`generate-release-manifest.sh` captures that JSON once and derives every
+repeated identity field from it; `verify-release.sh` compares the manifest back
+to the binary. `cmake/ValidateCliMetadata.cmake` asserts `addonAbi == 4`. The
+packaged upstream catalog is exactly `expo`, `safe-area`, `compat-rn73`.
+
+## Observability
+
+Runtime metrics move to `schemaVersion: 3`. Flat fidelity maps,
+`rnFrameworkModules`, `addonModules`, `bundleTargetReactNativeVersion`, and
+top-level `compatibilityLevel` are replaced by structured fields. Workload,
+bundle records, timing, memory, Hermes heap/GC, RSS, CPU, and `requirements`
+objects are unchanged. The benchmark comparison JSON produced by
+`tools/benchmark` is a separate document and is untouched unless it embeds
+runtime metrics (`tools/benchmark/lib/benchmark-utils.mjs` currently requires
+schema 2 and must be updated in this same delivery if it parses runtime
+metrics).
+
+```json
+{
+    "schemaVersion": 3,
+    "addonAbi": 4,
+    "reactNativeVersion": "0.87.0",
+    "hermesVersion": "260318099.0.1",
+    "profile": {
+        "name": "android-rn87",
+        "platform": "android",
+        "compatibilityLevel": "native-headless-platform-adapter"
+    },
+    "bundleCompatibility": {
+        "targetFamily": "0.73.x",
+        "jsVisibleReactNativeVersion": "0.73.10",
+        "level": "best-effort-source-js",
+        "compatAddon": "compat-rn73",
+        "hbcTranslation": false
+    },
+    "addons": [
+        { "name": "safe-area", "source": "built-in", "origins": ["auto"], "role": "community", "version": "1.0.0" },
+        {
+            "name": "compat-rn73",
+            "source": "built-in",
+            "origins": ["config"],
+            "role": "version-compat",
+            "version": "1.0.0"
+        }
+    ],
+    "nativeCapabilities": {
+        "modules": [
+            { "name": "NativeMicrotasksCxx", "class": "implemented", "owner": "host", "note": "real-headless" },
+            {
+                "name": "PlatformConstants",
+                "class": "host-adapted",
+                "owner": "android-rn87",
+                "note": "rn-0.87-platform-constants"
+            },
+            {
+                "name": "RNCSafeAreaContext",
+                "class": "host-adapted",
+                "owner": "addon:safe-area",
+                "note": "window-relative-insets"
+            }
+        ],
+        "components": [
+            { "name": "RootView", "class": "implemented", "owner": "host", "kind": "fabric-descriptor" },
+            {
+                "name": "RNCSafeAreaProvider",
+                "class": "host-adapted",
+                "owner": "addon:safe-area",
+                "kind": "fabric-descriptor",
+                "events": ["topInsetsChange"]
+            }
+        ],
+        "moduleOverlays": [{ "module": "PlatformConstants", "owner": "addon:compat-rn73" }],
+        "fallbackComponents": [],
+        "text": {}
+    }
+}
+```
+
+Rules:
+
+- One shared serializer feeds final headless metrics and
+  `makeLiveInspectorSnapshot`; live and final addon/compat identity cannot
+  drift.
+- Chrome reads `class` and `owner`; it never substring-matches notes.
+- Duplicate contracts fail planning; there is no last-write-wins.
+- Wrapping does not change the served-name owner: `PlatformConstants.owner`
+  stays the profile; `moduleOverlays` names `addon:compat-rn73`.
+- `verify-runtime.mjs` is updated in the same change to schema 3 (for example
+  `modules.find(m => m.name === "NativeMicrotasksCxx").class === "implemented"`).
+- `verify-addons.mjs` is updated in the same change: it currently asserts
+  schema-2 `rnFrameworkModules` / `addonModules` (`:40–72`) and a `.dylib`
+  path; it must read schema-3 structured arrays and accept `.so`.
+
+Diagnostics for plan failures are terminal and precise:
+
+```text
+Addon collision: module "UIManager" declared by addon "app" is owned by host
+Addon collision: component "View" declared by addon "app" is owned by profile android-rn87
+Addon collision: duplicate addon name "expo"
+  first: built-in (auto)
+  second: /opt/rns-addon-expo.dylib (cli)
+Addon policy: compat-rn73 allows profiles [android-rn87]; selected ios-rn87
+Addon policy: overlay target "PlatformConstants" is already wrapped by addon "compat-rn73"
+```
+
+Runtime contract violations record addon, operation, surface, generation,
+surface ID, and tag. Rare routes — stale command target, unknown command,
+cross-owner registration attempt, wrong-thread delegate callback, executor post
+after quiesce, protected-global mutation — have explicit counters asserted in
+tests. A workload's incidental execution is not route evidence.
+
+No new metrics backend, log shipper, or alerting pipeline is introduced. stderr
+diagnostics plus the schema-3 JSON object are the observability surface.
+
+## Security and trust
+
+React Native Simulator is not a sandbox. A MODULE has the process's filesystem,
+network, memory, and user permissions (`SECURITY.md`). Accurate claims:
 
 - ABI, fingerprint, RN, and Hermes checks are compatibility checks.
-- Collision/ledger checks are correctness checks.
-- Host-derived evidence controls product presentation; it is not native-code
+- Ledger and collision checks are correctness checks.
+- Addons receive real RN objects (`ShadowNode`, `ComponentDescriptorParameters`,
+  `jsi::Runtime`) because they are trusted in-process code; the host claims no
   isolation.
-- Missing Nightly headers are a support and packaging boundary, not a security
-  mitigation.
-- `AddonHost` and the registrar do not directly expose UIManager,
-  `ContextContainer`, EventDispatcher, retained-scene mutation, Skia, or ImGui.
-- Real descriptors necessarily receive upstream RN contexts through
-  `ComponentDescriptorParameters`; arbitrary trusted native code cannot be
-  technically prevented from reaching process internals.
-- Addons must not retain a JSI runtime, JSI values, or CallInvoker beyond its
-  generation. Weak sink/token facades may be copied, but they must not be used
-  to enter a closed generation or emit outside the active callback; those calls
-  return the specified rejection result.
-- DevTools remains loopback-only with per-session token and Host/Origin checks.
+- Missing Nightly headers and the strict fingerprint are packaging boundaries,
+  not security controls. The library-validation entitlement is removed because
+  Nightly cannot load external MODULEs anyway; Hardened Runtime library
+  validation then rejects foreign Team ID dylibs at map time as a second
+  packaging boundary.
+- DevTools remains loopback-only with a per-session token and Host/Origin
+  checks.
 
-No addon path is accepted as a security boundary. Operators may disable
-automatic built-ins, but explicit same-process native loading remains a trusted
-operation.
+## Delivery
 
-## Verification strategy
+One change set. The order below is the dependency order for building and
+testing it; the only merge gate is the Definition of Done. It is **not** a
+sequence of independently mergeable PRs. See [PR Plan](#pr-plan).
 
-### Universal gates
+1. **Build topology** — `include(CTest)` first; generic discovery;
+   `rns_declare_addon`; `RNS_ADDON_DIRS`; OBJECT + shim; hidden visibility;
+   generated catalog; `$<TARGET_FILE>`; portable `verify-addons.mjs` (`.so` /
+   `.dylib` only at this step); `dladdr` provenance test.
+2. **Launch planner** — `LaunchDraft`, specs, `PreparedAddonCandidates`,
+   `PreparedLaunchPlan`, `EngineState`; single-open candidates; deterministic
+   merge with auto policies; config schema 2; CLI flags and `--list-addons`;
+   three-phase interactive launch with typed errors; delete `Engine::addAddon`
+   and both `Engine::loadBundle` overloads.
+3. **Framework inventory + schema 3** — executable rows for every host/profile
+   surface; owner map; unified `hasComponent`; structured metrics; shared
+   serializer; chrome on class/owner; delete `classifyRuntimeCapability`;
+   update `verify-runtime.mjs`, `verify-addons.mjs` (drop
+   `rnFrameworkModules` / `addonModules`), and `benchmark-utils.mjs`.
+4. **ABI 4** — descriptor, fingerprint, `RNS_EXPORT`, manifest validation,
+   vtable, `AddonGenerationContext`, executor, host snapshot with revision,
+   bind/unbind, JSI order and protected globals, overlay wrapping, plan-frozen
+   `initialUrl` and `hostEnvironment()`; migrate `expo`, `rntester`, and any
+   discovered company addon; Expo via `nativeModuleProxy`; `ValidateCliMetadata`
+   and release manifest derive `addonAbi`.
+5. **Fabric host** — registrar, ledger, preflight inside
+   `componentRegistryFactory`, fixed-point names, mount notifications from
+   validated trees, command chain, exception channels, thread enforcement,
+   teardown order and idempotent `shutdown()`, export list from the real test
+   MODULE, `rns_enable_addon_module_host`, test-only Fabric addon, minimal
+   embedder executable.
+6. **`safe-area`** — addon, catalog row (`AUTO always`), real descriptors,
+   snapshot constants, `topInsetsChange` via emitter; delete profile module,
+   official rows, and hardcoded emit.
+7. **`compat-rn73`** — wrapper test first; observed module inventory from the
+   business bundle; overlay; claim; doctor; metrics; delete `android-rn73`,
+   `PlatformConstantsAndroidRN73`, positive tests; tombstone and negative tests;
+   `RNS_RN073_BUSINESS_BUNDLE` required lane; rewrite optional `rn0732-*`.
+8. **Package and docs** — Expo + safe-area + compat triple in deterministic
+   order from the packaged binary; install components with `EXCLUDE_FROM_ALL`;
+   entitlement removal; `ADDONS.md`, `VERSIONING.md`, `SIMULATOR_DESIGN.md`,
+   `Agents.md`, baselines, troubleshooting, CLI help, config schema;
+   `tools/rntester/bundle.mjs` and `tests/fixtures/rnsim.json` to schema 2.
 
-Every PR runs the narrow red/green tests first, followed by:
+### Gates
 
 ```sh
-cmake --preset release
-cmake --build --preset release --parallel
-ctest --preset release
+cmake --preset release && cmake --build --preset release --parallel && ctest --preset release
+cmake --preset sanitized && cmake --build --preset sanitized --parallel && ctest --preset sanitized
 node tools/diagnostics/verify-runtime.mjs
 node tools/diagnostics/verify-addons.mjs
 ```
 
-ABI, JSI, Fabric, reload, SafeArea, and compatibility PRs also run:
-
-```sh
-cmake --preset sanitized
-cmake --build --preset sanitized --parallel
-ctest --preset sanitized
-```
-
-Each handoff records:
-
-- native RN/Hermes identity;
-- caller bundle source and format;
-- exact command, exit status, signal status, stdout JSON, and relevant stderr;
-- the narrowest route assertion;
-- whether the test used a built-in, MODULE, or in-process addon; and
-- skips as skips, never as passing evidence.
-
-Node diagnostics are optional tooling gates and use Node built-ins only. Native
-CTest remains the semantic gate.
-
-### Required external-fixture lanes
-
-Conditional test registration is not evidence. Behavioral PRs that require an
-external caller bundle add dedicated CI workflows and fail configuration when
-their fixture is absent:
-
-- PR 6 runs the RN Tester lane with
-  `-DRNS_REQUIRE_RNTESTER_BUNDLE=ON` and an existing
-  `RNS_RNTESTER_BUNDLE` path.
-- PR 7 adds `RNS_REQUIRE_RN0732_FIXTURE_BUNDLE=ON`, supplies
-  `RNS_RN0732_FIXTURE_BUNDLE`, and fails configure if the file or required CTest
-  label is missing.
-
-Each lane records the caller repository, exact commit, bundle build command,
-bundle format (`source`/Metro output rather than incompatible HBC where
-required), and SHA-256. The workflow files and a checked-in fixture-provenance
-record are part of the behavioral PR's scope. A missing secret, unavailable
-artifact, skipped condition, or zero matching tests fails the required lane; it
-does not count as a pass.
-
-### Planner matrix
-
-- auto-only;
-- explicit built-in only;
-- explicit MODULE only;
-- auto plus explicit matching built-in;
-- auto plus explicit same-name MODULE occupying the auto slot;
-- two explicit requests with the same manifest name;
-- disabled auto-only slot;
-- explicit/disabled contradiction;
-- unknown bare name;
-- config string relative path;
-- config tagged relative path;
-- config tagged built-in name;
-- duplicate canonical MODULE path and two symlink spellings fail before the
-  second `dlopen`, with a static-constructor/open counter of one;
-- unknown disabled name and repeated config/CLI disable (defined idempotently);
-- CLI/config explicit-order and disable precedence;
-- exact total order for every case;
-- interactive Metro retry with one `dlopen`, one `create`, one frozen
-  declaration snapshot (ABI 3 getter set in PR 2, `manifest()` from PR 4), and
-  one engine plan application; and
-- terminal planner failures never entering the retry loop.
-
-### Inventory and metrics matrix
-
-- every executable framework provider/factory has one contract and vice versa;
-- old `verify-runtime.mjs` is unmodified and passes;
-- golden pre-change flat maps compare exact keys and values;
-- canonical `Root` projects the historic `RootView` metric only;
-- final and live serializers produce the same addon/compat contracts;
-- `hasComponent` agrees with the sealed component ledger;
-- requesting a fallback does not change `hasComponent`; and
-- `android-rn73` behavior stays unchanged through PR 4.
-
-### ABI and lifecycle matrix
-
-- directed ABI 3 rejection without calling its accessor;
-- short `descriptorSize`, fingerprint mismatch, RN mismatch, Hermes mismatch,
-  null callbacks, throwing create with exception destruction before `dlclose`,
-  null create result, and descriptor/manifest name mismatch;
-- all intra-addon and cross-owner collisions;
-- invalid class/kind combinations and invalid legacy-view-manager references;
-- path/in-process evidence cannot elevate;
-- built-in/catalog manifest mismatch is terminal;
-- `manifest == 1`; bind is entered at most once, and every entered bind gets
-  exactly one rollback/final `unbind`, including the addon whose bind throws;
-- every successful generation has `configureFabric == 1`, `installJSI == 1`,
-  and `quiesceGeneration == 1` for every bound addon;
-- a failed generation invokes only the configure/install prefix reached before
-  failure, never retries a hook, and still quiesces every bound addon exactly
-  once;
-- reverse unbind and correct deleter before `dlclose`; and
-- Expo proxy identity and protected-global mutation rejection; and
-- `dladdr`/equivalent provenance proves MODULE create, vtable calls, unbind,
-  destroy, and descriptor code are not preempted by a built-in copy.
-
-### Fabric test-addon matrix
-
-A real dynamically loaded test addon supplies a `ConcreteViewShadowNode` and
-proves:
-
-- Create/Insert/Update/Remove/Delete and expected Yoga width;
-- props construction, state, event-emitter type, `BaseViewProps` retained-scene
-  projection, RTTI, and destruction across the dylib/so boundary;
-- mandatory preflight rejects null/throwing/mismatched/missing/extra/duplicate
-  providers, duplicate handles, and re-entrancy;
-- request-ledger validation covers every pinned RN special mapping, raw and
-  normalized-key conflicts, missing canonical targets, guarded one-/two-byte
-  names, and `RCT` prefix negative cases; addon fixed-point validation remains
-  separate from valid framework mappings;
-- callbacks see a fully validated transaction, with deterministic lifecycle
-  order and no false unmount/remount during move/reparent;
-- declared event delivery and exact object payload;
-- every `EmitResult`, including empty type, scalar/array payload, wrong owner,
-  wrong thread, outside callback, removed target, stale generation, and closed
-  session;
-- exact addon `setNativeValue` command routing is not swallowed by framework
-  Switch/TextInput handlers;
-- undeclared/unknown commands remain observable no-ops;
-- throwing callbacks do not escape RN or expose half a transaction;
-- reload invalidates old tokens even if surface/tag values are reused;
-- a lifecycle trace proves descriptor-registry before provider-registry and
-  instance-before-host-before-module destruction; and
-- barrier-driven reload/shutdown stress under ASan, plus TSan when supported.
-
-The macOS test includes a non-sanitized Release `.dylib`; Linux includes a real
-`.so`. A second minimal executable links only
-`ReactNativeSimulator::Engine`, opts in with
-`rns_enable_addon_module_host`, loads that same MODULE, and commits the same
-tree, proving the embedding export/retention contract independently of
-`rnsim`.
-
-### SafeArea matrix
-
-- snapshot-derived `initialWindowMetrics`;
-- Provider real descriptor mount and Yoga frame;
-- exact `topInsetsChange` type, count, zero insets, and frame;
-- unchanged Update does not duplicate the event;
-- missing addon yields unavailable module, fallback components, and strict
-  conformance failure;
-- Expo auto/explicit/MODULE/disable/contradiction order matrix;
-- RN Tester continues to use official `SafeAreaView`; and
-- separate pinned library bundle proves children render before an integration
-  claim.
-
-### Compatibility matrix
-
-- doctor without addon -> `needs-compat-addon`;
-- explicit built-in -> `compatible-via-addon`;
-- path or in-process impostor cannot receive overlay privilege;
-- never auto-loaded, including an RN 0.73 package;
-- iOS/macOS combination fails before bind/JS;
-- JS sees 0.73.0 while metrics state 0.73.x family and native 0.87.0;
-- every non-version `PlatformConstants` field/method equals RN 0.87;
-- observed real 0.73.2 module-request inventory has no speculative names;
-- real caller-built 0.73.2 source/Metro app commits expected Fabric operations;
-- incompatible HBC fails explicitly; and
-- removed profile has only the migration tombstone and negative test.
-
-## Rollout DAG
-
-```mermaid
-flowchart TD
-  PR1["PR 1 — Build/test topology"] --> PR2["PR 2 — Typed planner + engine catalog"]
-  PR2 --> PR3["PR 3 — Executable inventory + schema-2 contracts"]
-  PR3 --> PR4["PR 4 — ABI 4 + manifest + host snapshot"]
-  PR4 --> PR5["PR 5 — Fabric registrar + lifecycle"]
-  PR4 --> PR7["PR 7 — compat-rn73 atomic cutover"]
-  PR5 --> PR6["PR 6 — SafeArea atomic cutover"]
-  PR6 --> PR8["PR 8 — Convergence and package"]
-  PR7 --> PR8
-```
-
-PRs 1–4 are sequential. PR 5 and PR 7 may proceed in parallel after PR 4. PR 6
-depends on PR 5. PR 8 depends on both PR 6 and PR 7.
-
-Each behavioral PR updates the documentation it changes. PR 8 is a consistency
-and production-package proof, not the first documentation update. Rollback is
-revert-the-PR; there is no runtime fallback that reintroduces profile-owned
-community names or the retired version profile.
-
-## Detailed PR plan
-
-### PR 1 — Normalize addon build and test topology
-
-**Title:** Discover addons generically and stop hardcoding library suffixes
-
-**Depends on:** none
-
-**Scope:**
-
-- move `include(CTest)` before `add_subdirectory(runtime)`;
-- add sorted `CONFIGURE_DEPENDS` discovery of addon subdirectories;
-- split addon implementation OBJECT/static targets from thin MODULE entry
-  shims;
-- set implementation objects PIC where MODULE linking requires it;
-- hide implementation/factory C++ symbols and export only the MODULE C entry,
-  preventing Linux executable-symbol preemption when the same addon is built
-  in and dynamically loaded;
-- collect addon, test, install, and catalog metadata through global properties;
-- move company-specific conditions/tests into their own addon directory;
-- pass test library paths via `$<TARGET_FILE:...>`;
-- make `verify-addons.mjs` portable to `.dylib` and `.so`; and
-- preserve ABI, CLI, runtime behavior, metrics, and current source-install
-  semantics.
-
-**Files/components:** root `CMakeLists.txt`, `runtime/CMakeLists.txt`, newly
-created/migrated `runtime/addons/*/CMakeLists.txt` files for every current addon,
-`tests/CMakeLists.txt`, `tools/diagnostics/verify-addons.mjs`, and affected
-target-path consumers.
-
-**Merge gate:** fresh macOS and Linux configure/build; complete release CTest;
-actual existing addon MODULE load on both platforms; no company/addon target
-names in core CMake/CTest; `dladdr`/equivalent proves the addon implementation
-route comes from the MODULE; default install contents unchanged.
-
-### PR 2 — Typed request planner and engine-owned catalog
-
-**Title:** Plan addons transactionally with typed requests and a compiled catalog
-
-**Depends on:** PR 1
-
-**Scope:**
-
-- introduce `LaunchDraft`, `AddonSpec`, source/origin types,
-  `PreparedLaunchPlan`, and `EngineState`;
-- move typed addon/bundle mutators onto the single `LaunchDraft` owner and
-  migrate every in-tree embedder from the old Engine mutators;
-- create the engine-owned catalog with `expo` as the first entry;
-- generate strong factory references;
-- implement single-open prepared candidates and deterministic slot merge;
-- while ABI 3 still exists, freeze one transitional declaration by calling each
-  old name/module/capability/component/view-manager getter once and copying the
-  result; do not refer to ABI 4 `manifest()` until PR 4 replaces this adapter;
-- preserve schema-1 strings as paths and add tagged name/path objects,
-  `disabledAddons`, and `autoAddons`;
-- remove Expo filename-prefix heuristics;
-- split interactive launch into addon preparation, retryable Metro discovery,
-  and one plan application; and
-- distinguish `RetryableNetworkError` from `TerminalLaunchPlanError`.
-
-**Do not:** peek MODULE names with a second load; keep a second mutable draft in
-Engine; add `disableAddon` to Engine; bind an addon during plan application; or
-mutate Engine during Metro retries.
-
-**Merge gate:** full planner matrix, exact order assertions, one real MODULE
-open across repeated Metro failures, one plan application, Expo boot unchanged,
-and no caller JS after a terminal plan failure.
-
-### PR 3 — Executable framework inventory and schema-2-safe contracts
-
-**Title:** Make one executable framework inventory drive ownership and metrics
-
-**Depends on:** PR 2
-
-**Scope:**
-
-- introduce shared capability, evidence, contract, legacy-projection, and
-  profile-descriptor types;
-- move every host/profile/base/official/platform surface into executable
-  inventory rows with factories/providers;
-- build reserved/module-owner/provider inputs from that inventory;
-- make `hasComponent` use the unified availability data;
-- preserve exact legacy metric rows with explicit per-surface projections;
-- retain a temporary exact ABI 3 addon migration table;
-- delete substring classification for framework surfaces;
-- add structured contract/overlay/record/compatibility arrays without changing
-  flat values;
-- extract one serializer for final metrics and live Inspector; and
-- make chrome consume class plus evidence.
-
-**Merge gate:** unmodified `verify-runtime.mjs`; golden old-consumer flat maps;
-new structured consumer; exact `Root`/`RootView` behavior; inventory executable
-row/factory bijection; live/final parity; `android-rn73` behavior unchanged.
-
-### PR 4 — ABI 4, frozen manifests, and bound host snapshot
-
-**Title:** Load ABI 4 addons with immutable manifests and a frozen host session
-
-**Depends on:** PR 3
-
-**Scope:**
-
-- land the complete ABI 4 vtable and descriptor, including lifecycle hooks;
-- freeze the ABI-facing registrar types and invoke `configureFabric` with the
-  explicit rejecting/no-registration backend described above;
-- generate and validate the API fingerprint;
-- migrate every in-tree addon found during configure, including optional
-  company trees, in this same PR;
-- reject ABI 3 with a directed diagnostic and delete the temporary migration
-  table;
-- freeze one manifest per candidate and perform all ownership/policy
-  validation;
-- derive evidence only from resolved source/catalog policy;
-- build the final `AddonHostSnapshot` after assets and initial URL are known;
-- bind once and unbind in reverse order;
-- reorder host globals so addon JSI runs last;
-- make Expo use `nativeModuleProxy` identities;
-- reclassify Expo no-ops honestly; and
-- make release-manifest generation capture binary metadata once and derive RN,
-  Hermes, addon ABI, commit, and every repeated identity from it.
-
-**Merge gate:** descriptor/fingerprint/RN/Hermes negative matrix; every
-collision; optional in-tree addons all build ABI 4 or configure fails clearly;
-Expo as both built-in and MODULE; RN Tester as MODULE; exact lifecycle counts
-across reload; proxy identity; protected-global mutation rejection; release and
-sanitized CTest.
-
-### PR 5 — Owner-scoped Fabric registrar backend, commands, events, and lifecycle
-
-**Title:** Stage Fabric providers and generation-scope addon callbacks
-
-**Depends on:** PR 4
-
-**Scope:**
-
-- replace PR 4's rejecting registrar backend with owner-scoped registration,
-  callback-scoped sinks, mounted-target tokens, and generation records without
-  changing the ABI 4 vtable;
-- stage all framework/addon providers in one canonical ledger;
-- enforce fixed-point names, unique handles, exact declarations, and mandatory
-  final-parameter preflight;
-- host-register descriptor-only mocks;
-- construct the unified `hasComponent` ledger;
-- derive mount notifications from validated before/after trees;
-- refactor commands into a framework/addon/no-op handled chain;
-- add initialization and pending-fatal exception channels;
-- make `HeadlessReactFabricHost::shutdown()` idempotent;
-- reverse instance/Fabric-host destruction into the specified safe order;
-- derive macOS exports from a real MODULE and add
-  `rns_enable_addon_module_host`; and
-- add the required real test-only Fabric addon; and
-- add a minimal executable that links only `ReactNativeSimulator::Engine` plus
-  the helper and loads that MODULE.
-
-**Merge gate:** complete Fabric test-addon matrix, exact rejection counters,
-two-generation stale-token and tag-reuse proof, lifecycle trace, ASan stress,
-non-sanitized macOS Release `.dylib`, Linux `.so`, and the independent minimal
-embedder export/retention test.
-
-### PR 6 — Atomic SafeArea cutover
-
-**Title:** Move `RNCSafeArea*` into the SafeArea addon
-
-**Depends on:** PR 5
-
-**Scope:**
-
-- add `runtime/addons/safe-area/`, its built-in catalog row, and MODULE shim;
-- implement snapshot constants and real Provider/View descriptors;
-- emit deduplicated `topInsetsChange` through scoped mount callbacks;
-- delete the RNC module, official-table components, and hardcoded event route
-  from framework code in the same commit;
-- add `safe-area` as the second Expo auto slot;
-- keep official RN `SafeAreaView` unchanged;
-- mark `RNCSafeAreaView` `LayoutOnly` until native padding exists; and
-- update behavior docs, baselines, metrics expectations, and isolation checks.
-
-**CI scope:** add/update a dedicated RN Tester workflow lane that configures
-with `RNS_REQUIRE_RNTESTER_BUNDLE=ON`, supplies the caller-built bundle, records
-its provenance/hash, and fails on a missing bundle or missing test label.
-
-**Merge gate:** native host-route SafeArea matrix; missing-addon negative path;
-Expo selection matrix and exact order; RN Tester startup; sanitizer gate. The
-separate caller-built library lane controls only the stronger integration claim,
-not whether host routing itself was exercised.
-
-### PR 7 — `compat-rn73` and atomic `android-rn73` retirement
-
-**Title:** Adapt RN 0.73 JavaScript on the 0.87 engine and retire the old profile
-
-**Depends on:** PR 4; may run in parallel with PR 5/6
-
-**Sequence inside the PR:**
-
-1. Add a failing test for the host-owned `PlatformConstants` wrapper.
-2. Capture the requested module inventory from a real caller-built RN 0.73.2
-   source/Metro fixture.
-3. Implement the one-key engine wrapper and prove all non-version behavior
-   forwards to RN 0.87.
-4. Add the exact built-in catalog policy, Android-only restriction, and never-
-   auto rule.
-5. Add compatibility metrics and honest runtime/doctor diagnostics.
-6. Run the real fixture gate and all negative source/HBC/profile cases.
-7. Delete `android-rn73`, `PlatformConstantsAndroidRN73`, and positive old-profile
-   tests.
-8. Add the narrow migration tombstone and tree-wide negative isolation tests.
-
-**Hard merge gate:** the real 0.73.2 caller-built source/Metro bundle passes in
-an independent CI lane; observed module inventory is checked in; non-version
-constants/methods equal RN 0.87; invalid HBC still fails clearly; all platform,
-auto-load, privilege, doctor, metrics, and migration tests pass. An unavailable
-or skipped fixture is not a pass, and the PR must not merge partially. The lane
-uses the new `RNS_REQUIRE_RN0732_FIXTURE_BUNDLE=ON` configure option, records
-source commit/build format/SHA-256, and fails if the required CTest label is not
-registered.
-
-### PR 8 — Convergence, documentation, and production package
-
-**Title:** Prove the combined addon contract and ship it in one-file Nightly
-
-**Depends on:** PR 6 and PR 7
-
-**Scope:**
-
-- run Expo auto + SafeArea auto + explicit compat as one deterministic triple;
-- run all three built-in smokes from the packaged production executable;
-- perform a tree-wide active-code isolation audit;
-- reconcile architecture, versioning, addon guide, RN87/RNTester baselines,
-  Skia, troubleshooting, CLI help, and config schema;
-- move every MODULE target—including built-in copies, RN Tester, and any
-  discovered company addon—into explicit non-default install components such
-  as `addon-development` or `rntester-demo`, with `EXCLUDE_FROM_ALL` on every
-  MODULE install rule;
-- verify the default DMG contains only `rnsim`;
-- verify macOS export closure, dependency closure, signing/notarization inputs,
-  binary version metadata, and release manifest; and
-- remove obsolete ABI 3/profile/SafeArea migration text except deliberate
-  tombstones.
-
-**Merge gate:** exact addon order `expo`, `safe-area`, `compat-rn73`; all three
-built-in behaviors run in the packaged binary; no active `android-rn73` branch;
-no RNC framework ownership; no MODULE/header/library in the DMG; release and
-sanitized suites green; machine-readable packaged catalog is exactly
-`expo,safe-area,compat-rn73`; and the release verifier agrees with RN, Hermes,
-addon ABI, commit, and other duplicated binary metadata. A bare
-`cmake --install <build>` is inspected and contains no MODULE, while explicit
-component installs still contain the requested development/demo MODULEs.
-
-## Risks and mitigations
-
-| Risk | Severity | Mitigation |
-| --- | --- | --- |
-| C++ vtable and dynamic lookup drift across commits/toolchains | High | In-tree-only contract, complete ABI vtable, exact fingerprint, RN/Hermes checks, real platform loads |
-| MODULE static constructors have side effects before validation | High | Honest timing contract; constructors/manifest forbidden from activation; single open; bind defines activation boundary |
-| RN registry silently accepts a duplicate handle | High | Engine-owned canonical ledger and mandatory preflight before any RN insertion |
-| Reload or teardown uses stale token/callback/module code | High | Generation/mount serials, callback-scoped sink, synchronous quiescence, exact instance-before-host-before-dlclose order |
-| Schema-2 additive work changes an old flat value | High | Explicit per-surface legacy projections, golden output, unchanged old consumers |
-| MODULE self-declares `Implemented` | Medium | Evidence is host-derived; MODULE/InProcess always `AddonDeclared`; chrome uses both fields |
-| Real descriptor can reach RN contexts | Medium | State trusted-code truth explicitly; no false isolation claim; no addon SDK promise |
-| Export-list growth looks like a stable SDK | Medium | Explicit in-tree source-build scope; helper is opt-in; no Nightly headers/libraries |
-| Interactive retry opens/commits twice | High | Three phases, typed terminal/network errors, prepared-handle reuse, exact counters |
-| SafeArea cutover breaks Expo | High | Atomic ownership cutover, Expo auto slot, native route gate, separate library-integration gate |
-| SafeArea host route is overstated as library/device certification | Medium | Split claims; `LayoutOnly` View until padding; pinned external bundle required for integration |
-| Compat overlay is mistaken for native RN 0.73 | High | Three distinct version fields, load diagnostic, host-owned one-key wrapper, native version never changes |
-| Old profile is deleted before older JS is proven | High | PR 7 hard fixture gate; no partial merge or skipped-fixture pass |
-| A caller expects incompatible HBC to work | Medium | Independent bytecode contract; explicit failure and docs; source/Metro gate |
-| Built-in archive objects are dead-stripped | Medium | Generated catalog with strong factory references and packaged-binary smokes |
-| Release manifest reports the wrong ABI | Medium | Derive it from `rnsim --version --json`; compare in release verifier |
-
-## Alternatives considered
-
-| Alternative | Decision |
-| --- | --- |
-| Keep ABI 3 and improve only loading/docs | Rejected: cannot host real community Fabric contracts or SafeArea events |
-| Keep community modules in profiles | Rejected: violates ownership and repeats for every library |
-| Run addons out of process | Rejected: Fabric descriptors/JSI cannot cross IPC without a second architecture; product trust model is in-process |
-| Load a versioned RN engine MODULE or two VMs | Rejected: contradicts one-current-engine product identity |
-| Keep a thin `android-rn73` profile requiring the addon | Rejected: two mechanisms for one compatibility idea and an invitation to proliferate profiles |
-| Auto-load `compat-rn73` from package metadata | Rejected: hides version mismatch and silently changes JS-visible behavior |
-| Peek a MODULE name and reload it later | Rejected: double constructors and TOCTOU |
-| Subtract explicit names and append them after auto names | Rejected: changes deterministic order |
-| Let addons provide capability evidence | Rejected: self-certification |
-| Map closed enum values onto old fidelity strings globally | Rejected: legacy values are surface-specific and include aliases |
-| Let `SimulatorAddon` wrap a TurboModule | Rejected: arbitrary reserved-module replacement |
-| Add `disableAddon` to `Engine` | Rejected: disable belongs to launch selection, not runtime state |
-| Addon-defined Fabric aliases in v1 | Rejected: normalization and collision semantics are too easy to make ambiguous; canonical fixed points are sufficient |
-| Add asynchronous event emission in v1 | Rejected: requires a separate executor, cancellation, and reload lifetime contract |
-| Previous seven-PR catalog-later rollout | Rejected: consumers need the catalog at planner introduction and cannot span a factory/name split |
+Required CI lanes (a missing artifact, skipped condition, or zero matching
+tests fails the lane; a skip is never a pass):
+
+- RN Tester: `-DRNS_REQUIRE_RNTESTER_BUNDLE=ON -DRNS_RNTESTER_BUNDLE=<path>`.
+- RN 0.73.10 business bundle (distinct from `RNS_RN0732_FIXTURE_BUNDLE`):
+  ```
+  -DRNS_REQUIRE_RN073_BUSINESS_BUNDLE=ON
+  -DRNS_RN073_BUSINESS_BUNDLE=$RNS_RN073_BUSINESS_BUNDLE
+  -DRNS_RN073_BUSINESS_PROVENANCE=$RNS_RN073_BUSINESS_PROVENANCE
+  ```
+  Ordinary `core` jobs in `.github/workflows/macos.yml` and `linux.yml` keep
+  `REQUIRE=OFF` so they run without the private artifact. DoD requires a
+  separate job that sets `REQUIRE=ON` from those env vars (org download/secret
+  step; no URL is specified here). Missing env, missing file, SHA mismatch, or
+  failed `pass` assertions fail that job.
+- macOS non-sanitized Release `.dylib` load and Linux `.so` load of the Fabric
+  test addon, plus the minimal embedder executable.
+
+Every handoff records native RN/Hermes identity, caller bundle source and
+format, exact command, exit/signal status, stdout JSON, relevant stderr, the
+narrowest route assertion, and whether the addon under test was built-in,
+MODULE, or in-process.
+
+### Test matrices
+
+Planner: auto-only (plain embedder with no addon calls still loads `safe-area`);
+Expo auto order; explicit built-in; explicit MODULE; auto + same-name built-in;
+auto + same-name MODULE occupying the slot; two explicit same names; disabled
+auto slot; explicit/disabled contradiction; unknown bare name; unknown disabled
+name; tagged config path/name; bare config string rejected; schema-1 config
+rejected; duplicate canonical path and symlink spellings; CLI/config
+precedence; `setProjectKind(Expo)` after `prepareExplicitAddons` still auto-loads
+`expo` at finalize; exact total order for every case; interactive retry with one
+`dlopen`, one `create`, one `manifest`, one plan application; terminal errors
+never entering the retry loop; InProcess injection skips fingerprint and still
+validates the manifest; `Engine::loadBundle` does not compile.
+
+Inventory/metrics: every executable row has one contract and vice versa;
+`RootView` is the only root name; live and final serializers agree;
+`hasComponent` agrees with the ledger and ignores fallbacks; `verify-runtime.mjs`
+passes on schema 3.
+
+ABI/lifecycle: missing v4 symbol; short `descriptorSize`; fingerprint/RN/Hermes
+mismatch; null callbacks; throwing and null `create`; name mismatch; every
+intra-addon and cross-owner collision; `allowedProfiles` rejection; second
+compatibility claim rejected; `manifest == 1`; bind entered at most once with
+exactly one `unbind` per entered bind including a throwing bind; **successful**
+generation: every bound addon `configureFabric == 1`, `installJSI == 1`,
+`quiesceGeneration == 1`; **failed** generation: configure/install prefix only,
+quiesce still all bound addons; reverse unbind and correct deleter before
+`dlclose`; `dladdr` provenance; Expo proxy identity (`===` jsRepresentation);
+protected-global mutation rejection; lookup-time null/throw does not escape
+`moduleProvider`; per-generation TurboModule cache hit skips `wrapTurboModule`;
+addon TurboModule called by JS between quiesce and `instance.reset()` answers
+safely; `wrapTurboModule` identity on addons with empty overlays.
+
+Fabric test addon (real `.dylib`/`.so`, `ConcreteViewShadowNode`): Create/
+Insert/Update/Remove/Delete and Yoga width; props, state update from a command
+handler, typed event with exact payload received in JS; RTTI and destruction
+across the boundary; preflight rejects null/throwing/mismatched/missing/extra/
+duplicate providers, duplicate handles, re-entrancy; fixed-point name
+rejection; deterministic callback order and no false unmount/remount on move;
+executor post from a foreign thread delivered on the runtime thread; post after
+quiesce dropped and counted; exact `setNativeValue` routing not swallowed by
+Switch/TextInput; unknown command no-op counted; throwing callback contained;
+reload invalidates nothing the addon still holds unsafely (sanitizer stress);
+lifecycle trace proves descriptor-registry before provider-registry and
+instance-before-host-before-`dlclose`.
+
+SafeArea: `initialWindowMetrics.frame` equals snapshot viewport at `(0,0)`
+(smoke `frame.width ===` viewport); Provider `topInsetsChange` carries the
+committed layout frame; exact event type/count/zero insets; unchanged Update
+emits nothing; `--no-addon safe-area` yields unavailable module, fallback
+components, strict conformance failure; plain and Expo auto order; RN Tester
+uses official `SafeAreaView`.
+
+Compat: doctor classifications; never auto-loaded; iOS/macOS rejected before
+bind; JS sees `0.73.10` while metrics report `0.73.x` and native `0.87.0`;
+every non-version `PlatformConstants` field equals RN 0.87; overlay does not
+steal the module owner row; observed module inventory checked in with no
+speculative names; optional `rn07310-business-bundle` satisfies provenance
+`pass` when the operator supplies the bundle (not a default GHA job);
+incompatible HBC fails clearly; `android-rn73` survives only in the tombstone
+and negative tests; optional `rn0732-*` rewritten to `android-rn87` +
+`compat-rn73` and not required for DoD.
+
+## Deferred (not in this delivery)
+
+- Addon-painted components (Skia painter hook). Requires an addon-owned paint
+  payload in the retained scene and a renderer/Inspector-replay change; adding
+  a `kind` later is an in-tree ABI bump.
+- Dynamic viewport, color scheme, app state, and reduced-motion updates. The
+  `revision` field and `hostSnapshotChanged` slot exist; nothing emits them.
+- Replacing a framework component or serving a framework module name from an
+  addon. Wrapping is allowed; replacement breaks the profile fidelity model.
+- Addon-declared Fabric name aliases.
+- Addon dependencies and topological ordering.
 
 ## Definition of done
 
-The architecture is implemented only when all of the following are true:
-
-- ABI 3 is rejected and no ABI 3 code path constructs an addon.
-- All MODULEs are opened once, activated only after validation, and unloaded
-  after every module-owned object dies.
+- ABI 3 no longer loads; no code path constructs an ABI 3 addon.
+- Every MODULE is opened once, activated only after validation, and unloaded
+  after every module-owned object dies; `dladdr` proves MODULE provenance.
 - One executable framework inventory drives owners, providers, availability,
-  metrics, chrome, and isolation.
-- Existing schema-2 flat maps pass unchanged old consumers.
-- Evidence is host-derived and path/in-process addons cannot become certified.
-- Engine launch is one atomic prepared plan; interactive network retry never
-  repeats addon preparation or application.
+  metrics, chrome, and isolation; no fidelity substrings remain.
+- Metrics are schema 3, config is schema 2, `Engine::addAddon` and
+  `Engine::loadBundle` are gone, and `verify-runtime.mjs` / `verify-addons.mjs`
+  pass.
+- Any `runtime/addons/<name>/` or `RNS_ADDON_DIRS` directory can declare a
+  built-in with its own auto policy; the catalog is generated; the packaged
+  upstream catalog is exactly `expo`, `safe-area`, `compat-rn73`.
 - Addon JSI runs after protected host globals and cannot replace them.
-- Real addon descriptors pass mandatory final-parameter preflight on macOS and
-  Linux dynamic MODULEs.
-- Event and command routes are owner-, component-, mount-, thread-, and
-  generation-scoped with asserted rare-path counters.
-- Reload and shutdown pass sanitizer stress with the specified destruction
-  order.
-- `RNCSafeArea*` has no framework/profile registration and works through the
-  addon host; official `SafeAreaView` remains framework-owned.
-- `android-rn73` has no active implementation branch and its replacement is
-  proven by a real caller-built RN 0.73.2 source/Metro lane.
-- Native, compatibility-family, and JS-visible version identities remain
-  distinct and honest.
-- Expo + SafeArea + compat run together in deterministic order from the
-  packaged `rnsim`.
-- Nightly contains one file and exposes no implied addon SDK.
-- Documentation, binary metadata, release manifest, and actual runtime behavior
-  agree.
+- Real addon descriptors pass mandatory preflight on macOS and Linux MODULEs;
+  a real test addon updates state and emits events through RN APIs and
+  through the executor from a foreign thread.
+- Teardown follows the specified order under sanitizer stress; addon
+  TurboModules stay safe between quiesce and instance destruction.
+- `RNCSafeArea*` is served only by the `safe-area` addon, which auto-loads for
+  every project; official `SafeAreaView` remains framework-owned.
+- `android-rn73` has no active branch; a real RN 0.73.10 business bundle may
+  pass the provenance `pass` assertions through `android-rn87` +
+  `compat-rn73` when the operator supplies `RNS_RN073_BUSINESS_BUNDLE` and
+  `RNS_RN073_BUSINESS_PROVENANCE` (optional CMake / org-private CI, not a
+  default GitHub Actions job).
+- Native, family, and JS-visible versions remain distinct in snapshot,
+  metrics, doctor, and stderr.
+- Nightly is one file, loads no external MODULE, and no longer carries the
+  library-validation entitlement; documentation, binary metadata, release
+  manifest, and behavior agree.
+
+## Risks
+
+| Risk                                                                        | Severity | Mitigation                                                                                                                                 |
+| --------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Single delivery is large and long-lived                                     | High     | Follow the dependency order on the branch. The branch is not mergeable until DoD. Intermediate compile states may break tests that later steps rewrite; do not add transitional adapters to keep mainline green |
+| C++ vtable/dynamic-lookup drift                                             | High     | In-tree contract, exact fingerprint, real platform loads, `dladdr` provenance                                                              |
+| Addon retains RN objects past quiesce                                       | High     | Retention contract, quiesce/unbind counters, sanitizer reload stress, executor drops after quiesce                                         |
+| RN registry silently accepts a duplicate handle                             | High     | Host ledger and mandatory preflight before insertion                                                                                       |
+| Business 0.73.10 bundle needs modules beyond `PlatformConstants`            | Medium   | Observed inventory is part of the gate; each admitted module gets class and test                                                           |
+| `safe-area` default-on surprises a project that ships its own native module | Low      | `--no-addon safe-area`; explicit MODULE may occupy the slot                                                                                |
+| Downstream addon keys collide across `RNS_ADDON_DIRS`                       | Low      | Configure-time duplicate-key error                                                                                                         |
+| Interactive retry opens or commits twice                                    | High     | Three phases, typed errors, prepared-handle reuse, counters                                                                                |
+| Release manifest reports wrong identity                                     | Medium   | Derived from `rnsim --version --json`; compared by `verify-release.sh`                                                                     |
+| InProcess tests are mistaken for MODULE proof                               | Medium   | Invariant 10; required macOS `.dylib` and Linux `.so` lanes                                                                                |
+
+## Alternatives considered
+
+| Alternative                                          | Decision                                                         |
+| ---------------------------------------------------- | ---------------------------------------------------------------- |
+| Keep ABI 3 and improve loading only                  | Rejected: cannot host real descriptors or SafeArea events        |
+| Keep community modules in profiles                   | Rejected: ownership leak repeats for every library               |
+| Out-of-process addons                                | Rejected: Fabric/JSI cannot cross IPC; trust model is in-process |
+| Versioned engine MODULE or second VM                 | Rejected: one current engine                                     |
+| Keep `android-rn73` as a thin profile                | Rejected by decision 1: one mechanism                            |
+| Auto-load compat from `package.json`                 | Rejected: hides version mismatch                                 |
+| Evidence tiers and root-owned catalog policy         | Rejected by decisions 3 and 6                                    |
+| Token/epoch event sink; no `ShadowNode` in callbacks | Rejected by decision 4                                           |
+| Freeze schema 2 with legacy projections              | Rejected by decision 5                                           |
+| Eight staged PRs with transitional adapters          | Rejected by decision 7                                           |
+| Default method bodies on `SimulatorAddon`            | Rejected: a later default is an ABI change; no-ops are explicit  |
+| Peek MODULE identity without retaining the handle    | Rejected: static constructors and TOCTOU                         |
+| Skia painter in this delivery                        | Deferred: renderer and Inspector-replay scope                    |
+
+## Open Questions
+
+Product decisions 1–8 are closed. Lookup catch-boundary, per-generation
+TurboModule cache, `Engine::loadBundle` deletion, `LaunchDraft` defaults,
+`setProjectKind` until finalize, `SimulatorMode` header placement,
+`initialWindowMetrics` vs Provider frame, business-bundle provenance schema,
+and the fate of `rn0732-*` tests are specified in this revision.
+
+No implementation-blocking questions remain. Observed extra TurboModule names
+from the RN 0.73.10 business bundle are admitted only with class, owner, and
+test; that is a gate input recorded beside the provenance file, not a design
+choice. The org-specific download/secret that fills
+`RNS_RN073_BUSINESS_BUNDLE` is an operations input, not an open architecture
+question.
 
 ## References
 
-- [React Native Simulator architecture](SIMULATOR_DESIGN.md)
-- [Nightly versioning policy](VERSIONING.md)
-- [Addon guide](../guides/ADDONS.md)
-- [RN 0.87 capability baseline](../baselines/RN087_CAPABILITY_BASELINE.md)
-- [RN Tester baseline](../baselines/RNTESTER_BASELINE.md)
-- [Security policy](../../SECURITY.md)
-- [Roadmap](../../ROADMAP.md)
-- Pinned React Native source (`4bc2473f5d0233ea5384c1ef24f6a55615de2220`):
-  - `ComponentDescriptorProvider.h`
-  - `ComponentDescriptorProviderRegistry.cpp`
-  - `ComponentDescriptorRegistry.cpp`
-  - `componentNameByReactViewName.cpp`
-  - `ComponentDescriptor.h`
-  - `ContextContainer.h`
-  - `EventEmitter.cpp`
-  - `UIManagerDelegate.h`
-  - `UIManager.h`
-  - `TurboModule.h`
-  - `RuntimeSchedulerCallInvoker.h`
-- React Native 0.73.2 `Libraries/Core/ReactNativeVersionCheck.js`
+- [SIMULATOR_DESIGN.md](SIMULATOR_DESIGN.md), [VERSIONING.md](VERSIONING.md),
+  [ADDONS.md](../guides/ADDONS.md), [RN 0.87 baseline](../baselines/RN087_CAPABILITY_BASELINE.md),
+  [RN Tester baseline](../baselines/RNTESTER_BASELINE.md), [SECURITY.md](../../SECURITY.md),
+  [ROADMAP.md](../../ROADMAP.md)
+- Pinned React Native (`4bc2473f5d0233ea5384c1ef24f6a55615de2220`):
+  `ComponentDescriptorProvider.h`, `ComponentDescriptorProviderRegistry.cpp`,
+  `ComponentDescriptorRegistry.cpp`, `componentNameByReactViewName.cpp`,
+  `ComponentDescriptor.h`, `ContextContainer.h`, `EventEmitter.cpp`,
+  `ConcreteState.h`, `RootShadowNode.cpp`, `UIManagerDelegate.h`,
+  `UIManager.h`, `TurboModule.h`, `RuntimeSchedulerCallInvoker.h`
+- React Native 0.87 (and 0.73.x) `Libraries/Core/ReactNativeVersionCheck.js`
+
+## PR Plan
+
+Product decision 7 forbids an eight-PR rollout. Implementation is **one
+independently mergeable pull request** that lands the full cutover. Intermediate
+steps are not mergeable, not reviewable as separate PRs, and must not introduce
+transitional adapters, dual metrics schemas, dual addon ABIs, or a living
+`android-rn73` profile.
+
+**PR title:** `Addon host ABI 4: planner, inventory, Fabric, safe-area, compat-rn73`
+
+**Independently mergeable unit:** this single PR.
+
+**Merge gate:** [Definition of done](#definition-of-done).
+
+**Dependencies on other PRs:** none.
+
+Internal implementation order (same as [Delivery](#delivery)). The **branch is
+not mergeable until DoD**. Intermediate compile states may break tests that
+later steps rewrite (catalog-triple tests need steps 6–7; ABI 4 vtable tests
+need step 4; schema-2/3 consumers need steps 2–3). Do not add transitional
+adapters to keep those tests green on a prefix of the branch.
+
+### Step 1 — Build topology
+
+- **Depends on:** nothing.
+- **Files / components:** root `CMakeLists.txt`; `runtime/CMakeLists.txt`;
+  new `runtime/addons/*/CMakeLists.txt` for `expo`, `rntester`, and any
+  discovered company tree; generated `BuiltinAddonCatalog.cpp`;
+  `cmake/GenerateAddonApiFingerprint.cmake`; `rns_declare_addon` /
+  `RNS_ADDON_DIRS`; hidden visibility; OBJECT + MODULE shim.
+- **Description:** Move `include(CTest)` before `runtime`. Discover addon
+  directories. Delete `EXISTS .../shopee` guards. Generate the catalog with
+  strong factory references. Prove `dladdr` provenance on a MODULE.
+  `verify-addons.mjs` `.so`/`.dylib` port can start here; its schema-3
+  assertions land in step 3.
+
+### Step 2 — Launch planner
+
+- **Depends on:** step 1.
+- **Files / components:** `runtime/include/react-native-simulator/Engine.h`,
+  `SimulatorAddon.h` (`SimulatorMode` move), `SimulatorEngine.cpp`,
+  `SimulatorConfig.cpp` / `.h`, `main.cpp`, `InteractiveFrontend.cpp`, new
+  launch-plan sources; `tests/runtime-api-smoke.cpp` (including idle
+  `Engine().runApplication` at `:460–465` and `onSceneUpdate` before `run`
+  at `:219–224`), `tests/headless-api-modules-smoke.cpp`,
+  `tests/reload-engine-smoke.cpp`, `tests/devtools-smoke.cpp`,
+  `tests/hmr-protocol-smoke.cpp`, `tests/reload-error-recovery-smoke.cpp`,
+  `tests/text-example-raster-diag.cpp`; `tests/fixtures/rnsim.json`;
+  `tools/rntester/bundle.mjs` (`schemaVersion: 1` and bare addon path string
+  at `:319–329`).
+- **Description:** Introduce `LaunchDraft` (defaults `Plain` / `autoAddons
+  true`), typed specs, `PreparedAddonCandidates`, `PreparedLaunchPlan`,
+  `EngineState`, schema 2 tagged addons. CLI `--addon` / `--no-addon` /
+  `--no-auto-addons` / `--list-addons` / `--initial-url`. Delete
+  `Engine::addAddon` and both `Engine::loadBundle` overloads. Three-phase
+  interactive launch with `RetryableNetworkError` vs
+  `TerminalLaunchPlanError`. `setProjectKind` after Metro discovery.
+  Rewrite every embedding test off `Engine(config)` / `loadBundle`.
+
+### Step 3 — Framework inventory + schema 3
+
+- **Depends on:** step 2.
+- **Files / components:** `FrameworkInventory.cpp`, `HeadlessRNModules.cpp`,
+  `HeadlessOfficialComponents.*`, `SimulatorEngine.cpp` metrics serializers
+  (final + `makeLiveInspectorSnapshot`); `tools/diagnostics/verify-runtime.mjs`
+  (`schemaVersion === 2` and `NativeMicrotasksCxx === "real-headless"`);
+  `tools/diagnostics/verify-addons.mjs` (`rnFrameworkModules`, `addonModules`,
+  `.dylib`); `tools/benchmark/lib/benchmark-utils.mjs` (`schemaVersion !== 2`);
+  `tests/runtime-api-smoke.cpp` (`"schemaVersion":2` at `:245`).
+- **Description:** One executable inventory. Delete
+  `classifyRuntimeCapability`. Unified `hasComponent`. Structured schema-3
+  metrics and a shared serializer. All schema-2/3 consumers rewrite in this
+  PR, not in docs later.
+
+### Step 4 — ABI 4 contract
+
+- **Depends on:** steps 1–3.
+- **Files / components:** `SimulatorAddon.h`, `SimulatorAddon.cpp`,
+  `runtime/addons/expo/ExpoAddon.cpp`, `runtime/addons/rntester/RNTesterAddon.cpp`,
+  fingerprint header, `cmake/ValidateCliMetadata.cmake`,
+  `tools/release/generate-release-manifest.sh`.
+- **Description:** v4 descriptor and fingerprint. Complete pure-virtual
+  vtable. Per-generation TurboModule cache. `moduleProvider` catch boundary.
+  `wrapTurboModule` identity. Bind/unbind. JSI after protected globals. Expo
+  aliases `nativeModuleProxy` jsRepresentation. Plan-frozen `initialUrl`.
+  ABI 3 symbols no longer load.
+
+### Step 5 — Fabric host
+
+- **Depends on:** step 4.
+- **Files / components:** `HeadlessReactFabric.cpp` / `.h`, command routing
+  (family identity on the internal mounted record), mount diff,
+  `cmake/macos-engine-exported-symbols.txt`, test-only Fabric MODULE, minimal
+  embedder, `rns_enable_addon_module_host`.
+- **Description:** Registrar, ledger, mandatory preflight, mount
+  notifications from validated trees, command chain, exception channels,
+  thread enforcement, generation teardown (`stopSurface` once while instance
+  and host are alive; `shutdown()` does not `stopSurface`), real `.dylib`/`.so`
+  Fabric test addon.
+
+### Step 6 — `safe-area`
+
+- **Depends on:** steps 4–5.
+- **Files / components:** new `runtime/addons/safe-area/`;
+  `HeadlessRNModules.cpp` (`RNCSafeAreaContext`); `HeadlessOfficialComponents.h`
+  `RNC*` rows; `HeadlessReactFabric.cpp` `emitSafeAreaInsetsIfNeeded`;
+  `tests/headless-api-modules-smoke.cpp` (`initialWindowMetrics.frame.width`).
+- **Description:** Catalog `AUTO always`. `initialWindowMetrics.frame` is
+  snapshot viewport at `(0,0)`. Provider `topInsetsChange` carries committed
+  layout frame. `--no-addon safe-area` yields unavailable module, fallback
+  components, and strict-conformance failure.
+
+### Step 7 — `compat-rn73`
+
+- **Depends on:** steps 3–4.
+- **Files / components:** new `runtime/addons/compat-rn73/`;
+  `HeadlessRNModules.cpp`
+  (`PlatformConstantsAndroidRN73`); `main.cpp` doctor and profile tombstone;
+  root `CMakeLists.txt` (`RNS_RN073_BUSINESS_BUNDLE`,
+  `RNS_RN073_BUSINESS_PROVENANCE`, `RNS_REQUIRE_RN073_BUSINESS_BUNDLE`; keep
+  `RNS_RN0732_FIXTURE_BUNDLE` for optional extras); `tests/CMakeLists.txt`
+  (`rn73-profile` tombstone, optional `rn07310-business-bundle` when cache
+  inputs exist). Default `.github/workflows/macos.yml` and `linux.yml` do
+  not register a private-bundle job.
+- **Description:** Overlay test first. Observed inventory from the business
+  bundle. Delete `android-rn73`. Optional CMake/org-private CI asserts
+  provenance `pass` when the bundle is supplied. Optional `rn0732-*` stay
+  non-gate extras.
+
+### Step 8 — Package and docs
+
+- **Depends on:** steps 1–7.
+- **Files / components:** `package-macos.sh`, `tools/release/rnsim.entitlements`,
+  `macos-codesign.sh`, `docs/guides/ADDONS.md`, `docs/design/VERSIONING.md`,
+  `docs/design/SIMULATOR_DESIGN.md`, `Agents.md`,
+  `docs/baselines/RN087_CAPABILITY_BASELINE.md`, troubleshooting, CLI help,
+  `tools/rntester/bundle.mjs`, `tests/fixtures/rnsim.json`.
+- **Description:** Nightly remains one file. Entitlement removed. Packaged
+  catalog is `expo`, `safe-area`, `compat-rn73`. Schema-2 config writers and
+  docs match behavior. Consumer rewrites are already in steps 2–3, not deferred
+  to this step.
+
+Do not land, review-merge, or release any prefix of this list. The branch may
+be stacked internally for the implementer's convenience; the repository merge
+is atomic.

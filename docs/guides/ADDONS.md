@@ -17,18 +17,19 @@ official component descriptor set, host environment events, and the Skia-backed
 visual adapters documented in the capability baseline.
 
 RN 0.87 deprecates official `SafeAreaView` in favor of
-`react-native-safe-area-context`. The current addon ABI cannot emit the Fabric
-`topInsetsChange` event that `SafeAreaProvider` needs before it renders
-children, so `android-rn87` and `ios-rn87` temporarily host-adapt
-`RNCSafeAreaContext`, `RNCSafeAreaProvider`, and `RNCSafeAreaView`. Insets are
-window-relative: the host draws notch/status and nav chrome around the RN
-window, so a root provider reports no overlap. This is a transitional exception
-to the addon boundary, not Android 15 edge-to-edge certification.
+`react-native-safe-area-context`. Official `SafeAreaView` stays a framework
+component. `RNCSafeAreaContext`, `RNCSafeAreaProvider`, and `RNCSafeAreaView`
+are served only by the built-in `safe-area` addon, which auto-loads for every
+project (`AUTO always`). Disable it with `--no-addon safe-area`. v1 insets are
+zero; `initialWindowMetrics.frame` is the snapshot viewport at `(0,0)`.
+Provider `topInsetsChange` carries the committed layout frame. This is not
+Android 15 edge-to-edge certification.
 
 `ios-rn87` selects the iOS-facing module surface while keeping the same macOS
-semantic engine. `android-rn73` is retained for explicit external RN 0.73 bundle
-conformance. A profile mismatch is reported; the host does not pretend that one
-React Native version implements another version's contract.
+semantic engine. There is no `android-rn73` profile. RN 0.73.x JavaScript runs
+on the RN 0.87 native engine through `--profile android-rn87 --addon compat-rn73`.
+`compat-rn73` never auto-loads. A profile mismatch is reported; the host does
+not pretend that one React Native version implements another version's contract.
 
 See [RN 0.87 capability baseline](../baselines/RN087_CAPABILITY_BASELINE.md) for
 the current supported, approximated, mocked, and unavailable surfaces.
@@ -61,7 +62,8 @@ other SDK modules remain unavailable unless a separate addon provides them.
 
 ## RN Tester addon
 
-The default `rns-addon-rntester.dylib` contains only contracts owned by RN's
+The default `rns-addon-rntester` MODULE (`rns-addon-rntester.dylib` on macOS,
+`rns-addon-rntester.so` on Linux) contains only contracts owned by RN's
 official demo application:
 
 - `RNTReportFullyDrawnView`, `RNTMyNativeView`, `RNTMyLegacyNativeView`, and
@@ -82,21 +84,26 @@ Native/Hermes headers. The one-file DMG installs no ABI headers or upstream C++
 header trees. Build addons in-tree (or reproduce the same pinned toolchain and
 header inputs) and distribute the resulting compatible dylib separately.
 
-Implement `ReactNativeSimulator::SimulatorAddon` in
-`runtime/addons/<name>/`, build it as a dylib, and export the C ABI entry point
-`react_native_simulator_addon_v2`. The descriptor declares the addon ABI (3), RN
-version, Hermes version, and create/destroy callbacks. The loader rejects an
-incompatible addon before exposing any module.
+Add `runtime/addons/<name>/CMakeLists.txt` (or an out-of-tree directory in
+`RNS_ADDON_DIRS`) and call `rns_declare_addon` with `BUILTIN` and/or `MODULE`.
+There is no root-owned allowlist. The Nightly catalog is exactly `expo`,
+`safe-area`, and `compat-rn73`. A MODULE exports
+`react_native_simulator_addon_v4`. The descriptor carries ABI 4, the
+configure-time API fingerprint, RN, Hermes, and create/destroy. The loader
+opens each MODULE once, rejects an incompatible descriptor before `create()`,
+and `dlclose`s only after `destroy`.
 
-Return TurboModules from `getTurboModule()`. Declare permitted descriptor-only
-component mocks through `componentCapabilities()` so they appear in
-`nativeCapabilities.components`. Components not declared by the profile or an
-addon remain in `fallbackComponents`; conformance runs should use
-`--fail-on-component-fallback true`.
+Implement every `SimulatorAddon` slot (`= 0`). Return owned TurboModules from
+`getTurboModule()`. Use `wrapTurboModule` only for declared overlay targets
+(identity `return framework` is the unused no-op). Register real Fabric
+descriptors through `AddonFabricRegistrar` in `configureFabric`. Declare
+modules, overlays, and components in `manifest()`. Components not declared by
+the profile or an addon remain in `fallbackComponents`; conformance runs should
+use `--fail-on-component-fallback true`.
 
 If a legacy component needs application-owned UIManager constants or command
-IDs, return plain data from `viewManagerConfigs()`. Do not add its component
-name or values to the simulator engine.
+IDs, return them from `manifest().viewManagerConfigs`. Do not add those names
+to the framework provider.
 
 Load an addon explicitly and inspect the selected profile/addon contract in the
 metrics output:
@@ -132,7 +139,8 @@ mounting state, commands, and EventEmitter behavior. It participates in the
 same Fabric ShadowTree and Yoga layout as framework components. Visual behavior
 must ultimately produce typed retained-scene data for Skia.
 
-Use `componentCapabilities()` only when descriptor-only behavior is deliberate.
+Declare `AddonComponentKind::DescriptorOnlyMock` only when descriptor-only
+behavior is deliberate.
 It can preserve tree, Yoga, diff, and mutation cost, but it must remain labeled
 as a mock and cannot satisfy platform visual certification.
 

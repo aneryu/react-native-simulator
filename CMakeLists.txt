@@ -29,8 +29,13 @@ option(RNS_ENABLE_SOURCE_DEVTOOLS_FRONTEND
 
 function(rns_enable_sanitizers target)
   if(RNS_ENABLE_SANITIZERS)
+    # ABI 4 fingerprints sanitized trees as address,undefined,no-vptr.
+    # AppleClang 17 reports false std::stringbuf vptrs across libc++.
+    # Linux GCC reports false ConcreteShadowNode vptrs inside RN's
+    # YogaLayoutableShadowNode::resolveErrata dynamic_cast path.
     target_compile_options(${target} PRIVATE
-      -fsanitize=address,undefined -fno-sanitize=vptr
+      -fsanitize=address,undefined
+      -fno-sanitize=vptr
       -fno-omit-frame-pointer)
     target_link_options(${target} PRIVATE -fsanitize=address,undefined)
   endif()
@@ -41,6 +46,12 @@ set(RNS_RNTESTER_BUNDLE "" CACHE FILEPATH
   "Caller-built RN Tester Android bundle used by the default conformance integration")
 option(RNS_REQUIRE_RNTESTER_BUNDLE
   "Fail configure when the caller-built RN Tester integration bundle is absent" OFF)
+set(RNS_RN073_BUSINESS_BUNDLE "" CACHE FILEPATH
+  "Real RN 0.73.10 business JS bundle used by the required compat-rn73 lane")
+set(RNS_RN073_BUSINESS_PROVENANCE "" CACHE FILEPATH
+  "Provenance JSON for RNS_RN073_BUSINESS_BUNDLE")
+option(RNS_REQUIRE_RN073_BUSINESS_BUNDLE
+  "Fail configure when the RN 0.73.10 business bundle or provenance is absent" OFF)
 
 set(RNS_THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 set(RNS_REACT_NATIVE_REPOSITORY "${RNS_THIRD_PARTY_DIR}/react-native")
@@ -188,6 +199,16 @@ if(NOT RNS_HERMES_TAG_RESULT EQUAL 0 OR
     "revision requires ${RNS_EXPECTED_HERMES_TAG}.")
 endif()
 execute_process(
+  COMMAND git -C "${RNS_HERMES_DIR}" rev-parse HEAD
+  RESULT_VARIABLE RNS_HERMES_COMMIT_RESULT
+  OUTPUT_VARIABLE RNS_ACTUAL_HERMES_COMMIT
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET)
+if(NOT RNS_HERMES_COMMIT_RESULT EQUAL 0 OR RNS_ACTUAL_HERMES_COMMIT STREQUAL "")
+  message(FATAL_ERROR
+    "Cannot read Hermes git commit from ${RNS_HERMES_DIR}.")
+endif()
+execute_process(
   COMMAND git -C "${RNS_REACT_NATIVE_REPOSITORY}" rev-parse HEAD
   RESULT_VARIABLE RNS_RN_COMMIT_RESULT
   OUTPUT_VARIABLE RNS_ACTUAL_REACT_NATIVE_COMMIT
@@ -254,7 +275,8 @@ if(RNS_ENABLE_SANITIZERS)
   # symbols into the test/CLI image.
   foreach(glog_target glog_internal glog)
     target_compile_options(${glog_target} PRIVATE
-      -fsanitize=address,undefined -fno-sanitize=vptr
+      -fsanitize=address,undefined
+      -fno-sanitize=vptr
       -fno-omit-frame-pointer)
   endforeach()
   target_link_options(glog PRIVATE -fsanitize=address,undefined)
@@ -277,9 +299,8 @@ set(RN_ROOT "${RNS_REACT_NATIVE_DIR}")
 set(HERMES_SOURCE "${RNS_HERMES_DIR}")
 set(HERMES_BINARY_DIR "${CMAKE_BINARY_DIR}/hermes")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/HostDependencies.cmake")
-add_subdirectory(runtime)
-
 include(CTest)
+add_subdirectory(runtime)
 
 if(BUILD_TESTING)
   add_subdirectory(tests)

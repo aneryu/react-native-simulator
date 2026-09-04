@@ -68,6 +68,8 @@ def main():
     parser.add_argument("--bundle", required=True)
     parser.add_argument("--addon", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--app-key")
+    parser.add_argument("--timeout-ms", type=int, default=15000)
     args = parser.parse_args()
 
     output_path = pathlib.Path(args.output)
@@ -93,19 +95,20 @@ def main():
     )
     environment = os.environ.copy()
     environment["RNS_INTERACTIVE_SMOKE_OUTPUT"] = str(output_path)
-    environment["RNS_INTERACTIVE_SMOKE_TIMEOUT_MS"] = "15000"
+    environment["RNS_INTERACTIVE_SMOKE_TIMEOUT_MS"] = str(args.timeout_ms)
     environment["RNS_INTERACTIVE_SMOKE_RETRY_PREPARATION"] = "1"
+    command = [
+        args.rnsim,
+        "interactive",
+        "--url",
+        url,
+        "--addon",
+        args.addon,
+    ]
+    if args.app_key:
+        command.extend(["--app-key", args.app_key])
     process = subprocess.Popen(
-        [
-            args.rnsim,
-            "interactive",
-            "--url",
-            url,
-            "--app-key",
-            "RNTesterApp",
-            "--addon",
-            args.addon,
-        ],
+        command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -144,14 +147,19 @@ def main():
         require(output_path.is_file(), "interactive frontend produced no smoke JSON")
         report = json.loads(output_path.read_text())
         require(report.get("window") is True, report)
-        require(report.get("ready") is True, report)
         require(report.get("preparationFailures") == 1, report)
         require(report.get("preparationRetries") == 1, report)
-        require(report.get("capabilityUsages", 0) > 0, report)
-        require(report.get("componentCapabilityUsages", 0) > 0, report)
+        require(report.get("moduleOpens") == 1, report)
+        require(report.get("moduleCreates") == 1, report)
+        require(report.get("planFinalizations") == 1, report)
+        require(report.get("planApplications") == 1, report)
         require(server.bundle_requests >= 2, server.bundle_requests)
-        require(report.get("frameWidth", 0) > 0, report)
-        require(report.get("frameHeight", 0) > 0, report)
+        if args.app_key:
+            require(report.get("ready") is True, report)
+            require(report.get("capabilityUsages", 0) > 0, report)
+            require(report.get("componentCapabilityUsages", 0) > 0, report)
+            require(report.get("frameWidth", 0) > 0, report)
+            require(report.get("frameHeight", 0) > 0, report)
     finally:
         server.allow_success.set()
         stop_process(process)

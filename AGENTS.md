@@ -22,9 +22,15 @@ See `docs/design/SIMULATOR_DESIGN.md` for the architecture contract and `ROADMAP
   than RN's stale `.hermesv1version` because RN 0.87 RuntimeScheduler requires
   `IEventLoopControl`; keep the validated combination in `cmake/DependencyVersions.cmake`.
 - The production CLI is the native `rnsim` executable (CMake target `react-native-simulator`), and
-  the embedding API is `ReactNativeSimulator::Engine`. RN 0.87 ReactInstance owns
-  Hermes/JSI, RuntimeScheduler, error handling, bundle loading, and shutdown. The standalone
-  Hermes CLI is diagnostic bootstrap only.
+  the embedding API is `ReactNativeSimulator::Engine` plus `LaunchDraft` /
+  `prepareExplicitAddons` / `finalizeLaunchPlan` / `applyLaunchPlan`. There is no
+  `Engine(EngineConfig)`, `Engine::addAddon`, or `Engine::loadBundle`. RN 0.87
+  ReactInstance owns Hermes/JSI, RuntimeScheduler, error handling, bundle loading,
+  and shutdown. The standalone Hermes CLI is diagnostic bootstrap only.
+  Addon ABI is 4 (`react_native_simulator_addon_v4`). The generated catalog is
+  `expo`, `safe-area` (AUTO always), and `compat-rn73` (never auto). Metrics are
+  schema 3; `rnsim.json` is schema 2 tagged addons. The `android-rn73` profile
+  is a tombstone only.
 - This repository does not own an application entry point, Metro/Babel/TypeScript configuration, or a
   production bundle pipeline. Every runtime and benchmark invocation must receive caller-built bundles
   explicitly. Core configure/build/test/runtime paths must not require Node.js or npm. Optional
@@ -76,7 +82,9 @@ See `docs/design/SIMULATOR_DESIGN.md` for the architecture contract and `ROADMAP
   in isolated `runtime/addons/<name>/` directories. Never register application-specific module
   names in the RN framework provider. Expo lives in `runtime/addons/expo/` and is auto-loaded
   for Expo projects or with `--addon expo`; it host-adapts boot modules only and is not Expo Go
-  or Expo Router certification.
+  or Expo Router certification. `safe-area` auto-loads for every project.
+  `compat-rn73` wraps `PlatformConstants` for RN 0.73.x JS on the RN 0.87 native
+  engine and is never auto-loaded.
 - Record the exact React Native revision and JavaScript engine once selected. Runtime-source
   claims must be checked against the installed/runtime copy, not only a local reference copy.
 - Preserve React Native semantics where possible. Official visual components must ultimately use

@@ -12,6 +12,11 @@ if (typeof globalThis.expo.NativeModule !== 'function') {
 if (!globalThis.expo.modules || !globalThis.expo.modules.ExpoAsset) {
   throw new Error('global.expo.modules.ExpoAsset is missing');
 }
+const proxy = globalThis.nativeModuleProxy;
+if (!proxy || proxy.ExpoAsset !== globalThis.expo.modules.ExpoAsset) {
+  throw new Error(
+    'expo.modules.ExpoAsset must be nativeModuleProxy.ExpoAsset (=== jsRepresentation)');
+}
 
 for (const name of [
   'ExpoAsset',

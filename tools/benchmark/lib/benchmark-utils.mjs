@@ -142,7 +142,7 @@ export async function runHeadlessSample({
     throw new Error('react-native-simulator did not emit metrics');
   }
   const metrics = JSON.parse(metricsLine);
-  if (metrics.schemaVersion !== 2) {
+  if (metrics.schemaVersion !== 3) {
     throw new Error(`unsupported runtime metrics schema ${metrics.schemaVersion}`);
   }
   for (const gate of [

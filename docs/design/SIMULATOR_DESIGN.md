@@ -85,21 +85,32 @@ Unknown platform modules remain unavailable.
 ## Profiles and addons
 
 Versioned profiles own upstream React Native contracts. The first profile is
-`android-rn87`; `ios-rn87` remains experimental and uncertified. Application,
-company, and third-party contracts belong in isolated
-`runtime/addons/<name>/` modules and are loaded explicitly.
+`android-rn87`; `ios-rn87` remains experimental and uncertified. There is no
+`android-rn73` profile. Application, company, community, and compatibility
+contracts belong in isolated `runtime/addons/<name>/` modules discovered into a
+generated catalog.
+
+The public embedding API is `Engine()` plus `LaunchDraft` /
+`prepareExplicitAddons` / `finalizeLaunchPlan` / `applyLaunchPlan` / `run()`.
+Addon ABI 4 (`react_native_simulator_addon_v4`) registers real Fabric
+descriptors, observes committed `ShadowNode`s, and wraps framework TurboModules.
+The packaged catalog is exactly `expo`, `safe-area` (`AUTO always`), and
+`compat-rn73` (never auto). RN 0.73.x JavaScript runs on the RN 0.87 native
+engine through `--profile android-rn87 --addon compat-rn73`.
 
 The generic framework provider must never register application-specific names.
 Descriptor-only mocks remain visible in capability output and cannot be counted
-as certified pixels or behavior. See [ADDONS.md](../guides/ADDONS.md) and the
+as certified pixels or behavior. See [ADDONS.md](../guides/ADDONS.md),
+[ADDON_HOST_ARCHITECTURE.md](ADDON_HOST_ARCHITECTURE.md), and the
 [RN 0.87 capability baseline](../baselines/RN087_CAPABILITY_BASELINE.md).
 
 ## Configuration
 
-`rnsim.json` is the local configuration boundary. It is versioned, resolves
-paths relative to the config file, rejects unknown fields, and must not accept
-values the engine ignores. Resolved runtime metadata is reported by the host;
-users do not manually duplicate dependency revisions in configuration.
+`rnsim.json` is schema 2: tagged `{name}` / `{path}` addon entries only,
+paths resolved relative to the config file, unknown fields rejected. Runtime
+metrics are schema 3 structured `{name, class, owner, …}` rows. Resolved
+runtime metadata is reported by the host; users do not manually duplicate
+dependency revisions in configuration.
 
 ## Workloads and measurement
 

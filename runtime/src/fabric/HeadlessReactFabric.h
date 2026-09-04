@@ -11,11 +11,13 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <react-native-simulator/SimulatorAddon.h>
 #include <react-native-simulator/Scene.h>
 #include <react-native-simulator/Interaction.h>
+#include <react/renderer/componentregistry/ComponentDescriptorProvider.h>
 
 namespace facebook::react {
 class ComponentDescriptorProviderRegistry;
@@ -60,6 +62,20 @@ struct HeadlessReactFabricResult {
   std::vector<ReactNativeSimulator::SceneNode> mountedViewNodes;
   std::vector<std::string> mountingErrors;
   std::string error;
+  std::size_t staleCommands{0};
+  std::size_t unknownCommands{0};
+};
+
+struct AddonFabricHostBindings {
+  std::uint64_t generation{0};
+  std::unordered_map<std::string, ReactNativeSimulator::AddonMountHandler>
+      mountHandlers;
+  std::unordered_map<
+      std::string,
+      std::unordered_map<std::string, ReactNativeSimulator::AddonCommandHandler>>
+      commandHandlers;
+  std::unordered_map<std::string, std::string> componentOwners;
+  std::function<void(std::exception_ptr)> reportFatal;
 };
 
 class HeadlessReactFabricHost;
@@ -81,9 +97,18 @@ std::shared_ptr<HeadlessReactFabricHost> installHeadlessReactFabric(
     const std::filesystem::path& fontDirectory,
     const std::filesystem::path& assetDirectory,
     const std::string& platform,
-    std::vector<ReactNativeSimulator::SimulatorAddonCapability>
+    std::vector<ReactNativeSimulator::AddonComponentDeclaration>
         addonComponents = {},
-    HeadlessReactFabricUpdate onUpdate = {});
+    std::vector<facebook::react::ComponentDescriptorProvider>
+        addonProviders = {},
+    HeadlessReactFabricUpdate onUpdate = {},
+    AddonFabricHostBindings addonBindings = {});
+
+void stopHeadlessReactFabricSurface(HeadlessReactFabricHost& host);
+void shutdownHeadlessReactFabric(HeadlessReactFabricHost& host);
+void setHeadlessReactFabricCallbacksEnabled(
+    HeadlessReactFabricHost& host,
+    bool enabled);
 
 std::shared_ptr<facebook::react::UIManager> getHeadlessReactFabricUIManager();
 

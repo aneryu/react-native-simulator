@@ -58,6 +58,7 @@
       "output": {"outputOnFailure": true},
       "environment": {
         "ASAN_OPTIONS": "halt_on_error=1:detect_container_overflow=1",
+        "LSAN_OPTIONS": "suppressions=${sourceDir}/cmake/lsan-suppressions.txt",
         "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
       }
     }

@@ -10,6 +10,7 @@
 #include <iterator>
 #include <set>
 #include <stdexcept>
+#include <string_view>
 
 namespace {
 std::filesystem::path resolvePath(
@@ -67,7 +68,8 @@ SimulatorLocalConfig loadSimulatorConfig(const std::filesystem::path& path) {
   validateObjectKeys(
       json,
       {"schemaVersion", "reactNative", "platform", "appKey", "initialProps",
-       "bundle", "viewport", "fonts", "environment", "addons"},
+       "bundle", "viewport", "fonts", "environment", "addons",
+       "disabledAddons", "autoAddons"},
       "");
   if (const auto viewport = json.get_child_optional("viewport")) {
     validateObjectKeys(
@@ -79,8 +81,12 @@ SimulatorLocalConfig loadSimulatorConfig(const std::filesystem::path& path) {
 
   SimulatorLocalConfig config;
   config.schemaVersion = json.get<int>("schemaVersion", 0);
-  if (config.schemaVersion != 1) {
-    throw std::invalid_argument("rnsim.json schemaVersion must be 1");
+  if (config.schemaVersion == 1) {
+    throw std::invalid_argument(
+        "rnsim.json schemaVersion 1 is no longer accepted; use schemaVersion 2 with tagged addons entries");
+  }
+  if (config.schemaVersion != 2) {
+    throw std::invalid_argument("rnsim.json schemaVersion must be 2");
   }
   config.reactNative = json.get<std::string>("reactNative", "");
   if (config.reactNative.empty()) {
@@ -147,9 +153,40 @@ SimulatorLocalConfig loadSimulatorConfig(const std::filesystem::path& path) {
       if (!key.empty()) {
         throw std::invalid_argument("rnsim.json addons must be an array");
       }
-      config.addons.push_back(
-          resolvePath(path, value.get_value<std::string>()));
+      if (value.empty() && value.data().empty() == false) {
+        throw std::invalid_argument(
+            "rnsim.json addons entries must be {name} or {path} objects");
+      }
+      const auto name = value.get_optional<std::string>("name");
+      const auto addonPath = value.get_optional<std::string>("path");
+      if (static_cast<bool>(name) == static_cast<bool>(addonPath)) {
+        throw std::invalid_argument(
+            "rnsim.json addons entries must contain exactly one of name or path");
+      }
+      validateObjectKeys(
+          value,
+          name ? std::initializer_list<std::string_view>{"name"}
+               : std::initializer_list<std::string_view>{"path"},
+          "addons[].");
+      SimulatorAddonConfigEntry entry;
+      if (name) {
+        entry.name = *name;
+      } else {
+        entry.path = resolvePath(path, *addonPath);
+      }
+      config.addons.push_back(std::move(entry));
     }
+  }
+  if (const auto disabled = json.get_child_optional("disabledAddons")) {
+    for (const auto& [key, value] : *disabled) {
+      if (!key.empty()) {
+        throw std::invalid_argument("rnsim.json disabledAddons must be an array");
+      }
+      config.disabledAddons.push_back(value.get_value<std::string>());
+    }
+  }
+  if (const auto autoAddons = json.get_optional<bool>("autoAddons")) {
+    config.autoAddons = *autoAddons;
   }
   if (const auto environment = json.get_child_optional("environment")) {
     validateObjectKeys(
