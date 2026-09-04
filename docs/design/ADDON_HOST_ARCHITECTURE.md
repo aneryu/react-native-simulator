@@ -1,37 +1,51 @@
 # Addon Host Architecture
 
-| Field          | Value                                                                                                                                                 |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Status         | Final design — product decisions closed 2026-09-03; review consensus; single delivery                                                                 |
-| Date           | 2026-09-03                                                                                                                                            |
-| Author         | React Native Simulator                                                                                                                                |
-| Reviewed tree  | `ec35995c8f734f924b62d2c15245141a6c5ad43d`; every claim about current code and the pinned React Native source below was checked against this checkout |
-| Product        | React Native Simulator (`rnsim` / `ReactNativeSimulator::Engine`)                                                                                     |
-| Native runtime | React Native 0.87.0, Hermes v1 260318099.0.1                                                                                                          |
-| Replaces       | Addon ABI 3 (`react_native_simulator_addon_v2`); the `android-rn73` profile; metrics schema 2; `rnsim.json` schema 1; `Engine::addAddon`; `Engine::loadBundle` |
-| Related        | [SIMULATOR_DESIGN.md](SIMULATOR_DESIGN.md), [VERSIONING.md](VERSIONING.md), [ADDONS.md](../guides/ADDONS.md)                                          |
+| Field          | Value                                                                                                                                                          |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Status         | As-built ABI 4 contract — implemented on this tree; deferred work listed; merge-to-`main` still gated by the Definition of Done                                 |
+| Date           | 2026-09-04                                                                                                                                                     |
+| Author         | React Native Simulator                                                                                                                                         |
+| Reviewed tree  | `e23f2137b79b79b5d3ccf94775bfaeda20a0fddf`; every claim about current code and the pinned React Native source below was checked against this checkout           |
+| Product        | React Native Simulator (`rnsim` / `ReactNativeSimulator::Engine`)                                                                                              |
+| Native runtime | React Native 0.87.0, Hermes v1 260318099.0.1                                                                                                                   |
+| Replaces       | Addon ABI 3 (`react_native_simulator_addon_v2`); the `android-rn73` profile; metrics schema 2; `rnsim.json` schema 1; `Engine::addAddon`; `Engine::loadBundle`  |
+| Related        | [SIMULATOR_DESIGN.md](SIMULATOR_DESIGN.md), [VERSIONING.md](VERSIONING.md), [ADDONS.md](../guides/ADDONS.md)                                                   |
 
 ## Overview
 
-The current addon surface can vend TurboModules, evaluate a JSI bootstrap, and
-declare component names, but every declared component is registered as
-`UnimplementedViewComponentDescriptor`. It cannot register a real Fabric
+How to read this document:
+
+- [Product decisions](#product-decisions) and [Key Decisions](#key-decisions)
+  are normative. They are not open for reinterpretation during follow-up work.
+- The ABI, planner, inventory, Fabric, catalog, and observability sections are
+  the as-built contract. They describe the engine on the reviewed tree, not a
+  future proposal.
+- [Delivery](#delivery) and [PR Plan](#pr-plan) are the landed implementation
+  order on this branch. They are not a second rollout. The remaining merge
+  gate to `main` is the [Definition of done](#definition-of-done).
+- [Deferred](#deferred-not-in-this-delivery) is future work. It is not a
+  license to reopen the closed decisions.
+
+ABI 3 could vend TurboModules, evaluate a JSI bootstrap, and declare component
+names, but every declared component was registered as
+`UnimplementedViewComponentDescriptor`. It could not register a real Fabric
 descriptor, observe a committed `ShadowNode`, emit a typed event, or wrap a
 framework TurboModule. That gap forced `RNCSafeArea*` into the framework
 profile and encouraged `android-rn73` to become a second framework provider.
 
-This design replaces ABI 3 with ABI 4: a single-open transactional planner, one
+ABI 4 replaces that surface: a single-open transactional planner, one
 executable `FrameworkSurfaceInventory`, a frozen session snapshot, owner-directed
 TurboModule lookup, real Fabric descriptors with a host ledger and mandatory
 preflight, and generated catalog discovery. RN 0.73.10 JavaScript runs on the
 pinned RN 0.87 native engine through `compat-rn73`. `safe-area` auto-loads for
 every project. There is no legacy schema, no root-owned allowlist, and no
-multi-PR cutover: one change set, one Definition of Done.
+multi-PR cutover: one change set, one Definition of Done. That cutover has
+landed on this tree.
 
 ## Product decisions
 
 These decisions were made by the project lead after review and are normative.
-They are not open for reinterpretation during implementation.
+They are not open for reinterpretation during follow-up work.
 
 1. **RN 0.73.10 JavaScript is a supported business target.** It runs on the
    RN 0.87 native engine through the `compat-rn73` addon. The `android-rn73`
@@ -58,8 +72,8 @@ They are not open for reinterpretation during implementation.
    contract and from asserted route counters, not from certification
    bureaucracy.
 7. **Single delivery.** One change set, one merge gate (the Definition of
-   Done). The build order in this document is a dependency order for the
-   implementer, not a PR sequence.
+   Done). The build order in this document is the landed dependency map, not
+   a PR sequence.
 8. **Zero insets and a session-constant viewport in v1.** The host snapshot is
    revisioned and the ABI carries the change hook so that real device insets
    and rotation can arrive later without redoing SafeArea.
@@ -93,6 +107,8 @@ pinned engine. Implementers treat these as closed.
 | 20. Expo via `nativeModuleProxy` | `globalThis.expo.modules[name]` aliases `nativeModuleProxy[name]` (the `jsRepresentation`); no second `getTurboModule` | Dual HostObjects break `===`. `nativeModuleProxy` does not return the C++ HostObject. |
 | 21. `moduleProvider` is a catch boundary | Lookup-time null/throw becomes `nullptr` + `pendingAddonFatal`; never throws through `TurboModuleBinding` | RN's `TurboModuleBinding::getModule` is an RN frame. JSI must not see a C++ exception. |
 | 22. `SimulatorMode` lives in `SimulatorAddon.h` | `Engine.h` includes `SimulatorAddon.h`; the reverse include is forbidden | Snapshot is addon-facing. A header cycle would make the ABI uncompilable. |
+| 23. Sanitized ABI is `address,undefined,no-vptr` | Uniform `-fno-sanitize=vptr` on engine, addons, and fingerprint; string is `address,undefined,no-vptr` or `none` | AppleClang 17 reports false `std::stringbuf` vptrs across libc++. Linux GCC reports false `ConcreteShadowNode` vptrs on RN's `YogaLayoutableShadowNode::resolveErrata` path. A vptr-instrumented MODULE cannot load into a no-vptr engine. |
+| 24. Snapshot insets ≠ chrome insets | `AddonHostSnapshot` insets are `0,0,0,0`; `EngineConfig.insetTop` / `insetBottom` remain shell chrome | SafeArea and Linking read the snapshot. Status/nav chrome around the RN window is not window-relative SafeArea inset. |
 
 ## Goals & Non-Goals
 
@@ -170,86 +186,119 @@ pinned engine. Implementers treat these as closed.
 
 ## Current state (verified against the reviewed tree)
 
+ABI 4 has landed. The ABI 3 loader, `Engine::addAddon`, `Engine::loadBundle`,
+`Engine(EngineConfig)`, `classifyRuntimeCapability`, schema-1 `rnsim.json`,
+schema-2 runtime metrics, the `android-rn73` profile, profile-owned
+`RNCSafeArea*`, and the `disable-library-validation` Nightly entitlement are
+gone from this tree. The contract sections below are the as-built surface.
+
+### As-built ABI 4
+
 Runtime and loader:
 
 - `runtime/include/react-native-simulator/SimulatorAddon.h` declares
-  `kSimulatorAddonAbiVersion = 3` (line 68) while the entry symbol is
-  `react_native_simulator_addon_v2` (line 81). Capability APIs return free-form
-  `{name, fidelity}` strings. `SimulatorAddonViewManagerConfig` (lines 34–38)
-  already exists as `{name, numericConstants, commands}` and is the ABI 3
-  ancestor of ABI 4 `AddonViewManagerConfig`.
-- `SimulatorAddonRegistry::load` (`runtime/src/core/SimulatorAddon.cpp:40–84`)
-  calls `dlopen`, then checks ABI/RN/Hermes, then `create()`. TurboModule
-  lookup (`:86–97`) is first-wins across addons. `Engine::addAddon(std::string)`
-  and `Engine::addAddon(unique_ptr)` (`Engine.h:185–186`,
-  `SimulatorEngine.cpp:1761–1776`) mutate the engine after construction.
-- `SimulatorEngine.cpp` loads addon paths (`:2000–2003`) before
-  `createRuntimeProfile` (`:2167`); runs addon `installJSI` (`:2599`) before
-  the `RN$LegacyInterop_UIManager_*` globals (`:2603`),
-  `__nativeComponentRegistry__hasComponent` (`:2684–2708`, addon names only)
-  and the Fabric binding (`:2736`); resets the Fabric host before the
-  `ReactInstance` on reload (`:3356` / `:3362`) and final teardown (`:4083` /
-  `:4091`); resets `hostEnvironment()` inside every generation (`:2111–2112`);
-  and keeps a second schema-2 serializer in `makeLiveInspectorSnapshot`
-  (`:1376–1387`). `classifyRuntimeCapability` (`:153–224`) infers class from
-  substrings such as `mock`, `descriptor-only`, `tester-stub`, `fixed-fixture`,
-  `adapter`, `headless`, and `host-`.
-- `runtime/src/modules/HeadlessRNModules.cpp` serves `RNCSafeAreaContext` for
-  every profile (`:1797–1798`) and reads `RNSIM_INITIAL_URL` with `getenv` on
-  each `getInitialURL` call (`IntentAndroid` `:1218`, `LinkingManager`
-  `:1328`). `android-rn73` differs from `android-rn87` only by
-  `PlatformConstantsAndroidRN73` (`:64–100`, `:1730–1731`, fidelity
-  `fixed-fixture`); `runtime/src/profiles/RuntimeProfile.cpp:77–83` reports it
-  as `0.73.10` / `partial-compatibility-adapter`.
-- `runtime/src/fabric/HeadlessOfficialComponents.h:56–60` lists official
-  `SafeAreaView` plus `RNCSafeAreaProvider` and `RNCSafeAreaView` in the
-  official table. `HeadlessReactFabric.cpp` registers every addon component as
-  `UnimplementedViewComponentDescriptor` (`:1463–1472`), hardcodes the
-  `topInsetsChange` emission in `emitSafeAreaInsetsIfNeeded` (`:3098–3122`),
-  and returns early from `uiManagerDidDispatchCommand` for `setNativeValue`
-  and non-TextInput nodes (`:1696–1779`). The host owns
-  `ComponentDescriptorProviderRegistry providers_`, `registry_`,
-  `uiManager_`, and `eventDispatcher_` (`:3526–3529`), and a
-  `gHeadlessUIManager` global (`:88`; getter `:3607`). Fallback names are recorded when RN requests an unknown
-  provider (`:1371–1380`) and serialized as `fallbackComponents`
-  (`SimulatorEngine.cpp:3570–3573`); `failOnComponentFallback` /
-  conformance fails if that list is non-empty (`:3810–3818`).
-- `runtime/addons/expo/ExpoAddon.cpp` `installJSI` calls `getTurboModule`
-  again to build `globalThis.expo.modules[...]` (`:491–504`). `ExpoAddon.cpp`
-  is compiled twice: into the executable (`runtime/CMakeLists.txt:411–414`)
-  and into its MODULE (`:400–405` with `RNS_EXPO_ADDON_DYLIB=1`).
-  `ExpoLinkingModule::getLinkingURL` currently returns `null` (`:160–166`)
-  and does not read the initial URL.
-- `frontend/InteractiveFrontend.cpp:1959–1967` treats every preparation
-  `std::exception` as retryable.
+  `kSimulatorAddonAbiVersion = 4` and
+  `kSimulatorAddonEntryPoint = "react_native_simulator_addon_v4"` (`:55–57`).
+  The vtable is complete and pure virtual (`:203–230`). `AddonViewManagerConfig`
+  (`:89–93`) is `{name, numericConstants, commands}`.
+- `Engine` is `Engine()` only (`Engine.h:328`). Public state is
+  `EngineState { Draft, Planned, Running, Finished }` (`:20`). Launch inputs
+  live on `LaunchDraft` (`:240–278`). `LaunchDraft::Impl` defaults
+  `ProjectKind::Plain` and `autoAddons == true` (`LaunchPlan.h:66–67`).
+  `prepareExplicitAddons` / `finalizeLaunchPlan` / `applyLaunchPlan` are the
+  only path into a planned engine. There is no `Engine::addAddon` and no
+  `Engine::loadBundle`; the remaining runtime load is `RN$Simulator.loadBundle`
+  (`SimulatorEngine.cpp:2487–2500`).
+- MODULE load is single-open: `dlopen(RTLD_NOW | RTLD_LOCAL)`, v4 symbol,
+  descriptor / fingerprint / RN / Hermes, then `create()`
+  (`LaunchPlan.cpp:210–291`). InProcess injection skips those checks.
+- TurboModule lookup is owner-directed. `moduleProvider` hits the
+  generation-scoped `turboModuleCache` (`SimulatorEngine.cpp:2696–2702`), then
+  the sealed owner map (`:2704`). Overlay names call `wrapTurboModule` once.
+  Lookup-time null or throw becomes `nullptr` + `pendingAddonFatal`
+  (`:2793–2804`).
+- Addon `installJSI` runs after protected-global snapshot and is verified
+  unchanged (`SimulatorEngine.cpp:3082–3116`). Expo aliases
+  `nativeModuleProxy[name]` onto `globalThis.expo.modules[name]`
+  (`ExpoAddon.cpp:518–535`); it does not call `getTurboModule` again.
+- Host snapshot insets are `0,0,0,0` (`SimulatorEngine.cpp:2040–2043`).
+  `EngineConfig.insetTop` defaults to `24` (`Engine.h:49`) and remains shell
+  chrome (`SimulatorEngine.cpp:2091–2096`, `:2244–2245`). `hostSnapshotChanged`
+  is never invoked. `LinkingManager`, `IntentAndroid`, and Expo Linking read
+  the plan-frozen `initialUrl`. The CLI still copies `RNSIM_INITIAL_URL` once
+  at option-parse time (`main.cpp:1422–1424`).
+- Generation teardown is `quiesceGeneration` → `stopHeadlessReactFabricSurface`
+  → `shutdownHeadlessReactFabric` → `instance.reset()` →
+  `reactFabricHost.reset()` → `unbind` → `destroyCommittedAddons` (`dlclose`)
+  (`SimulatorEngine.cpp:4383–4415`).
+- Live and final metrics both emit `schemaVersion: 3` and `addonAbi: 4`
+  (`SimulatorEngine.cpp:1418–1419`, `:4138–4139`). Origins are preserved on
+  `addons[].origins` (`:1314–1323`).
+- `HeadlessRNModules.cpp` no longer serves `RNCSafeAreaContext`. Official
+  `SafeAreaView` stays in `HeadlessOfficialComponents.h:56`. `RNCSafeArea*`
+  live in `runtime/addons/safe-area/`. `emitSafeAreaInsetsIfNeeded` is gone.
+- `--profile android-rn73` is a tombstone (`main.cpp:1200–1203`).
+- `frontend/InteractiveFrontend.cpp:1960–1978` retries only
+  `RetryableNetworkError`. `TerminalLaunchPlanError` and other exceptions
+  finish the window session.
 
 Build, config, tools:
 
-- Root `CMakeLists.txt` has `include(CTest)` after `add_subdirectory(runtime)`
-  (`:280` / `:282`). `runtime/CMakeLists.txt` guards a company addon with
-  `if(EXISTS .../addons/shopee/...)` (`:390–395`) and has no hidden-visibility
-  setting; there is no `RNS_EXPORT` macro. macOS links with
-  `cmake/macos-engine-exported-symbols.txt` (`:442–445`); Linux uses
-  `-rdynamic` (`:448–449`).
-- `SimulatorConfig.cpp` resolves every `addons` string as a config-relative
-  path (`:145–152`). Schema version is 1 (`:82–83`); unknown fields are
-  rejected (`:25–40`).
-- `tools/diagnostics/verify-runtime.mjs` asserts
-  `nativeCapabilities.modules.NativeMicrotasksCxx === "real-headless"` and
-  `schemaVersion === 2` (`:61–73`). `verify-addons.mjs:16–17` hardcodes
-  `.dylib`. `tools/release/generate-release-manifest.sh` hardcodes
-  `addonAbi: 2` (`:43`) plus RN and Hermes version strings. 
-  `cmake/ValidateCliMetadata.cmake:39` asserts `addonAbi == 3`.
-  `package-macos.sh` copies the build-tree binary into the DMG; it does not
-  run `cmake --install`.
-- Root CMake already has `RNS_RN0732_FIXTURE_BUNDLE` (`CMakeLists.txt:38–39`),
-  `RNS_RNTESTER_BUNDLE` (`:40–41`), and `RNS_REQUIRE_RNTESTER_BUNDLE`
-  (`:42–43`).
-- Nightly signing currently includes
-  `com.apple.security.cs.disable-library-validation`
-  (`tools/release/rnsim.entitlements:9–10`).
+- Root `CMakeLists.txt` calls `include(CTest)` at `:292` before
+  `add_subdirectory(runtime)` (`:293`). Addon discovery is
+  `rns_declare_addon` / `RNS_ADDON_DIRS` (`cmake/RnsAddon.cmake`). There is no
+  root-owned allowlist and no `EXISTS .../addons/shopee` guard.
+- Catalog declarations: `expo` `AUTO expo` (`runtime/addons/expo/CMakeLists.txt`),
+  `safe-area` `AUTO always` (`runtime/addons/safe-area/CMakeLists.txt`),
+  `compat-rn73` `AUTO never` (`runtime/addons/compat-rn73/CMakeLists.txt`),
+  `rntester` `MODULE` only (`runtime/addons/rntester/CMakeLists.txt`). Built-in
+  MODULE copies are `TEST_ONLY`.
+- Implementation objects use hidden visibility; the MODULE entry is
+  `RNS_EXPORT` (`cmake/RnsAddon.cmake:81–88`, `:133–134`).
+- Fingerprint generation hashes every
+  `runtime/include/react-native-simulator/*.h` plus pins, compiler, stdlib,
+  sanitizer, and visibility (`cmake/GenerateAddonApiFingerprint.cmake:5–41`).
+  Sanitized trees fingerprint as `address,undefined,no-vptr` (`:33–36`).
+  Engine and addon targets compile with `-fno-sanitize=vptr`
+  (`CMakeLists.txt:30–41`, `cmake/RnsAddon.cmake:99–103`). On sanitized
+  Linux GCC, `YogaLayoutableShadowNode.cpp` is left uninstrumented so the
+  link can see `ConcreteShadowNode` typeinfo; the fingerprint string does not
+  change (`runtime/CMakeLists.txt:359–367`).
+- `SimulatorConfig.cpp` accepts schema 2 tagged `{name}` / `{path}` entries
+  only (`:67–88`). Schema 1 fails with the specified upgrade message (`:83–85`).
+- `verify-runtime.mjs` asserts `schemaVersion === 3`. `verify-addons.mjs`
+  accepts `.dylib` and `.so`. `cmake/ValidateCliMetadata.cmake:39` asserts
+  `addonAbi == 4`. `tools/benchmark/lib/benchmark-utils.mjs` parses runtime
+  metrics as schema 3; the benchmark comparison document stays schema 2.
+- `RNS_RN073_BUSINESS_BUNDLE`, `RNS_RN073_BUSINESS_PROVENANCE`, and
+  `RNS_REQUIRE_RN073_BUSINESS_BUNDLE` exist (`CMakeLists.txt:49–54`). Ordinary
+  `core` jobs keep `REQUIRE=OFF`. macOS and Linux workflows have a required
+  lane that sets `REQUIRE=ON` when the private artifact is present.
+- `tools/release/rnsim.entitlements` is an empty dict. Nightly no longer
+  ships `com.apple.security.cs.disable-library-validation`.
+  `tools/release/macos-codesign.sh:135–139` still greps for that entitlement
+  when it thinks a binary needs entitlements; that check is a remaining
+  packaging contradiction, not a restored ABI 3 loader.
 
-Pinned React Native facts that constrain the design (submodule
+### Historical ABI 3 (pre-cutover)
+
+The pre-cutover tree (`ec35995`) is the baseline this contract replaced:
+
+- ABI constant 3 with entry symbol `react_native_simulator_addon_v2`;
+  first-wins TurboModule walk; `Engine::addAddon` after construction.
+- Addon `installJSI` before protected host globals; every addon component
+  registered as `UnimplementedViewComponentDescriptor`.
+- Profile-owned `RNCSafeAreaContext` and hardcoded `topInsetsChange`.
+- `android-rn73` as a second framework provider that only swapped
+  `PlatformConstants`.
+- Schema-1 `rnsim.json` (bare addon path strings), schema-2 flat fidelity
+  maps, `classifyRuntimeCapability` substring inference.
+- `include(CTest)` after `runtime`; company `EXISTS .../shopee` guard;
+  Nightly `disable-library-validation` entitlement.
+
+### Pinned React Native constraints
+
+These RN 0.87 facts still constrain ABI 4 (submodule
 `4bc2473f5d0233ea5384c1ef24f6a55615de2220`):
 
 - `ComponentDescriptorProviderRegistry::add` silently returns on a duplicate
@@ -270,7 +319,7 @@ Pinned React Native facts that constrain the design (submodule
   (`EventEmitter.cpp:35`); an empty event type is undefined behavior.
 - `RootShadowNode`'s component name is `RootView`
   (`RootShadowNode.cpp:16`, `RootComponentName`); `Root` is only the
-  simulator's retained-scene label (`HeadlessReactFabric.cpp:1367`).
+  simulator's retained-scene label (`HeadlessReactFabric.cpp:1377`).
 - `TurboModule::name_` is protected (`TurboModule.h:79`).
 - `ComponentDescriptorParameters` carries `eventDispatcher`, `contextContainer`,
   and `flavor` (`ComponentDescriptor.h:153–158`); every real descriptor
@@ -353,20 +402,23 @@ metrics contracts, and the runtime generation describe one selected surface.
 Parallel lists with different ownership or availability semantics are
 forbidden.
 
-Public headers after this delivery:
+Public headers:
 
 | Header | Contents |
 | ------ | -------- |
 | `runtime/include/react-native-simulator/SimulatorAddon.h` | `SimulatorMode`, ABI 4 vtable, manifest, snapshot, registrar, executor, descriptor, `RNS_EXPORT` |
 | `runtime/include/react-native-simulator/Engine.h` | `Engine`, `EngineState`, `EngineConfig`, `LaunchDraft`, specs, plan types, launch errors |
+| `runtime/include/react-native-simulator/Scene.h` | typed retained scene; predates ABI 4; hashed into the fingerprint |
+| `runtime/include/react-native-simulator/SceneTransform.h` | scene transform helpers; predates ABI 4; hashed into the fingerprint |
+| `runtime/include/react-native-simulator/Interaction.h` | action queue types; predates ABI 4; hashed into the fingerprint |
 | generated `AddonApiFingerprint.h` | `kSimulatorAddonApiFingerprint` string; not shipped in Nightly |
 
 `Engine.h` includes `SimulatorAddon.h`. `SimulatorAddon.h` must not include
-`Engine.h`. `SimulatorMode` moves from `Engine.h:17–21` into
-`SimulatorAddon.h` so `AddonHostSnapshot` can mention it without a cycle.
-A third public header under `runtime/include/react-native-simulator/` is
-allowed later and changes the fingerprint (every public ABI header in that
-directory is hashed). This delivery does not add one.
+`Engine.h`. `SimulatorMode` lives in `SimulatorAddon.h` so `AddonHostSnapshot`
+can mention it without a cycle. The fingerprint hashes every
+`runtime/include/react-native-simulator/*.h`. ABI 4 did not add a new public
+header. Adding or changing any file in that directory still changes the
+fingerprint.
 
 Nightly ships none of these headers.
 
@@ -376,12 +428,13 @@ Nightly ships none of these headers.
 
 ```cpp
 enum class EngineState { Draft, Planned, Running, Finished };
-
-enum class RuntimeGenerationState { Opening, Open, Quiescing, Closed };
 ```
 
-Existing `RuntimePhase` values (`Idle`, `Initializing`, `LoadingBundle`, …)
-remain subordinate status and add no ownership states.
+Generation lifecycle (`Opening`, `Open`, `Quiescing`, `Closed`) is enforced
+inside `SimulatorEngine` and is not a public enum (see
+[As-built notes](#as-built-notes)). Existing `RuntimePhase` values (`Idle`,
+`Initializing`, `LoadingBundle`, …) remain subordinate status and add no
+ownership states.
 
 | Current state                    | Operation                                                            | Result                                                                                                    |
 | -------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
@@ -1184,9 +1237,10 @@ MODULE-defined `exception_ptr` in `TerminalLaunchPlanError`.
 CMake generates `kSimulatorAddonApiFingerprint` at configure time as the
 lowercase hex SHA-256 of a canonical newline-separated document containing:
 
-- SHA-256 of every public ABI header under
-  `runtime/include/react-native-simulator/` (`SimulatorAddon.h` including
-  `SimulatorMode`, and `Engine.h`; adding a header changes the fingerprint);
+- SHA-256 of every public header under
+  `runtime/include/react-native-simulator/` (today `SimulatorAddon.h`,
+  `Engine.h`, `Scene.h`, `SceneTransform.h`, `Interaction.h`; adding or
+  changing a header changes the fingerprint);
 - `RNS_REACT_NATIVE_VERSION` and `RNS_HERMES_VERSION`;
 - RN and Hermes git commits;
 - `CMAKE_CXX_COMPILER_ID` and `CMAKE_CXX_COMPILER_VERSION`;
@@ -1194,6 +1248,14 @@ lowercase hex SHA-256 of a canonical newline-separated document containing:
 - stdlib ABI (`libc++` / `libstdc++`);
 - sanitizer mode (`none` or `address,undefined,no-vptr`);
 - ABI-affecting flags (`-fvisibility=hidden` on MODULEs, language mode).
+
+Decision 23 is normative: sanitized hosts and MODULEs compile with
+`-fno-sanitize=vptr`. AppleClang 17 otherwise reports false `std::stringbuf`
+vptrs across libc++; Linux GCC otherwise reports false `ConcreteShadowNode`
+vptrs on RN's `YogaLayoutableShadowNode::resolveErrata` path. On sanitized
+Linux GCC the host leaves that one RN translation unit uninstrumented so
+typeinfo COMDATs remain; the fingerprint string stays
+`address,undefined,no-vptr`.
 
 The engine and every MODULE built in that tree compile with the same
 `-DRNS_ADDON_API_FINGERPRINT=...`. Comparison is exact string equality. A
@@ -1773,8 +1835,9 @@ RN 0.87 module; a test proves every non-version constant and method is
 identical to the unwrapped module.
 
 Additional served modules are admitted only from the observed request
-inventory of the real business bundle (today's `android-rn73` differs from
-`android-rn87` only by `PlatformConstants`, so the expected inventory is small).
+inventory of the real business bundle (the retired `android-rn73` profile
+differed from `android-rn87` only by `PlatformConstants`, so the expected
+inventory is small).
 Each admitted surface has its own class, implementation, and test; no
 speculative 0.73 names.
 
@@ -1972,9 +2035,8 @@ top-level `compatibilityLevel` are replaced by structured fields. Workload,
 bundle records, timing, memory, Hermes heap/GC, RSS, CPU, and `requirements`
 objects are unchanged. The benchmark comparison JSON produced by
 `tools/benchmark` is a separate document and is untouched unless it embeds
-runtime metrics (`tools/benchmark/lib/benchmark-utils.mjs` currently requires
-schema 2 and must be updated in this same delivery if it parses runtime
-metrics).
+runtime metrics (`tools/benchmark/lib/benchmark-utils.mjs` requires schema 3
+when it parses runtime metrics; the comparison JSON stays schema 2).
 
 ```json
 {
@@ -2093,9 +2155,10 @@ network, memory, and user permissions (`SECURITY.md`). Accurate claims:
 
 ## Delivery
 
-One change set. The order below is the dependency order for building and
-testing it; the only merge gate is the Definition of Done. It is **not** a
-sequence of independently mergeable PRs. See [PR Plan](#pr-plan).
+This order landed on `docs/addon-host-architecture`. It remains the dependency
+map for reading the cutover. It is **not** a sequence of independently
+mergeable PRs and not a second rollout. The remaining merge gate to `main` is
+the Definition of Done. See [PR Plan](#pr-plan).
 
 1. **Build topology** — `include(CTest)` first; generic discovery;
    `rns_declare_addon`; `RNS_ADDON_DIRS`; OBJECT + shim; hidden visibility;
@@ -2230,6 +2293,24 @@ incompatible HBC fails clearly; `android-rn73` survives only in the tombstone
 and negative tests; optional `rn0732-*` rewritten to `android-rn87` +
 `compat-rn73` and not required for DoD.
 
+## As-built notes
+
+Closed implementation details that the pre-cutover design left implicit, or
+that implementation made normative. They do not reopen product decisions.
+
+| Topic | As-built choice |
+| ----- | --------------- |
+| Public header set | Fingerprint hashes all five existing headers in `runtime/include/react-native-simulator/`. ABI 4 added none. `Scene.h`, `SceneTransform.h`, and `Interaction.h` predate the cutover. |
+| `RuntimeGenerationState` | The design listed a public `{Opening, Open, Quiescing, Closed}` enum. The host enforces that lifecycle inside `SimulatorEngine` without a public enum. Publishing one would change the fingerprint and is not required. |
+| Embedder default profile | `EngineConfig.profile` defaults to `macos-rn87` (`Engine.h:42`). The CLI without `--profile` selects `{platform}-rn87`. Design examples use `android-rn87` because that is the Android-first certification profile, not because it is the embedder default. |
+| Chrome vs snapshot insets | `EngineConfig.insetTop` default `24` is host chrome. Snapshot insets stay `0,0,0,0`. SafeArea reads only the snapshot. |
+| Sanitizer fingerprint | `address,undefined,no-vptr` or `none`. Uniform `-fno-sanitize=vptr`. Linux GCC leaves `YogaLayoutableShadowNode.cpp` uninstrumented; the fingerprint string does not mention that exception. |
+| Request origins | Auto merge prepends `Auto`. Config tokens record `Config`; CLI tokens record `Cli`; embedder methods default to `Embedder`. Metrics emit `addons[].origins`. Occupying an auto slot records both origins. |
+| `getenv` remaining uses | CLI copies `RNSIM_INITIAL_URL` once into the draft. Linking modules do not reread the environment. Unrelated `getenv` uses (DevTools frontend dir, scroll tuning) are outside the addon snapshot. |
+| Internal `Root` label | Inventory and metrics use RN `RootView`. The retained-scene / mounted-tree path still labels the scene root `Root`. That label is not a Fabric or metrics name. |
+| Nightly entitlement | `rnsim.entitlements` is empty. `macos-codesign.sh` still fails a signed `rnsim` that lacks `disable-library-validation`. Align the signing check before Nightly publication; do not restore the entitlement. |
+| Test-matrix remainder | Planner, ABI lifecycle, Fabric MODULE, safe-area smoke, compat constants, tombstone, and interactive retry lanes exist. Dedicated `topInsetsChange` event-count and named sanitizer-reload-stress CTests are not separate binaries; those routes are covered by the Fabric probe and sanitizer presets. A skip of `rn07310-business-bundle` is never a DoD pass. |
+
 ## Deferred (not in this delivery)
 
 - Addon-painted components (Skia painter hook). Requires an addon-owned paint
@@ -2272,6 +2353,15 @@ and negative tests; optional `rn0732-*` rewritten to `android-rn87` +
   library-validation entitlement; documentation, binary metadata, release
   manifest, and behavior agree.
 
+Status on the reviewed tree:
+
+| Gate | Status |
+| ---- | ------ |
+| ABI 3 gone; single-open MODULE; owner inventory; schema 3 / config 2; generated catalog; JSI after protected globals; Fabric preflight + MODULE probe; teardown order; `safe-area` auto-load; `android-rn73` tombstone; distinct native / family / JS-visible versions | Met |
+| RN 0.73.10 business-bundle lane | Wired (`rn07310-business-bundle`, `RNS_REQUIRE_RN073_BUSINESS_BUNDLE`). Passes only when the private bundle and provenance file are supplied. Ordinary `core` jobs stay `REQUIRE=OFF`. |
+| Nightly one-file, no external MODULE, no library-validation entitlement | Packaging model met (`TEST_ONLY` / `EXCLUDE_FROM_ALL`, empty entitlements file). Signing verification still expects the removed entitlement. |
+| Full design test matrix as dedicated CTests | Core lanes met. Some matrix rows share a probe binary rather than a one-row CTest. |
+
 ## Risks
 
 | Risk                                                                        | Severity | Mitigation                                                                                                                                 |
@@ -2286,6 +2376,7 @@ and negative tests; optional `rn0732-*` rewritten to `android-rn87` +
 | Interactive retry opens or commits twice                                    | High     | Three phases, typed errors, prepared-handle reuse, counters                                                                                |
 | Release manifest reports wrong identity                                     | Medium   | Derived from `rnsim --version --json`; compared by `verify-release.sh`                                                                     |
 | InProcess tests are mistaken for MODULE proof                               | Medium   | Invariant 10; required macOS `.dylib` and Linux `.so` lanes                                                                                |
+| Nightly signing script still requires `disable-library-validation`          | Medium   | Empty entitlements file is authoritative; align `macos-codesign.sh` before publication                                                     |
 
 ## Alternatives considered
 
@@ -2307,18 +2398,18 @@ and negative tests; optional `rn0732-*` rewritten to `android-rn87` +
 
 ## Open Questions
 
-Product decisions 1–8 are closed. Lookup catch-boundary, per-generation
-TurboModule cache, `Engine::loadBundle` deletion, `LaunchDraft` defaults,
-`setProjectKind` until finalize, `SimulatorMode` header placement,
-`initialWindowMetrics` vs Provider frame, business-bundle provenance schema,
-and the fate of `rn0732-*` tests are specified in this revision.
+Product decisions 1–8 and Key Decisions 1–24 are closed. The as-built notes
+above record implementation details that the pre-cutover draft left implicit
+(sanitizer fingerprint, chrome vs snapshot insets, public-header hash set,
+origin preservation). None of those reopen the architecture.
 
 No implementation-blocking questions remain. Observed extra TurboModule names
 from the RN 0.73.10 business bundle are admitted only with class, owner, and
 test; that is a gate input recorded beside the provenance file, not a design
 choice. The org-specific download/secret that fills
 `RNS_RN073_BUSINESS_BUNDLE` is an operations input, not an open architecture
-question.
+question. Aligning `macos-codesign.sh` with the empty entitlements file is a
+packaging fix, not an ABI question.
 
 ## References
 
@@ -2336,22 +2427,26 @@ question.
 
 ## PR Plan
 
-Product decision 7 forbids an eight-PR rollout. Implementation is **one
-independently mergeable pull request** that lands the full cutover. Intermediate
-steps are not mergeable, not reviewable as separate PRs, and must not introduce
-transitional adapters, dual metrics schemas, dual addon ABIs, or a living
-`android-rn73` profile.
+Product decision 7 forbids an eight-PR rollout. The cutover landed on
+`docs/addon-host-architecture` as **one independently mergeable unit** against
+`main`. Intermediate steps were not mergeable, were not reviewed as separate
+PRs, and did not introduce transitional adapters, dual metrics schemas, dual
+addon ABIs, or a living `android-rn73` profile.
 
 **PR title:** `Addon host ABI 4: planner, inventory, Fabric, safe-area, compat-rn73`
 
-**Independently mergeable unit:** this single PR.
+**Independently mergeable unit:** `docs/addon-host-architecture` → `main`.
 
 **Merge gate:** [Definition of done](#definition-of-done).
 
 **Dependencies on other PRs:** none.
 
 Internal implementation order (same as [Delivery](#delivery)). The **branch is
-not mergeable until DoD**. Intermediate compile states may break tests that
+not mergeable until DoD**. The steps below are the landed dependency map, not
+work remaining on this tree. File lists and line numbers in the steps are the
+pre-cutover touch list from `ec35995`; they are not HEAD citations. See
+[Current state](#current-state-verified-against-the-reviewed-tree) for as-built
+line numbers. Intermediate compile states may break tests that
 later steps rewrite (catalog-triple tests need steps 6–7; ABI 4 vtable tests
 need step 4; schema-2/3 consumers need steps 2–3). Do not add transitional
 adapters to keep those tests green on a prefix of the branch.
