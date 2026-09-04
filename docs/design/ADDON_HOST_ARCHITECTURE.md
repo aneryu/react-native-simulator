@@ -614,7 +614,7 @@ plan resources, and finishes without evaluating caller JavaScript. Addons whose
 | `dlopen` flags / entry symbol `react_native_simulator_addon_v4` | no (same image) | `dlopen(path, RTLD_NOW \| RTLD_LOCAL)`; missing symbol → "not an ABI 4 addon"; older symbols are not probed. macOS MODULEs still link with `-undefined dynamic_lookup` | no |
 | `descriptorSize`, `abiVersion == 4`, fingerprint, RN, Hermes strings | no | required exact | no |
 | `create` / `destroy` | catalog factory; destructor of `unique_ptr` | descriptor callbacks. If `create()` throws: catch while the MODULE is mapped, copy a host-owned diagnostic (operation, path, addon name when known, exception text), destroy the caught exception by leaving the catch, invoke `destroy` if a pointer was returned, then `dlclose`. Do not store a MODULE `exception_ptr` in `TerminalLaunchPlanError`. Null `create()` is the non-throwing failure form | caller `unique_ptr`; no C `destroy`; a throwing constructor is the caller's problem before `addAddon` |
-| `manifest()` copied once; name `[a-z][a-z0-9-]*` | name equals catalog key | name equals descriptor name | name unique in the plan; `diagnosticLabel` is the locator, not the name |
+| `manifest()` copied once; name `[a-z][a-z0-9-]*`. If `manifest()` throws: catch while mapped, copy a host-owned diagnostic, leave the catch, then `destroy`/`dlclose` | name equals catalog key | name equals descriptor name | name unique in the plan; `diagnosticLabel` is the locator, not the name |
 | collisions, overlays, `allowedProfiles`, at-most-one `bundleCompatibility` | yes | yes | yes |
 | proves `.dylib` / `.so` behavior | no | yes, on both platforms | **no** — invariant 10 |
 
@@ -736,9 +736,11 @@ Allowed top-level keys: `schemaVersion`, `reactNative`, `platform`, `appKey`,
 `disabledAddons`, `autoAddons`. Unknown fields and malformed entries fail
 closed, as today.
 
-- `{ "name": ... }` is an exact catalog key; `{ "path": ... }` resolves relative
-  to the config file. An object must contain exactly one of `name` or `path`.
-  Bare strings are rejected.
+- `{ "name": ... }` is an exact catalog key and is never interpreted as a
+  MODULE path, even if the string contains `/` or ends in `.so` / `.dylib`.
+  `{ "path": ... }` resolves relative to the config file. An object must
+  contain exactly one of `name` or `path` and no other keys. Bare strings
+  are rejected.
 - `schemaVersion: 1` fails with a one-line upgrade message
   (`rnsim.json schemaVersion 1 is no longer accepted; use schemaVersion 2 with tagged addons entries`).
 - CLI `--addon` entries append after config order; CLI disables union with
@@ -1191,7 +1193,8 @@ lowercase hex SHA-256 of a canonical newline-separated document containing:
 - RN and Hermes git commits;
 - `CMAKE_CXX_COMPILER_ID` and `CMAKE_CXX_COMPILER_VERSION`;
 - `CMAKE_CXX_STANDARD`;
-- stdlib ABI (`libc++` / `libstdc++`);
+- stdlib ABI (`libc++` / `libstdc++`; Apple defaults to `libc++`, Linux
+  defaults to `libstdc++` even for Clang unless `-stdlib=libc++` is set);
 - sanitizer mode (`none` or `address,undefined,no-vptr`);
 - ABI-affecting flags (`-fvisibility=hidden` on MODULEs, language mode).
 
@@ -1432,8 +1435,9 @@ class AddonRuntimeExecutor {
 };
 ```
 
-The registrar is valid only during `configureFabric`; registration is staged
-and never mutates a live RN registry. An addon registers only its manifest
+The registrar is valid only during `configureFabric`; the host nulls its
+session pointer when that call returns. Registration is staged and never
+mutates a live RN registry. An addon registers only its manifest
 components; at most one mount handler per component; exactly one handler per
 declared command; no undeclared or duplicate handlers. `DescriptorOnlyMock`
 components are registered by the host as `UnimplementedViewComponentDescriptor`
@@ -1454,7 +1458,8 @@ Rules the host enforces or documents:
   task runs on the runtime thread. Addon-owned threads, timers, and device
   adapters must hop through `AddonRuntimeExecutor::post`. The host records the
   runtime thread per generation; a delegate callback on another thread sets
-  `pendingAddonFatal` and disables addon callbacks.
+  `pendingAddonFatal` and disables addon callbacks. Dropped posts increment
+  `droppedPosts`, which the final metrics envelope reports.
 - Event types must be non-empty; `EventEmitter::normalizeEventType` writes
   `type[0]`. The addon's declared `events` list is informational and appears
   in metrics and chrome.
@@ -1554,11 +1559,11 @@ grow a family field; addons that need it read `node.shadowNode->getFamily()`.
 auto node = resolveCurrentMountedNode(
     generation, surfaceId, tag, componentName, commandShadowNode->getFamily());
 if (!node) { recordStaleOrUnknownCommandAndNoop(...); return; }
-if (dispatchFrameworkCommand(*node, commandName, args)) return;
 if (auto* handler = addonHandlers.findExact(node->owner, node->componentName, commandName)) {
   invokeAddonCommand(*handler, *node, commandName, args);
   return;
 }
+if (dispatchFrameworkCommand(*node, commandName, args)) return;
 recordUnknownCommandAndNoop(...);
 ```
 
@@ -1587,10 +1592,10 @@ std::exception_ptr pendingAddonFatal{};     // first mount/command/lookup failur
 lookup-time contract failure inside `moduleProvider` (see Owner-directed
 lookup). On a callback failure the host disables remaining addon callbacks for
 the transaction and generation, completes its bookkeeping (the scene is already
-published), and returns normally to RN. On a lookup failure it returns
-`nullptr` to `TurboModuleBinding`. The engine surfaces the error at its next
-owned boundary. The `exception_ptr` is host-owned (copied diagnostic); it must
-not point at a MODULE-defined exception object.
+published), and returns normally to RN. `moduleProvider` catches `std::exception` and `...`, copies a host-owned
+`AddonContractViolation`, and returns `nullptr`. The `exception_ptr` is
+host-owned (copied diagnostic); it must not point at a MODULE-defined
+exception object.
 
 ## Generation teardown
 
@@ -1874,8 +1879,13 @@ private URL or secret name; the org's workflow download step sets the env.
 ```
 
 `build.format` is `"metro-source"` or `"hermesc-hbc"`. Configure hashes the
-bundle file and requires it to equal `sha256`. The required CTest
-`rn07310-business-bundle` runs:
+bundle file and requires it to equal `sha256`. The optional CTest
+`rn07310-business-bundle` is **not** a default GitHub Actions job. It is
+registered only when the operator supplies both CMake cache inputs
+`RNS_RN073_BUSINESS_BUNDLE` and `RNS_RN073_BUSINESS_PROVENANCE` (local or
+org-private CI). Default `linux.yml` / `macos.yml` workflows run `core` and
+sanitized/GUI jobs only; they must not fetch private bundles. When those
+cache inputs are present, the test runs:
 
 ```text
 rnsim headless --profile android-rn87 --addon compat-rn73
@@ -1893,8 +1903,8 @@ Fate of other `android-rn73` tests in `tests/CMakeLists.txt`:
 - `rn73-profile` (`:182–185`, `:219–221`) becomes a **negative** tombstone
   test: `--profile android-rn73` prints the removal message and exits
   nonzero.
-- `shopee-addon` (`:190–196`) is rewritten to `--profile android-rn87` (it is
-  a company addon, not a compat profile).
+- `shopee-addon` is not referenced in core CMake or CTest. Company addons
+  live under `RNS_ADDON_DIRS` and register their own tests.
 - `rn0732-*` as in the table above: optional extra, rewritten profile+addon,
   same CMake variable name, not DoD.
 
@@ -1918,14 +1928,16 @@ rns_declare_addon(
 ```
 
 - Root `CMakeLists.txt` moves `include(CTest)` before `add_subdirectory(runtime)`.
-- `runtime/CMakeLists.txt` discovers sorted `runtime/addons/*/CMakeLists.txt`
-  with `CONFIGURE_DEPENDS`, then each directory in the `RNS_ADDON_DIRS` cache
-  list. An addon directory containing sources but no `CMakeLists.txt` fails
-  configure. Duplicate keys fail configure.
-- Every current addon (`expo`, `rntester`, optional company trees) gets its own
-  `CMakeLists.txt`; core CMake and CTest contain no company names or `EXISTS`
-  guards. `rntester` declares `MODULE` + `INSTALL_COMPONENT rntester-demo`
-  without `BUILTIN`.
+- `runtime/CMakeLists.txt` discovers addons by pinning the upstream trio
+  (`expo`, `safe-area`, `compat-rn73`) first, then adding every remaining
+  sorted `runtime/addons/*/CMakeLists.txt` with `CONFIGURE_DEPENDS`, then each
+  directory in the `RNS_ADDON_DIRS` cache list. An addon directory containing
+  sources but no `CMakeLists.txt` fails configure. Duplicate keys fail
+  configure.
+- Every current addon (`expo`, `rntester`, optional company trees via
+  `RNS_ADDON_DIRS`) gets its own `CMakeLists.txt`; core CMake and CTest
+  contain no company names or `EXISTS` guards. `rntester` declares `MODULE` +
+  `INSTALL_COMPONENT rntester-demo` without `BUILTIN`.
 - The implementation compiles once as PIC OBJECT/static; the MODULE is a thin
   entry shim linked against it. Implementation symbols use hidden visibility;
   only the C entry is exported, so Linux `-rdynamic` cannot preempt a MODULE's
@@ -2225,7 +2237,8 @@ Compat: doctor classifications; never auto-loaded; iOS/macOS rejected before
 bind; JS sees `0.73.10` while metrics report `0.73.x` and native `0.87.0`;
 every non-version `PlatformConstants` field equals RN 0.87; overlay does not
 steal the module owner row; observed module inventory checked in with no
-speculative names; `rn07310-business-bundle` satisfies provenance `pass`;
+speculative names; optional `rn07310-business-bundle` satisfies provenance
+`pass` when the operator supplies the bundle (not a default GHA job);
 incompatible HBC fails clearly; `android-rn73` survives only in the tombstone
 and negative tests; optional `rn0732-*` rewritten to `android-rn87` +
 `compat-rn73` and not required for DoD.
@@ -2263,9 +2276,11 @@ and negative tests; optional `rn0732-*` rewritten to `android-rn87` +
   TurboModules stay safe between quiesce and instance destruction.
 - `RNCSafeArea*` is served only by the `safe-area` addon, which auto-loads for
   every project; official `SafeAreaView` remains framework-owned.
-- `android-rn73` has no active branch; the real RN 0.73.10 business bundle
-  passes the provenance `pass` assertions through `android-rn87` +
-  `compat-rn73` in a required CI lane (`RNS_REQUIRE_RN073_BUSINESS_BUNDLE=ON`).
+- `android-rn73` has no active branch; a real RN 0.73.10 business bundle may
+  pass the provenance `pass` assertions through `android-rn87` +
+  `compat-rn73` when the operator supplies `RNS_RN073_BUSINESS_BUNDLE` and
+  `RNS_RN073_BUSINESS_PROVENANCE` (optional CMake / org-private CI, not a
+  default GitHub Actions job).
 - Native, family, and JS-visible versions remain distinct in snapshot,
   metrics, doctor, and stderr.
 - Nightly is one file, loads no external MODULE, and no longer carries the
@@ -2396,7 +2411,7 @@ adapters to keep those tests green on a prefix of the branch.
 ### Step 3 — Framework inventory + schema 3
 
 - **Depends on:** step 2.
-- **Files / components:** `RuntimeProfile.cpp`, `HeadlessRNModules.cpp`,
+- **Files / components:** `FrameworkInventory.cpp`, `HeadlessRNModules.cpp`,
   `HeadlessOfficialComponents.*`, `SimulatorEngine.cpp` metrics serializers
   (final + `makeLiveInspectorSnapshot`); `tools/diagnostics/verify-runtime.mjs`
   (`schemaVersion === 2` and `NativeMicrotasksCxx === "real-headless"`);
@@ -2450,17 +2465,18 @@ adapters to keep those tests green on a prefix of the branch.
 
 - **Depends on:** steps 3–4.
 - **Files / components:** new `runtime/addons/compat-rn73/`;
-  `RuntimeProfile.cpp`; `HeadlessRNModules.cpp`
+  `HeadlessRNModules.cpp`
   (`PlatformConstantsAndroidRN73`); `main.cpp` doctor and profile tombstone;
   root `CMakeLists.txt` (`RNS_RN073_BUSINESS_BUNDLE`,
   `RNS_RN073_BUSINESS_PROVENANCE`, `RNS_REQUIRE_RN073_BUSINESS_BUNDLE`; keep
   `RNS_RN0732_FIXTURE_BUNDLE` for optional extras); `tests/CMakeLists.txt`
-  (`rn73-profile` tombstone, `shopee-addon` → `android-rn87`, `rn0732-*`
-  rewrite, new `rn07310-business-bundle`); `.github/workflows/macos.yml` and
-  `linux.yml` required-lane job.
+  (`rn73-profile` tombstone, optional `rn07310-business-bundle` when cache
+  inputs exist). Default `.github/workflows/macos.yml` and `linux.yml` do
+  not register a private-bundle job.
 - **Description:** Overlay test first. Observed inventory from the business
-  bundle. Delete `android-rn73`. Required CI lane asserts provenance `pass`.
-  Optional `rn0732-*` stay non-gate extras.
+  bundle. Delete `android-rn73`. Optional CMake/org-private CI asserts
+  provenance `pass` when the bundle is supplied. Optional `rn0732-*` stay
+  non-gate extras.
 
 ### Step 8 — Package and docs
 
