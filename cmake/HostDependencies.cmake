@@ -41,7 +41,9 @@ if(APPLE)
   add_library(rns_folly_headers INTERFACE)
   target_include_directories(rns_folly_headers INTERFACE "${FOLLY_INCLUDE_DIR}")
   add_library(rns_folly INTERFACE)
-  target_link_libraries(rns_folly INTERFACE rns_folly_headers)
+  target_link_libraries(rns_folly INTERFACE
+    rns_folly_headers
+    FastFloat::fast_float)
   if(RNS_ENABLE_SANITIZERS)
     target_link_libraries(rns_folly INTERFACE
       "${RNS_FOLLY_SHARED_LIBRARY}"
