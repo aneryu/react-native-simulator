@@ -614,3 +614,11 @@ add_custom_target(verify
 if(TARGET react-native-simulator-addon-shopee)
   add_dependencies(verify react-native-simulator-addon-shopee)
 endif()
+
+if(RNS_ENABLE_SANITIZERS)
+  get_property(_rns_sanitizer_tests DIRECTORY PROPERTY TESTS)
+  foreach(_rns_test IN LISTS _rns_sanitizer_tests)
+    set_property(TEST ${_rns_test} APPEND PROPERTY ENVIRONMENT
+      "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/cmake/lsan-suppressions.txt")
+  endforeach()
+endif()
