@@ -349,14 +349,10 @@ if(NOT APPLE)
   target_compile_options(react-native-simulator-engine PRIVATE
     -include "${CMAKE_CURRENT_LIST_DIR}/shims/compat/ForceStdint.h")
 endif()
-# AppleClang 17's vptr sanitizer reports invalid std::stringbuf vptrs while
-# crossing the macOS system libc++ boundary, before simulator application code
-# runs. Keep vptr disabled on Apple only. Linux GCC must keep vptr
-# instrumentation so LayoutConformance typeinfo COMDAT is not discarded.
 if(RNS_ENABLE_SANITIZERS)
   target_compile_options(react-native-simulator-engine PRIVATE
     -fsanitize=address,undefined
-    $<$<BOOL:${APPLE}>:-fno-sanitize=vptr>
+    -fno-sanitize=vptr
     -fno-omit-frame-pointer)
   target_link_options(react-native-simulator-engine PUBLIC
     -fsanitize=address,undefined)
@@ -418,7 +414,7 @@ endif()
 if(RNS_ENABLE_SANITIZERS)
   target_compile_options(react-native-simulator PRIVATE
     -fsanitize=address,undefined
-    $<$<BOOL:${APPLE}>:-fno-sanitize=vptr>
+    -fno-sanitize=vptr
     -fno-omit-frame-pointer)
   target_link_options(react-native-simulator PRIVATE -fsanitize=address,undefined)
 endif()

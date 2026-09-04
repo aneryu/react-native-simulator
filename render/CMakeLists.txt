@@ -99,13 +99,6 @@ target_compile_definitions(react-native-simulator-skia-text PRIVATE
 set_target_properties(react-native-simulator-skia-text PROPERTIES
   POSITION_INDEPENDENT_CODE ON)
 rns_enable_sanitizers(react-native-simulator-skia-text)
-if(RNS_ENABLE_SANITIZERS AND NOT APPLE)
-  # Prebuilt Skia archives are not vptr-instrumented. Linux GCC UBSan vptr
-  # emits typeinfo references those archives cannot satisfy. Keep vptr on
-  # engine/Yoga TUs so LayoutConformance typeinfo is not discarded.
-  target_compile_options(react-native-simulator-skia-text PRIVATE
-    -fno-sanitize=vptr)
-endif()
 
 add_library(react-native-simulator-skia-renderer STATIC
   "${CMAKE_CURRENT_LIST_DIR}/SkiaMountedTreeRenderer.cpp"
@@ -129,7 +122,3 @@ endif()
 target_compile_options(react-native-simulator-skia-renderer PRIVATE
   -Wall -Wextra -Wpedantic)
 rns_enable_sanitizers(react-native-simulator-skia-renderer)
-if(RNS_ENABLE_SANITIZERS AND NOT APPLE)
-  target_compile_options(react-native-simulator-skia-renderer PRIVATE
-    -fno-sanitize=vptr)
-endif()
