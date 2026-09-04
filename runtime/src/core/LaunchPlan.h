@@ -13,6 +13,8 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <exception>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -100,7 +102,22 @@ class PreparedLaunchPlan::Impl {
 };
 
 void destroyCommittedAddons(std::vector<CommittedAddon>& addons) noexcept;
+void unbindAndDestroyCommittedAddons(std::vector<CommittedAddon>& addons) noexcept;
 std::string describeAddonOrigin(const AddonOrigin& origin);
 std::string componentNameByReactViewNameGuarded(std::string_view name);
+
+// Copy a diagnostic from the current exception while the throwing MODULE is
+// still mapped. Call only from a catch handler; leaving that catch destroys
+// the original exception object before any later dlclose.
+inline std::string hostOwnedExceptionMessage(
+    std::string_view unknown = "unknown exception") {
+  try {
+    throw;
+  } catch (const std::exception& error) {
+    return std::string(error.what());
+  } catch (...) {
+    return std::string(unknown);
+  }
+}
 
 } // namespace ReactNativeSimulator

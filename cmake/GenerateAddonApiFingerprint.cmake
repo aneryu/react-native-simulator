@@ -14,17 +14,14 @@ function(rns_generate_addon_api_fingerprint)
   string(APPEND _document
     "reactNative ${RNS_REACT_NATIVE_VERSION}\n"
     "hermes ${RNS_HERMES_VERSION}\n"
-    "reactNativeCommit ${RNS_ACTUAL_REACT_NATIVE_COMMIT}\n")
-  execute_process(
-    COMMAND git -C "${RNS_HERMES_DIR}" rev-parse HEAD
-    OUTPUT_VARIABLE _hermes_commit
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET)
-  string(APPEND _document "hermesCommit ${_hermes_commit}\n")
+    "reactNativeCommit ${RNS_ACTUAL_REACT_NATIVE_COMMIT}\n"
+    "hermesCommit ${RNS_ACTUAL_HERMES_COMMIT}\n")
   string(APPEND _document
     "compiler ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}\n"
     "cxxStandard ${CMAKE_CXX_STANDARD}\n")
-  if(APPLE OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  if(APPLE)
+    set(_stdlib "libc++")
+  elseif(CMAKE_CXX_FLAGS MATCHES "-stdlib=libc\\+\\+")
     set(_stdlib "libc++")
   else()
     set(_stdlib "libstdc++")

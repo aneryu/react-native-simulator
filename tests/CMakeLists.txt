@@ -90,6 +90,8 @@ function(rns_add_abi_test_module name)
 endfunction()
 rns_add_abi_test_module(null-create-addon)
 rns_add_abi_test_module(throwing-create-addon)
+rns_add_abi_test_module(throwing-manifest-addon)
+rns_add_abi_test_module(throwing-bind-addon)
 rns_add_abi_test_module(name-mismatch-addon)
 rns_add_abi_test_module(safe-area-slot-addon)
 rns_add_abi_test_module(null-callback-addon)
@@ -207,6 +209,20 @@ add_test(NAME addon-rejects-throwing-create
     -DBUNDLE=${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js
     -DADDON=$<TARGET_FILE:throwing-create-addon>
     "-DEXPECTED=Addon create\\(\\) failed"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliAddonFailure.cmake")
+add_test(NAME addon-rejects-throwing-manifest
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    -DBUNDLE=${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js
+    -DADDON=$<TARGET_FILE:throwing-manifest-addon>
+    "-DEXPECTED=Addon manifest\\(\\) failed"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliAddonFailure.cmake")
+add_test(NAME addon-rejects-throwing-bind
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    -DBUNDLE=${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js
+    -DADDON=$<TARGET_FILE:throwing-bind-addon>
+    "-DEXPECTED=bind boom"
     -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliAddonFailure.cmake")
 add_test(NAME addon-rejects-name-mismatch
   COMMAND "${CMAKE_COMMAND}"
@@ -327,14 +343,6 @@ add_test(NAME rn87-profile
   COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
     "${RNS_RUNTIME_FIXTURE}"
     --profile android-rn87 --timeout-ms 1000)
-if(TARGET react-native-simulator-addon-shopee)
-  add_test(NAME shopee-addon
-    COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
-      "${RNS_TEST_FIXTURES_DIR}/rn73-addon-probe.js"
-      --profile android-rn87
-      --addon $<TARGET_FILE:react-native-simulator-addon-shopee>
-      --timeout-ms 1000)
-endif()
 if(TARGET react-native-simulator-addon-rntester)
   add_custom_target(rntester-addon-for-tests ALL
     DEPENDS react-native-simulator-addon-rntester)
@@ -356,6 +364,23 @@ add_test(NAME cli-list-addons
 set_tests_properties(cli-list-addons PROPERTIES
   PASS_REGULAR_EXPRESSION
     "\"name\":\"expo\".*\"name\":\"safe-area\".*\"name\":\"compat-rn73\"")
+add_test(NAME cli-list-addons-headless
+  COMMAND $<TARGET_FILE:react-native-simulator> headless --list-addons --json)
+set_tests_properties(cli-list-addons-headless PROPERTIES
+  PASS_REGULAR_EXPRESSION
+    "\"name\":\"expo\".*\"name\":\"safe-area\".*\"name\":\"compat-rn73\"")
+add_test(NAME cli-no-addon-unknown
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    "-DARGS=--bundle;${RNS_TEST_FIXTURES_DIR}/runtime-smoke.js;--no-addon;bogus;--timeout-ms;1000"
+    "-DEXPECTED=unknown addon name"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliFailure.cmake")
+add_test(NAME cli-doctor-unknown-addon
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    "-DINVOCATION=doctor;--addon;bogus"
+    "-DEXPECTED=currently accepts only compat-rn73"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliFailure.cmake")
 add_test(NAME cli-unknown-addon-rntester
   COMMAND "${CMAKE_COMMAND}"
     -DRNSIM=$<TARGET_FILE:react-native-simulator>
@@ -399,6 +424,18 @@ add_test(NAME local-config-bare-addon
     -DRNSIM=$<TARGET_FILE:react-native-simulator>
     -DCONFIG=${RNS_TEST_FIXTURES_DIR}/rnsim-bare-addon.json
     "-DEXPECTED=addons entries must be \\{name\\} or \\{path\\} objects"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliConfigFailure.cmake")
+add_test(NAME local-config-addon-extra-key
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    -DCONFIG=${RNS_TEST_FIXTURES_DIR}/rnsim-addon-extra-key.json
+    "-DEXPECTED=Unknown rnsim.json field: addons\\[\\].extra"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliConfigFailure.cmake")
+add_test(NAME local-config-named-so
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    -DCONFIG=${RNS_TEST_FIXTURES_DIR}/rnsim-named-so.json
+    "-DEXPECTED=unknown addon name"
     -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliConfigFailure.cmake")
 add_test(NAME local-config-tagged-compat
   COMMAND $<TARGET_FILE:react-native-simulator> headless
@@ -591,10 +628,13 @@ set_tests_properties(runtime-source runtime-bytecode runtime-multi-bundle
   addon-planner addon-abi-lifecycle fabric-module-so addon-rejects-abi3
   addon-rejects-short-descriptor addon-rejects-fingerprint
   addon-rejects-null-create addon-rejects-throwing-create
+  addon-rejects-throwing-manifest addon-rejects-throwing-bind
   addon-rejects-name-mismatch addon-rejects-null-callbacks
-  cli-list-addons cli-unknown-addon-rntester
+  cli-list-addons cli-list-addons-headless cli-unknown-addon-rntester
+  cli-no-addon-unknown cli-doctor-unknown-addon
   cli-no-addon-safe-area cli-no-addon-safe-area-fallback
   compat-rn73-constants local-config-schema1 local-config-bare-addon
+  local-config-addon-extra-key local-config-named-so
   local-config-tagged-compat local-config-addon-origin
   local-config-cli-addon-append local-config-cli-disable-explicit
   cli-no-auto-addons
@@ -604,9 +644,6 @@ if(TEST interactive-window-before-metro)
   set_tests_properties(interactive-window-before-metro PROPERTIES TIMEOUT 10)
 endif()
 set_tests_properties(hmr-protocol PROPERTIES TIMEOUT 20)
-if(TEST shopee-addon)
-  set_tests_properties(shopee-addon PROPERTIES TIMEOUT 10)
-endif()
 set_tests_properties(expo-addon PROPERTIES TIMEOUT 10)
 
 add_custom_target(verify
@@ -617,12 +654,10 @@ add_custom_target(verify
     addon-planner-smoke addon-abi-lifecycle-smoke fabric-module-host
     react-native-simulator-addon-fabric_probe
     not-an-abi4-addon invalid-addon-descriptor wrong-fingerprint-addon
-    null-create-addon throwing-create-addon name-mismatch-addon
+    null-create-addon throwing-create-addon throwing-manifest-addon
+    throwing-bind-addon name-mismatch-addon
     safe-area-slot-addon null-callback-addon
   USES_TERMINAL)
-if(TARGET react-native-simulator-addon-shopee)
-  add_dependencies(verify react-native-simulator-addon-shopee)
-endif()
 
 if(RNS_ENABLE_SANITIZERS)
   get_property(_rns_sanitizer_tests DIRECTORY PROPERTY TESTS)

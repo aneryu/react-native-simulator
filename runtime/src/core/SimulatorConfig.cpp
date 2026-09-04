@@ -10,6 +10,7 @@
 #include <iterator>
 #include <set>
 #include <stdexcept>
+#include <string_view>
 
 namespace {
 std::filesystem::path resolvePath(
@@ -162,6 +163,11 @@ SimulatorLocalConfig loadSimulatorConfig(const std::filesystem::path& path) {
         throw std::invalid_argument(
             "rnsim.json addons entries must contain exactly one of name or path");
       }
+      validateObjectKeys(
+          value,
+          name ? std::initializer_list<std::string_view>{"name"}
+               : std::initializer_list<std::string_view>{"path"},
+          "addons[].");
       SimulatorAddonConfigEntry entry;
       if (name) {
         entry.name = *name;

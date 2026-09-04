@@ -19,6 +19,15 @@ AddonFabricRegistrar::AddonFabricRegistrar(
   session_->manifest = manifest_;
 }
 
+AddonFabricRegistrar::~AddonFabricRegistrar() {
+  releaseSession();
+}
+
+void AddonFabricRegistrar::releaseSession() noexcept {
+  session_ = nullptr;
+  manifest_ = nullptr;
+}
+
 void AddonFabricRegistrar::registerDescriptor(
     facebook::react::ComponentDescriptorProvider provider) {
   if (session_ == nullptr || manifest_ == nullptr) {

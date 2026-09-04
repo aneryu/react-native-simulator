@@ -137,6 +137,19 @@ class MutatingJsiAddon final : public CountingAddon {
   }
 };
 
+class MutatingConsoleAddon final : public CountingAddon {
+ public:
+  using CountingAddon::CountingAddon;
+  void installJSI(
+      const rns::AddonGenerationContext& context,
+      facebook::jsi::Runtime& runtime,
+      const std::shared_ptr<facebook::react::CallInvoker>& jsInvoker) override {
+    CountingAddon::installJSI(context, runtime, jsInvoker);
+    auto console = runtime.global().getPropertyAsObject(runtime, "console");
+    console.setProperty(runtime, "log", 1);
+  }
+};
+
 class ExecutorHoldAddon final : public CountingAddon {
  public:
   ExecutorHoldAddon(
@@ -618,7 +631,8 @@ int main(int argc, char** argv) {
           "counting");
       if (result.exitCode != 0 || counts->bind != 1 || counts->unbind != 1 ||
           counts->configure != 1 || counts->install != 1 ||
-          counts->quiesce != 1 || counts->wrap != 0) {
+          counts->quiesce != 1 || counts->wrap != 0 ||
+          result.metricsJson.find("\"droppedPosts\":") == std::string::npos) {
         std::cerr << "successful ABI hook counts failed\n";
         return 1;
       }
@@ -703,6 +717,21 @@ int main(int argc, char** argv) {
       if (result.exitCode == 0 ||
           result.error.find("protected global mutated") == std::string::npos) {
         std::cerr << "protected-global mutation was not rejected: "
+                  << result.error << '\n';
+        return 1;
+      }
+    }
+
+    {
+      auto counts = std::make_shared<HookCounts>();
+      const auto result = runWith(
+          config,
+          std::make_unique<MutatingConsoleAddon>("mutate-console", counts),
+          "mutate-console");
+      if (result.exitCode == 0 ||
+          result.error.find("protected global mutated: console.log") ==
+              std::string::npos) {
+        std::cerr << "console.log mutation was not rejected: "
                   << result.error << '\n';
         return 1;
       }

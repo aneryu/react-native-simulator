@@ -280,7 +280,13 @@ rns::CommittedAddon loadModule(const rns::ModuleAddonSpec& spec,
   };
   loaded.library = std::move(library);
   loaded.addon = rns::AddonPtr(raw, rns::AddonDeleter{descriptor->destroy});
-  loaded.manifest = loaded.addon->manifest();
+  try {
+    loaded.manifest = loaded.addon->manifest();
+  } catch (...) {
+    throw rns::TerminalLaunchPlanError(
+        "Addon manifest() failed for " + spec.path.string() + ": " +
+        rns::hostOwnedExceptionMessage());
+  }
   ++rns::addonPreparationCounters().manifestReads;
   if (loaded.manifest.name != descriptor->name) {
     throw rns::TerminalLaunchPlanError(
@@ -303,7 +309,13 @@ rns::CommittedAddon loadInProcess(rns::InProcessAddonSpec spec,
       .requestedBy = std::move(origins),
   };
   loaded.addon = rns::AddonPtr(spec.addon.release(), rns::AddonDeleter{});
-  loaded.manifest = loaded.addon->manifest();
+  try {
+    loaded.manifest = loaded.addon->manifest();
+  } catch (...) {
+    throw rns::TerminalLaunchPlanError(
+        "Addon manifest() failed for " + loaded.origin.locator + ": " +
+        rns::hostOwnedExceptionMessage());
+  }
   ++rns::addonPreparationCounters().manifestReads;
   if (!rns::validAddonName(loaded.manifest.name)) {
     throw rns::TerminalLaunchPlanError(
@@ -497,6 +509,16 @@ void destroyCommittedAddons(std::vector<CommittedAddon>& addons) noexcept {
     it->library.reset();
   }
   addons.clear();
+}
+
+void unbindAndDestroyCommittedAddons(std::vector<CommittedAddon>& addons) noexcept {
+  for (auto it = addons.rbegin(); it != addons.rend(); ++it) {
+    if (it->bindEntered && it->addon) {
+      it->addon->unbind();
+      it->bindEntered = false;
+    }
+  }
+  destroyCommittedAddons(addons);
 }
 
 std::string describeAddonOrigin(const AddonOrigin& origin) {
