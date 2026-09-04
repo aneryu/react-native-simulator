@@ -321,11 +321,6 @@ std::string defaultMetroBundlePath(
   return path;
 }
 
-bool addonPathIsExpo(const std::string &addon) {
-  const auto name = std::filesystem::path(addon).filename().string();
-  return name.rfind("rns-addon-expo", 0) == 0;
-}
-
 bool bundleUrlLooksLikeExpo(const std::string &url) {
   return url.find("expo-router/") != std::string::npos ||
       url.find("node_modules/expo/") != std::string::npos ||
