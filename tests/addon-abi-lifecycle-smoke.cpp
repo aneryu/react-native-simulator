@@ -421,6 +421,16 @@ class HeldModuleAddon final : public CountingAddon {
       const std::shared_ptr<facebook::react::CallInvoker>&) override {
     return module_;
   }
+  void quiesceGeneration(std::uint64_t generation) noexcept override {
+    CountingAddon::quiesceGeneration(generation);
+    if (module_) {
+      module_->ping();
+      // Drop the TurboModule while Hermes is still alive. JS access stamps
+      // jsi::WeakObject onto TurboModule::jsRepresentation_; destroying that
+      // after instance.reset() SIGSEGVs on macOS.
+      module_.reset();
+    }
+  }
 
  private:
   std::shared_ptr<HeldTurboModule> module_;
@@ -1003,23 +1013,20 @@ int main(int argc, char** argv) {
     {
       auto counts = std::make_shared<HookCounts>();
       auto pings = std::make_shared<std::atomic<int>>(0);
-      auto module = std::make_shared<HeldTurboModule>(pings);
       const auto result = runWithScript(
           config,
-          std::make_unique<HeldModuleAddon>("held-module", counts, module),
+          std::make_unique<HeldModuleAddon>(
+              "held-module",
+              counts,
+              std::make_shared<HeldTurboModule>(pings)),
           "held-module",
           "globalThis.nativeModuleProxy.HeldModule.ping();\n"
           "RN$SimulatorWorkload.ready();\n"
           "globalThis.RN$SimulatorWorkloadResult={iterations:1,checksum:1};\n"
           "RN$SimulatorWorkload.complete();\n");
-      if (result.exitCode != 0 || pings->load() < 1) {
-        std::cerr << "held TurboModule was not called from JS: " << result.error
-                  << '\n';
-        return 1;
-      }
-      module->ping();
-      if (pings->load() < 2) {
-        std::cerr << "held TurboModule was unsafe after quiesce\n";
+      if (result.exitCode != 0 || pings->load() < 2) {
+        std::cerr << "held TurboModule was not called from JS and quiesce: "
+                  << result.error << '\n';
         return 1;
       }
     }

@@ -2469,6 +2469,9 @@ rns::EngineResult rns::Engine::run() {
       headlessWebSocketReset();
       headlessBlobReset();
       headlessImageRequestsReset();
+      // Drop host TurboModule refs while Hermes is still alive. JS access
+      // attaches jsi::WeakObject to TurboModule::jsRepresentation_; destroying
+      // that after instance.reset() is a use-after-free on macOS.
       turboModuleCache.clear();
       timerManager.reset();
       if (devTools && instance) {
