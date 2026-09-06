@@ -67,6 +67,10 @@ void SimulatorEventLoop::runOnQueue(std::function<void()>&& work) {
   }
 }
 
+bool SimulatorEventLoop::onOwnerThread() const {
+  return std::this_thread::get_id() == ownerThread_;
+}
+
 void SimulatorEventLoop::runOnQueueSync(std::function<void()>&& work) {
   if (std::this_thread::get_id() != ownerThread_) {
     throw std::runtime_error(

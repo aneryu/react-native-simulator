@@ -1421,9 +1421,11 @@ Rules the host enforces or documents:
   task runs on the runtime thread. Addon-owned threads, timers, and device
   adapters must hop through `AddonRuntimeExecutor::post`. The host records the
   runtime thread per generation. Host Fabric delegate callbacks that arrive on
-  another thread are queued onto the event loop and then the runtime executor;
-  they are not applied on the foreign thread. If that hop is impossible, the
-  host sets `pendingAddonFatal` and disables addon callbacks. Dropped posts
+  another thread are queued onto the event-loop owner thread; they are not
+  applied on the foreign thread and must not hop through
+  `ReactInstance::getUnbufferedRuntimeExecutor` (that executor captures a raw
+  `RuntimeScheduler*`). If that hop is impossible, the host sets
+  `pendingAddonFatal` and disables addon callbacks. Dropped posts
   increment `droppedPosts`, which the final metrics envelope reports. Live
   inspector snapshots use `validationMode: "live"` and omit `droppedPosts`,
   `jsErrors`, and timeout fields.

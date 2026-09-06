@@ -71,6 +71,7 @@
 #include <react-native-simulator/SceneTransform.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -1582,10 +1583,11 @@ class HeadlessReactFabricHost final
     if (shutdown_) {
       return;
     }
-    shutdown_ = true;
+    shutdown_.store(true, std::memory_order_release);
     callbacksEnabled_ = false;
     addonCallbacksEnabled_ = false;
     layoutAnimationRunning_ = false;
+    runtimeExecutor_ = {};
     onUpdate_ = {};
     addonBindings_ = {};
     if (uiManager_) {
@@ -1685,26 +1687,32 @@ class HeadlessReactFabricHost final
   }
 
   bool onRuntimeThread() const {
-    return std::this_thread::get_id() == runtimeThread_;
+    if (std::this_thread::get_id() == runtimeThread_) {
+      return true;
+    }
+    return eventLoop_ && eventLoop_->onOwnerThread();
   }
 
   bool hopToRuntimeThread(std::function<void()> work) {
     if (onRuntimeThread()) {
       return false;
     }
-    if (!eventLoop_ || !runtimeExecutor_) {
+    if (shutdown_.load(std::memory_order_acquire)) {
+      return true;
+    }
+    if (!eventLoop_) {
       recordAddonFatal("Fabric callback arrived on a non-runtime thread");
       return true;
     }
+    // Queue onto the event loop only. ReactInstance::getUnbufferedRuntimeExecutor
+    // captures a raw RuntimeScheduler* and must not be invoked after
+    // instance.reset() during closeGeneration.
     eventLoop_->runOnQueue(
-        [weak = weak_from_this(),
-         runtimeExecutor = runtimeExecutor_,
-         work = std::move(work)]() mutable {
-          runtimeExecutor([weak, work = std::move(work)](facebook::jsi::Runtime&) {
-            if (auto self = weak.lock(); self && !self->shutdown_) {
-              work();
-            }
-          });
+        [weak = weak_from_this(), work = std::move(work)]() {
+          if (auto self = weak.lock();
+              self && !self->shutdown_.load(std::memory_order_acquire)) {
+            work();
+          }
         });
     return true;
   }
@@ -4098,7 +4106,7 @@ class HeadlessReactFabricHost final
   bool callbacksEnabled_{true};
   bool addonCallbacksEnabled_{true};
   bool surfaceRunning_{true};
-  bool shutdown_{false};
+  std::atomic<bool> shutdown_{false};
   std::size_t staleCommands_{0};
   std::size_t unknownCommands_{0};
 };
