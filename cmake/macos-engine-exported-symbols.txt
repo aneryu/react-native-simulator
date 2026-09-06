@@ -6,9 +6,13 @@ __Z*20ReactNativeSimulator*
 # RTTI, vtables, and YogaLayoutableShadowNode methods from the host.
 # folly::dynamic crosses the addon command/event boundary, so Folly C++
 # symbols must be visible to MODULEs linked with -undefined dynamic_lookup.
+# Fabric descriptors also call facebook::yoga and fmt from template TUs
+# compiled into the MODULE.
 __Z*8facebook3jsi*
 __Z*8facebook5react*
 __Z*5folly*
+__Z*8facebook4yoga*
+__Z*3fmt*
 
 # The in-tree CLI shell is a separate executable but these host services are
 # implementation details rather than part of the installed embedding headers.

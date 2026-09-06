@@ -9,7 +9,6 @@
 #include <folly/dynamic.h>
 
 #include <atomic>
-#include <chrono>
 #include <memory>
 #include <thread>
 #include <utility>
@@ -164,7 +163,6 @@ class FabricProbeAddon final : public SimulatorAddon {
       worker_.join();
     }
     worker_ = std::thread([executor = context.executor]() {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
       executor.post([](jsi::Runtime& runtime) {
         runtime.global().setProperty(
             runtime, "__rnsProbeExecutorPosted", true);

@@ -36,32 +36,41 @@ const provider = uim.createNode(
 uim.completeRoot(SURFACE, childSet([provider]));
 
 afterCommit(function () {
-  const layout = uim.getRelativeLayoutMetrics(provider, provider);
-  const insets = events.filter(function (event) {
-    return event.type === 'topInsetsChange' || event.type === 'insetsChange';
-  });
-  if (insets.length < 1) {
-    throw new Error(
-      'expected topInsetsChange, got ' + JSON.stringify(events));
+  function waitForInsets(attempts) {
+    const layout = uim.getRelativeLayoutMetrics(provider, provider);
+    const insets = events.filter(function (event) {
+      return event.type === 'topInsetsChange' || event.type === 'insetsChange';
+    });
+    if (insets.length < 1) {
+      if (attempts <= 0) {
+        throw new Error(
+          'expected topInsetsChange, got ' + JSON.stringify(events));
+      }
+      setTimeout(function () {
+        waitForInsets(attempts - 1);
+      }, 0);
+      return;
+    }
+    const payload = insets[0].payload;
+    if (!payload || !payload.frame || !payload.insets) {
+      throw new Error('topInsetsChange payload missing frame/insets: ' +
+        JSON.stringify(payload));
+    }
+    if (payload.insets.top !== 0 || payload.insets.right !== 0 ||
+        payload.insets.bottom !== 0 || payload.insets.left !== 0) {
+      throw new Error('v1 insets must be zero: ' + JSON.stringify(payload.insets));
+    }
+    if (payload.frame.width !== layout.width ||
+        payload.frame.height !== layout.height) {
+      throw new Error(
+        'topInsetsChange frame must match committed layout: payload=' +
+        JSON.stringify(payload.frame) + ' layout=' + JSON.stringify(layout));
+    }
+    globalThis.RN$SimulatorWorkloadResult = {
+      iterations: 1,
+      checksum: insets.length,
+    };
+    RN$SimulatorWorkload.complete();
   }
-  const payload = insets[0].payload;
-  if (!payload || !payload.frame || !payload.insets) {
-    throw new Error('topInsetsChange payload missing frame/insets: ' +
-      JSON.stringify(payload));
-  }
-  if (payload.insets.top !== 0 || payload.insets.right !== 0 ||
-      payload.insets.bottom !== 0 || payload.insets.left !== 0) {
-    throw new Error('v1 insets must be zero: ' + JSON.stringify(payload.insets));
-  }
-  if (payload.frame.width !== layout.width ||
-      payload.frame.height !== layout.height) {
-    throw new Error(
-      'topInsetsChange frame must match committed layout: payload=' +
-      JSON.stringify(payload.frame) + ' layout=' + JSON.stringify(layout));
-  }
-  globalThis.RN$SimulatorWorkloadResult = {
-    iterations: 1,
-    checksum: insets.length,
-  };
-  RN$SimulatorWorkload.complete();
+  waitForInsets(20);
 });

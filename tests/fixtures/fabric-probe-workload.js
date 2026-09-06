@@ -70,28 +70,37 @@ afterCommit(function () {
         throw new Error(
           'typed probe event missing: ' + JSON.stringify(events));
       }
-      if (globalThis.__rnsProbeExecutorPosted !== true) {
-        throw new Error('foreign-thread executor post was not delivered');
-      }
-      const mounts = globalThis.__rnsProbeMounts();
-      if (mounts.mounted < 1) {
-        throw new Error('probe mount handler was not invoked');
-      }
+      function waitForExecutor(attempts) {
+        if (globalThis.__rnsProbeExecutorPosted === true) {
+          const mounts = globalThis.__rnsProbeMounts();
+          if (mounts.mounted < 1) {
+            throw new Error('probe mount handler was not invoked');
+          }
 
-      uim.completeRoot(SURFACE, childSet([]));
-      afterCommit(function () {
-        const afterRemove = globalThis.__rnsProbeMounts();
-        if (afterRemove.unmounted < 1) {
-          throw new Error('probe unmount handler was not invoked');
+          uim.completeRoot(SURFACE, childSet([]));
+          afterCommit(function () {
+            const afterRemove = globalThis.__rnsProbeMounts();
+            if (afterRemove.unmounted < 1) {
+              throw new Error('probe unmount handler was not invoked');
+            }
+            globalThis.RN$SimulatorWorkloadResult = {
+              iterations: 1,
+              checksum: 21,
+              yogaWidth: updated.width,
+              eventValue: probeEvent.payload.value,
+            };
+            RN$SimulatorWorkload.complete();
+          });
+          return;
         }
-        globalThis.RN$SimulatorWorkloadResult = {
-          iterations: 1,
-          checksum: 21,
-          yogaWidth: updated.width,
-          eventValue: probeEvent.payload.value,
-        };
-        RN$SimulatorWorkload.complete();
-      });
+        if (attempts <= 0) {
+          throw new Error('foreign-thread executor post was not delivered');
+        }
+        setTimeout(function () {
+          waitForExecutor(attempts - 1);
+        }, 0);
+      }
+      waitForExecutor(50);
     });
   });
 });

@@ -2444,19 +2444,23 @@ rns::EngineResult rns::Engine::run() {
       headlessBackPress().emit = nullptr;
       headlessBackPress().invokeDefault = nullptr;
       headlessBackPress().runOnJs = nullptr;
-      executorState->open.store(false);
-      executorState->enqueue = {};
+      executorState->open.store(false, std::memory_order_release);
       for (auto it = launch.addons.rbegin(); it != launch.addons.rend(); ++it) {
         if (it->addon) {
           it->addon->quiesceGeneration(
               static_cast<std::uint64_t>(sessionGeneration));
         }
       }
+      {
+        std::lock_guard lock(executorState->mutex);
+        executorState->enqueue = {};
+      }
       if (reactFabricHost) {
         setHeadlessReactFabricCallbacksEnabled(*reactFabricHost, false);
         stopHeadlessReactFabricSurface(*reactFabricHost);
       }
       if (eventLoop) {
+        eventLoop->drainUntilIdle();
         eventLoop->drainUntilIdle();
       }
       if (reactFabricHost) {
@@ -2743,20 +2747,32 @@ rns::EngineResult rns::Engine::run() {
           runtime.global().setProperty(
               runtime, "__fbBatchedBridgeConfig", std::move(bridgeConfig));
           launch.bindings->eventLoop = eventLoop;
-          executorState->open.store(true);
-          executorState->runtimeThread = std::this_thread::get_id();
-          executorState->enqueue =
-              [runtimeExecutor, executorState](
-                  std::function<void(jsi::Runtime&)> fn) {
-                runtimeExecutor([executorState,
-                                 work = std::move(fn)](jsi::Runtime& runtime) {
-                  if (!executorState->open.load(std::memory_order_acquire)) {
-                    return;
-                  }
-                  work(runtime);
-                });
-                return true;
-              };
+          {
+            std::lock_guard lock(executorState->mutex);
+            executorState->runtimeThread = std::this_thread::get_id();
+            executorState->enqueue =
+                [eventLoop, runtimeExecutor, executorState](
+                    std::function<void(jsi::Runtime&)> fn) {
+                  eventLoop->runOnQueue([runtimeExecutor,
+                                         executorState,
+                                         work = std::move(fn)]() {
+                    if (!executorState->open.load(std::memory_order_acquire)) {
+                      executorState->droppedPosts.fetch_add(1);
+                      return;
+                    }
+                    runtimeExecutor([executorState,
+                                     work](jsi::Runtime& runtime) {
+                      if (!executorState->open.load(
+                              std::memory_order_acquire)) {
+                        return;
+                      }
+                      work(runtime);
+                    });
+                  });
+                  return true;
+                };
+            executorState->open.store(true, std::memory_order_release);
+          }
           rns::AddonGenerationContext generationContext{
               .generation = static_cast<std::uint64_t>(sessionGeneration),
               .executor = rns::makeAddonRuntimeExecutor(executorState),

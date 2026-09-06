@@ -22,6 +22,7 @@ using ReactNativeSimulator::AddonHostSnapshot;
 using ReactNativeSimulator::AddonManifest;
 using ReactNativeSimulator::AddonMountKind;
 using ReactNativeSimulator::AddonRole;
+using ReactNativeSimulator::AddonRuntimeExecutor;
 using ReactNativeSimulator::RuntimeCapabilityClass;
 using ReactNativeSimulator::SimulatorAddon;
 
@@ -133,8 +134,9 @@ class SafeAreaAddon final : public SimulatorAddon {
   }
 
   void configureFabric(
-      const AddonGenerationContext&,
+      const AddonGenerationContext& context,
       AddonFabricRegistrar& registrar) override {
+    executor_ = context.executor;
     registrar.registerDescriptor(
         react::concreteComponentDescriptorProvider<ProviderDescriptor>());
     registrar.registerDescriptor(
@@ -159,17 +161,25 @@ class SafeAreaAddon final : public SimulatorAddon {
               node.shadowNode->getEventEmitter() == nullptr) {
             return;
           }
-          node.shadowNode->getEventEmitter()->dispatchEvent(
-              "topInsetsChange",
-              folly::dynamic::object
-                  ("insets",
-                   folly::dynamic::object
-                       ("top", 0)("right", 0)("bottom", 0)("left", 0))
-                  ("frame",
-                   folly::dynamic::object
-                       ("x", frame.origin.x)("y", frame.origin.y)
-                       ("width", frame.size.width)
-                       ("height", frame.size.height)));
+          const auto shadowNode = node.shadowNode;
+          const auto dispatched = frame;
+          executor_.post([shadowNode, dispatched](jsi::Runtime&) {
+            if (shadowNode == nullptr ||
+                shadowNode->getEventEmitter() == nullptr) {
+              return;
+            }
+            shadowNode->getEventEmitter()->dispatchEvent(
+                "topInsetsChange",
+                folly::dynamic::object
+                    ("insets",
+                     folly::dynamic::object
+                         ("top", 0)("right", 0)("bottom", 0)("left", 0))
+                    ("frame",
+                     folly::dynamic::object
+                         ("x", dispatched.origin.x)("y", dispatched.origin.y)
+                         ("width", dispatched.size.width)
+                         ("height", dispatched.size.height)));
+          });
         });
   }
 
@@ -179,10 +189,12 @@ class SafeAreaAddon final : public SimulatorAddon {
       const std::shared_ptr<react::CallInvoker>&) override {}
   void hostSnapshotChanged(const AddonHostSnapshot&) override {}
   void quiesceGeneration(std::uint64_t) noexcept override {
+    executor_ = {};
     lastFrames_.clear();
   }
 
  private:
+  AddonRuntimeExecutor executor_{};
   AddonHostSnapshot snapshot_;
   std::unordered_map<react::Tag, react::Rect> lastFrames_;
 };

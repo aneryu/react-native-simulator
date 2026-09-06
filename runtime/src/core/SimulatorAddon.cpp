@@ -3,6 +3,7 @@
 #include <react-native-simulator/Engine.h>
 
 #include <algorithm>
+#include <mutex>
 #include <stdexcept>
 #include <utility>
 
@@ -154,18 +155,23 @@ void AddonFabricRegistrar::onCommand(
 
 bool AddonRuntimeExecutor::post(
     std::function<void(facebook::jsi::Runtime&)> fn) const noexcept {
-  if (!state_ || !state_->open.load()) {
+  if (!state_ || !state_->open.load(std::memory_order_acquire)) {
     if (state_) {
       state_->droppedPosts.fetch_add(1);
     }
     return false;
   }
   try {
-    if (!state_->enqueue) {
-      state_->droppedPosts.fetch_add(1);
-      return false;
+    std::function<bool(std::function<void(facebook::jsi::Runtime&)>)> enqueue;
+    {
+      std::lock_guard lock(state_->mutex);
+      if (!state_->open.load(std::memory_order_acquire) || !state_->enqueue) {
+        state_->droppedPosts.fetch_add(1);
+        return false;
+      }
+      enqueue = state_->enqueue;
     }
-    return state_->enqueue(std::move(fn));
+    return enqueue(std::move(fn));
   } catch (...) {
     state_->droppedPosts.fetch_add(1);
     return false;

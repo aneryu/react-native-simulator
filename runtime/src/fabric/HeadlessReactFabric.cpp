@@ -1584,19 +1584,28 @@ class HeadlessReactFabricHost final
     }
     shutdown_ = true;
     callbacksEnabled_ = false;
+    addonCallbacksEnabled_ = false;
     layoutAnimationRunning_ = false;
-    for (auto& entry : mountedViews_) {
-      unbindMountedImage(entry.second);
-    }
-    if (gHeadlessUIManager.lock() == uiManager_) {
-      gHeadlessUIManager.reset();
-    }
+    onUpdate_ = {};
+    addonBindings_ = {};
     if (uiManager_) {
       uiManager_->setAnimationDelegate(nullptr);
       uiManager_->setDelegate(nullptr);
     }
-    registry_.reset();
+    if (eventLoop_) {
+      eventLoop_->drainUntilIdle();
+    }
+    for (auto& entry : mountedViews_) {
+      unbindMountedImage(entry.second);
+    }
+    mountedViews_.clear();
+    if (gHeadlessUIManager.lock() == uiManager_) {
+      gHeadlessUIManager.reset();
+    }
+    animationDriver_.reset();
+    eventDispatcher_.reset();
     uiManager_.reset();
+    registry_.reset();
   }
 
   void setCallbacksEnabled(bool enabled) {
@@ -1675,13 +1684,53 @@ class HeadlessReactFabricHost final
     return result;
   }
 
+  bool onRuntimeThread() const {
+    return std::this_thread::get_id() == runtimeThread_;
+  }
+
+  bool hopToRuntimeThread(std::function<void()> work) {
+    if (onRuntimeThread()) {
+      return false;
+    }
+    if (!eventLoop_ || !runtimeExecutor_) {
+      recordAddonFatal("Fabric callback arrived on a non-runtime thread");
+      return true;
+    }
+    eventLoop_->runOnQueue(
+        [weak = weak_from_this(),
+         runtimeExecutor = runtimeExecutor_,
+         work = std::move(work)]() mutable {
+          runtimeExecutor([weak, work = std::move(work)](facebook::jsi::Runtime&) {
+            if (auto self = weak.lock(); self && !self->shutdown_) {
+              work();
+            }
+          });
+        });
+    return true;
+  }
+
   void uiManagerDidFinishTransaction(
       std::shared_ptr<const react::MountingCoordinator> coordinator,
-      bool) override {
-    if (runtimeThread_ != std::thread::id{} &&
-        std::this_thread::get_id() != runtimeThread_) {
-      recordAddonFatal(
-          "transaction callback arrived on a non-runtime thread");
+      bool mountSynchronously) override {
+    if (shutdown_ || !callbacksEnabled_) {
+      return;
+    }
+    if (hopToRuntimeThread(
+            [weak = weak_from_this(), coordinator, mountSynchronously]() {
+              if (auto self = weak.lock()) {
+                self->applyFinishedTransaction(
+                    coordinator, mountSynchronously);
+              }
+            })) {
+      return;
+    }
+    applyFinishedTransaction(coordinator, mountSynchronously);
+  }
+
+  void applyFinishedTransaction(
+      std::shared_ptr<const react::MountingCoordinator> coordinator,
+      bool mountSynchronously) {
+    if (shutdown_ || !callbacksEnabled_) {
       return;
     }
     if (animationDriver_ && !mountingOverrideInstalled_) {
@@ -1805,13 +1854,26 @@ class HeadlessReactFabricHost final
       const std::shared_ptr<const react::ShadowNode>& shadowNode,
       const std::string& commandName,
       const folly::dynamic& args) override {
-    if (!callbacksEnabled_) {
+    if (shutdown_ || !callbacksEnabled_) {
       return;
     }
-    if (runtimeThread_ != std::thread::id{} &&
-        std::this_thread::get_id() != runtimeThread_) {
-      recordAddonFatal(
-          "command callback arrived on a non-runtime thread");
+    if (hopToRuntimeThread(
+            [weak = weak_from_this(), shadowNode, commandName, args]() {
+              if (auto self = weak.lock()) {
+                self->dispatchCommandOnRuntimeThread(
+                    shadowNode, commandName, args);
+              }
+            })) {
+      return;
+    }
+    dispatchCommandOnRuntimeThread(shadowNode, commandName, args);
+  }
+
+  void dispatchCommandOnRuntimeThread(
+      const std::shared_ptr<const react::ShadowNode>& shadowNode,
+      const std::string& commandName,
+      const folly::dynamic& args) {
+    if (shutdown_ || !callbacksEnabled_) {
       return;
     }
     const auto tag = shadowNode->getTag();
