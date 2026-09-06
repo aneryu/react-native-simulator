@@ -629,6 +629,10 @@ int main(int argc, char** argv) {
     config.iterations = 1;
     config.timeoutMs = 1000;
     config.profile = "android-rn87";
+    const auto mark = [](const char* name) {
+      std::cerr << "addon-abi-lifecycle: " << name << std::endl;
+    };
+    mark("counting");
 
     {
       auto counts = std::make_shared<HookCounts>();
@@ -841,6 +845,7 @@ int main(int argc, char** argv) {
       }
     }
 
+    mark("throw-cmd");
     {
       auto counts = std::make_shared<HookCounts>();
       const auto result = runWithScript(
@@ -996,6 +1001,7 @@ int main(int argc, char** argv) {
       }
     }
 
+    mark("inspector");
     {
       auto counts = std::make_shared<HookCounts>();
       const auto socketPath = std::filesystem::temp_directory_path() /
@@ -1048,6 +1054,7 @@ int main(int argc, char** argv) {
     }
 
     if (argc > 1) {
+      mark("module-noload");
       const std::filesystem::path modulePath = argv[1];
       rns::LaunchDraft draft(config);
       draft.addAddonPath(modulePath, rns::AddonRequestOrigin::Test);
@@ -1061,13 +1068,14 @@ int main(int argc, char** argv) {
           info.dli_fname != nullptr &&
           std::string(info.dli_fname).find("rns-addon-fabric-probe") !=
               std::string::npos;
-      if (handle != nullptr) {
-        dlclose(handle);
-      }
+      // Keep the RTLD_NOLOAD handle until process exit. An extra dlclose here
+      // can unmap the MODULE while CommittedAddon still owns the RTLD_LOCAL
+      // mapping, which SIGSEGVs during engine.run() on macOS dyld.
       if (!provenance) {
         std::cerr << "dladdr provenance failed while MODULE was mapped\n";
         return 1;
       }
+      mark("module-run");
       draft.addBundle(rns::test::memoryBundle(
           "const has = globalThis.__nativeComponentRegistry__hasComponent"
           "('RNSFabricProbeView');\n"
