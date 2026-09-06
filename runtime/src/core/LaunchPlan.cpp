@@ -379,6 +379,14 @@ bool isFixedPointName(std::string_view name) {
   return normalizedComponentName(name) == name;
 }
 
+bool isForbiddenFrameworkAlias(std::string_view name) {
+  return name == "AndroidHorizontalScrollView" || name == "RCTImageView" ||
+      name == "ImageView" || name == "RCTView" || name == "RefreshControl" ||
+      name == "SelectableText" || name == "VirtualText" ||
+      name == "RKShimmeringView" || name == "ScrollContentView" ||
+      name == "MultilineTextInputView" || name == "SinglelineTextInputView";
+}
+
 } // namespace
 
 namespace ReactNativeSimulator {
@@ -763,10 +771,14 @@ PreparedLaunchPlan finalizeLaunchPlan(
     addFrameworkModule(entry);
   }
   auto addFrameworkComponent = [&](const FrameworkComponentEntry& entry) {
-    if (!isFixedPointName(entry.contract.name)) {
+    // RN maps JS view names such as Text → Paragraph, but both are real
+    // Fabric descriptors. Only reject host-invented aliases that would
+    // duplicate another registered component (AndroidHorizontalScrollView,
+    // RCTImageView, …). Addon names stay strict fixed points below.
+    if (isForbiddenFrameworkAlias(entry.contract.name)) {
       throw TerminalLaunchPlanError(
           "Framework component \"" + entry.contract.name +
-          "\" is not a fixed point of componentNameByReactViewName");
+          "\" is an RN view-name alias and must not be registered");
     }
     frameworkComponents.insert(entry.contract.name);
     components.push_back({

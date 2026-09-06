@@ -20,50 +20,76 @@ class PlatformConstantsRn73Overlay final : public react::TurboModule {
       std::shared_ptr<react::TurboModule> inner,
       std::shared_ptr<react::CallInvoker> jsInvoker)
       : TurboModule("PlatformConstants", std::move(jsInvoker)),
-        inner_(std::move(inner)) {}
-
-  jsi::Value get(jsi::Runtime& runtime, const jsi::PropNameID& name) override {
-    const auto utf8 = name.utf8(runtime);
-    if (utf8 == "getConstants") {
-      return jsi::Function::createFromHostFunction(
-          runtime,
-          name,
-          0,
-          [inner = inner_](
-              jsi::Runtime& runtime,
-              const jsi::Value&,
-              const jsi::Value*,
-              size_t) -> jsi::Value {
-            auto function = inner->get(
-                runtime, jsi::PropNameID::forAscii(runtime, "getConstants"));
-            if (!function.isObject() ||
-                !function.getObject(runtime).isFunction(runtime)) {
-              return jsi::Value::undefined();
-            }
-            auto constantsValue =
-                function.getObject(runtime).getFunction(runtime).call(runtime);
-            if (!constantsValue.isObject()) {
-              return constantsValue;
-            }
-            auto constants = constantsValue.getObject(runtime);
-            jsi::Object version(runtime);
-            version.setProperty(runtime, "major", 0);
-            version.setProperty(runtime, "minor", 73);
-            version.setProperty(runtime, "patch", 10);
-            version.setProperty(runtime, "prerelease", jsi::Value::null());
-            constants.setProperty(
-                runtime, "reactNativeVersion", std::move(version));
-            return constants;
-          });
-    }
-    return inner_->get(runtime, name);
+        inner_(std::move(inner)) {
+    methodMap_["getConstants"] = {0, &getConstants};
+    methodMap_["getAndroidID"] = {0, &getAndroidID};
   }
 
   std::vector<jsi::PropNameID> getPropertyNames(jsi::Runtime& runtime) override {
-    return inner_->getPropertyNames(runtime);
+    auto names = inner_->getPropertyNames(runtime);
+    auto has = [&](const char* needle) {
+      for (const auto& name : names) {
+        if (name.utf8(runtime) == needle) {
+          return true;
+        }
+      }
+      return false;
+    };
+    if (!has("getConstants")) {
+      names.push_back(jsi::PropNameID::forAscii(runtime, "getConstants"));
+    }
+    if (!has("getAndroidID")) {
+      names.push_back(jsi::PropNameID::forAscii(runtime, "getAndroidID"));
+    }
+    return names;
   }
 
  private:
+  static jsi::Value callInner(
+      jsi::Runtime& runtime,
+      react::TurboModule& inner,
+      const char* name,
+      const jsi::Value* args,
+      size_t count) {
+    auto function = inner.get(
+        runtime, jsi::PropNameID::forAscii(runtime, name));
+    if (!function.isObject() || !function.getObject(runtime).isFunction(runtime)) {
+      return jsi::Value::undefined();
+    }
+    return function.getObject(runtime).getFunction(runtime).call(
+        runtime, args, count);
+  }
+
+  static jsi::Value getConstants(
+      jsi::Runtime& runtime,
+      react::TurboModule& turboModule,
+      const jsi::Value* args,
+      size_t count) {
+    auto& overlay = static_cast<PlatformConstantsRn73Overlay&>(turboModule);
+    auto constantsValue =
+        callInner(runtime, *overlay.inner_, "getConstants", args, count);
+    if (!constantsValue.isObject()) {
+      return constantsValue;
+    }
+    auto constants = constantsValue.getObject(runtime);
+    jsi::Object version(runtime);
+    version.setProperty(runtime, "major", 0);
+    version.setProperty(runtime, "minor", 73);
+    version.setProperty(runtime, "patch", 10);
+    version.setProperty(runtime, "prerelease", jsi::Value::null());
+    constants.setProperty(runtime, "reactNativeVersion", std::move(version));
+    return constants;
+  }
+
+  static jsi::Value getAndroidID(
+      jsi::Runtime& runtime,
+      react::TurboModule& turboModule,
+      const jsi::Value* args,
+      size_t count) {
+    auto& overlay = static_cast<PlatformConstantsRn73Overlay&>(turboModule);
+    return callInner(runtime, *overlay.inner_, "getAndroidID", args, count);
+  }
+
   std::shared_ptr<react::TurboModule> inner_;
 };
 

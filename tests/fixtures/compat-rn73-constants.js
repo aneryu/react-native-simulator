@@ -1,11 +1,14 @@
-const keys = Object.keys(globalThis.nativeModuleProxy.PlatformConstants);
-if (!keys.includes('getConstants') || !keys.includes('getAndroidID')) {
-  throw new Error(
-    'compat-rn73 overlay must expose PlatformConstants keys: ' +
-    JSON.stringify(keys));
-}
 RN$SimulatorWorkload.ready();
-const constants = globalThis.nativeModuleProxy.PlatformConstants.getConstants();
+const platform = globalThis.nativeModuleProxy.PlatformConstants;
+// RN TurboModuleBinding returns an empty jsRepresentation whose prototype is
+// the HostObject. Object.keys therefore stays empty; property lookup still
+// walks the prototype. Assert the overlay methods exist and forward.
+if (typeof platform.getConstants !== 'function' ||
+    typeof platform.getAndroidID !== 'function') {
+  throw new Error(
+    'compat-rn73 overlay must expose getConstants and getAndroidID');
+}
+const constants = platform.getConstants();
 const version = constants.reactNativeVersion;
 if (!version || version.major !== 0 || version.minor !== 73 || version.patch !== 10) {
   throw new Error('JS-visible RN version must be 0.73.10: ' + JSON.stringify(version));
@@ -18,7 +21,7 @@ if (constants.Version !== 35 || constants.Brand !== 'headless' ||
     'compat-rn73 must preserve non-version PlatformConstants: ' +
     JSON.stringify(constants));
 }
-const androidId = globalThis.nativeModuleProxy.PlatformConstants.getAndroidID();
+const androidId = platform.getAndroidID();
 if (androidId !== 'react-native-simulator') {
   throw new Error('getAndroidID must still be the RN 0.87 host value');
 }
