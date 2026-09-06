@@ -359,6 +359,39 @@ add_test(NAME expo-addon
     --profile android-rn87
     --addon expo
     --timeout-ms 1000)
+add_custom_target(builtin-addon-modules-for-tests ALL
+  DEPENDS
+    react-native-simulator-addon-expo
+    react-native-simulator-addon-safe_area
+    react-native-simulator-addon-compat_rn73)
+add_test(NAME expo-addon-module
+  COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
+    "${RNS_TEST_FIXTURES_DIR}/expo-addon-probe.js"
+    --profile android-rn87
+    --no-auto-addons
+    --addon $<TARGET_FILE:react-native-simulator-addon-expo>
+    --timeout-ms 1000)
+add_test(NAME safe-area-addon-module
+  COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
+    "${RNS_TEST_FIXTURES_DIR}/safe-area-insets-event.js"
+    --profile android-rn87
+    --no-auto-addons
+    --addon $<TARGET_FILE:react-native-simulator-addon-safe_area>
+    --timeout-ms 1000)
+add_test(NAME compat-rn73-addon-module
+  COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
+    "${RNS_TEST_FIXTURES_DIR}/compat-rn73-constants.js"
+    --profile android-rn87
+    --no-auto-addons
+    --addon $<TARGET_FILE:react-native-simulator-addon-compat_rn73>
+    --timeout-ms 1000)
+add_test(NAME safe-area-insets-event
+  COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
+    "${RNS_TEST_FIXTURES_DIR}/safe-area-insets-event.js"
+    --profile android-rn87
+    --timeout-ms 1000)
+set_tests_properties(safe-area-insets-event PROPERTIES
+  PASS_REGULAR_EXPRESSION "\"workloadChecksum\":1")
 add_test(NAME cli-list-addons
   COMMAND $<TARGET_FILE:react-native-simulator> --list-addons --json)
 set_tests_properties(cli-list-addons PROPERTIES
@@ -369,6 +402,12 @@ add_test(NAME cli-list-addons-headless
 set_tests_properties(cli-list-addons-headless PROPERTIES
   PASS_REGULAR_EXPRESSION
     "\"name\":\"expo\".*\"name\":\"safe-area\".*\"name\":\"compat-rn73\"")
+add_test(NAME cli-list-addons-conformance
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    "-DARGS=conformance;--list-addons"
+    "-DEXPECTED=conformance is unavailable"
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateCliFailure.cmake")
 add_test(NAME cli-no-addon-unknown
   COMMAND "${CMAKE_COMMAND}"
     -DRNSIM=$<TARGET_FILE:react-native-simulator>
@@ -488,6 +527,14 @@ add_test(NAME cli-doctor-rn073-compat
 set_tests_properties(expo-addon PROPERTIES
   PASS_REGULAR_EXPRESSION
     "\"name\":\"expo\".*\"name\":\"ExpoAsset\".*\"bundleLoaded\":true")
+set_tests_properties(expo-addon-module PROPERTIES
+  PASS_REGULAR_EXPRESSION
+    "\"name\":\"expo\".*\"name\":\"ExpoAsset\".*\"bundleLoaded\":true")
+set_tests_properties(compat-rn73-addon-module PROPERTIES
+  PASS_REGULAR_EXPRESSION
+    "\"targetFamily\":\"0.73.x\".*\"jsVisibleReactNativeVersion\":\"0.73.10\".*\"workloadChecksum\":73")
+set_tests_properties(safe-area-addon-module PROPERTIES
+  PASS_REGULAR_EXPRESSION "\"workloadChecksum\":1")
 
 set_tests_properties(runtime-source runtime-bytecode PROPERTIES
   PASS_REGULAR_EXPRESSION
@@ -502,11 +549,6 @@ endif()
 set_tests_properties(rn87-profile PROPERTIES
   PASS_REGULAR_EXPRESSION
     "\"name\":\"android-rn87\".*\"Image\".*\"NativeMicrotasksCxx\".*\"IntentAndroid\".*\"bundleLoaded\":true")
-if(TEST shopee-addon)
-  set_tests_properties(shopee-addon PROPERTIES
-    PASS_REGULAR_EXPRESSION
-      "\"name\":\"shopee\".*\"bundleLoaded\":true")
-endif()
 set_tests_properties(rntester-addon PROPERTIES
   PASS_REGULAR_EXPRESSION
     "\"name\":\"rntester\".*\"RNTReportFullyDrawnView\".*\"NativeCxxModuleExampleCxx\".*\"bundleLoaded\":true")
@@ -630,9 +672,11 @@ set_tests_properties(runtime-source runtime-bytecode runtime-multi-bundle
   addon-rejects-null-create addon-rejects-throwing-create
   addon-rejects-throwing-manifest addon-rejects-throwing-bind
   addon-rejects-name-mismatch addon-rejects-null-callbacks
-  cli-list-addons cli-list-addons-headless cli-unknown-addon-rntester
+  cli-list-addons cli-list-addons-headless cli-list-addons-conformance cli-unknown-addon-rntester
   cli-no-addon-unknown cli-doctor-unknown-addon
   cli-no-addon-safe-area cli-no-addon-safe-area-fallback
+  expo-addon-module safe-area-addon-module compat-rn73-addon-module
+  safe-area-insets-event
   compat-rn73-constants local-config-schema1 local-config-bare-addon
   local-config-addon-extra-key local-config-named-so
   local-config-tagged-compat local-config-addon-origin
@@ -645,6 +689,8 @@ if(TEST interactive-window-before-metro)
 endif()
 set_tests_properties(hmr-protocol PROPERTIES TIMEOUT 20)
 set_tests_properties(expo-addon PROPERTIES TIMEOUT 10)
+set_tests_properties(expo-addon-module safe-area-addon-module
+  compat-rn73-addon-module safe-area-insets-event PROPERTIES TIMEOUT 10)
 
 add_custom_target(verify
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
@@ -653,6 +699,9 @@ add_custom_target(verify
     reload-engine-smoke reload-error-recovery-smoke hmr-protocol-smoke
     addon-planner-smoke addon-abi-lifecycle-smoke fabric-module-host
     react-native-simulator-addon-fabric_probe
+    react-native-simulator-addon-expo
+    react-native-simulator-addon-safe_area
+    react-native-simulator-addon-compat_rn73
     not-an-abi4-addon invalid-addon-descriptor wrong-fingerprint-addon
     null-create-addon throwing-create-addon throwing-manifest-addon
     throwing-bind-addon name-mismatch-addon

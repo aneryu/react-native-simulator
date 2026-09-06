@@ -59,6 +59,7 @@ afterCommit(function () {
     }
 
     uim.dispatchCommand(probe, 'setNativeValue', [42]);
+    uim.dispatchCommand(probe, '1', [42]);
     uim.dispatchCommand(probe, 'notARealCommand', []);
 
     afterCommit(function () {

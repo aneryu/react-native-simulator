@@ -1,3 +1,9 @@
+const keys = Object.keys(globalThis.nativeModuleProxy.PlatformConstants);
+if (!keys.includes('getConstants') || !keys.includes('getAndroidID')) {
+  throw new Error(
+    'compat-rn73 overlay must expose PlatformConstants keys: ' +
+    JSON.stringify(keys));
+}
 RN$SimulatorWorkload.ready();
 const constants = globalThis.nativeModuleProxy.PlatformConstants.getConstants();
 const version = constants.reactNativeVersion;

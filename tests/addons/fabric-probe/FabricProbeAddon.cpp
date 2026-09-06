@@ -68,6 +68,11 @@ class FabricProbeAddon final : public SimulatorAddon {
         {"setNativeValue"},
         "abi4-fabric-module-probe",
     }};
+    manifest.viewManagerConfigs = {{
+        "RNSFabricProbeView",
+        {},
+        {{"setNativeValue", 1}},
+    }};
     return manifest;
   }
 

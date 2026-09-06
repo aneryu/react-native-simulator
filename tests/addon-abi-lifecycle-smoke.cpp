@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 template <class T>
 concept HasEngineLoadBundle = requires(T& engine, const std::string& path) {
@@ -44,6 +45,7 @@ struct HookCounts {
   int install{0};
   int quiesce{0};
   int wrap{0};
+  std::vector<std::string>* unbindOrder{nullptr};
 };
 
 class CountingAddon : public rns::SimulatorAddon {
@@ -58,7 +60,12 @@ class CountingAddon : public rns::SimulatorAddon {
     return manifest;
   }
   void bind(const rns::AddonHost&) override { ++counts_->bind; }
-  void unbind() noexcept override { ++counts_->unbind; }
+  void unbind() noexcept override {
+    ++counts_->unbind;
+    if (counts_->unbindOrder != nullptr) {
+      counts_->unbindOrder->push_back(name_);
+    }
+  }
   std::shared_ptr<facebook::react::TurboModule> getTurboModule(
       const rns::AddonGenerationContext&,
       facebook::jsi::Runtime&,
@@ -641,6 +648,9 @@ int main(int argc, char** argv) {
     {
       auto first = std::make_shared<HookCounts>();
       auto second = std::make_shared<HookCounts>();
+      std::vector<std::string> unbindOrder;
+      first->unbindOrder = &unbindOrder;
+      second->unbindOrder = &unbindOrder;
       rns::LaunchDraft draft(config);
       draft.addAddon(
           std::make_unique<CountingAddon>("counting", first),
@@ -659,7 +669,9 @@ int main(int argc, char** argv) {
       engine.applyLaunchPlan(std::move(plan));
       const auto result = engine.run();
       if (result.exitCode == 0 || second->unbind != 1 || first->unbind != 1 ||
-          first->configure != 0) {
+          first->configure != 0 ||
+          unbindOrder !=
+              std::vector<std::string>{"throw-bind", "counting"}) {
         std::cerr << "throwing bind did not unbind entered addons: "
                   << result.error << '\n';
         return 1;
@@ -688,7 +700,7 @@ int main(int argc, char** argv) {
       const auto result = engine.run();
       if (result.exitCode == 0 || ok->configure != 1 || boom->configure != 1 ||
           ok->install != 0 || boom->install != 0 || ok->quiesce != 1 ||
-          boom->quiesce != 1) {
+          boom->quiesce != 1 || ok->unbind != 1 || boom->unbind != 1) {
         std::cerr << "failed generation prefix/quiesce contract failed: "
                   << result.error << '\n';
         return 1;
@@ -848,7 +860,8 @@ int main(int argc, char** argv) {
           "  RN$SimulatorWorkload.complete();\n"
           "}, 0);\n");
       if (result.exitCode == 0 ||
-          result.error.find("command handler threw") == std::string::npos) {
+          result.error.find("command handler threw") == std::string::npos ||
+          counts->quiesce != 1 || counts->unbind != 1) {
         std::cerr << "throwing command callback was not contained: "
                   << result.error << '\n';
         return 1;
@@ -953,7 +966,7 @@ int main(int argc, char** argv) {
           "RN$SimulatorWorkload.ready();\n"
           "globalThis.RN$SimulatorWorkloadResult={iterations:1,checksum:1};\n"
           "RN$SimulatorWorkload.complete();\n");
-      if (result.exitCode == 0) {
+      if (result.exitCode == 0 || counts->quiesce != 1 || counts->unbind != 1) {
         std::cerr << "lookup-time null escaped as a successful run\n";
         return 1;
       }
