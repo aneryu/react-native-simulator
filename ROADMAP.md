@@ -27,7 +27,7 @@ experimental and Android-first.
   host-adapter, mock, or unavailable judgments;
 - replace remaining layout-only component entries where observable platform
   semantics matter (`VirtualView`, `InputAccessory`, generic `Switch`,
-  `PullToRefreshView`, `RCTImageView`, and `DebuggingOverlay`);
+  `PullToRefreshView`, and `DebuggingOverlay`);
 - implement or explicitly reject `background-repeat` and `background-size`;
 - replace the current 2D `rotateY` approximation with a certified transform
   boundary;

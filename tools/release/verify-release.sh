@@ -64,14 +64,15 @@ printf '%s\n' "$version" | grep -Fq '"hermes":"260318099.0.1"'
 
 catalog=$("$stage/rnsim" --list-addons --json)
 printf '%s\n' "$catalog" | grep -Fq '"addonAbi":4'
-printf '%s\n' "$catalog" | grep -Eq \
-  '"name":"expo".*"name":"safe-area".*"name":"compat-rn73"'
-addon_names=$(printf '%s\n' "$catalog" | tr ',' '\n' | grep -c '"name":' || true)
-[ "$addon_names" = 3 ] || {
-  echo "Packaged catalog must be exactly expo, safe-area, compat-rn73:" >&2
-  printf '%s\n' "$catalog" >&2
-  exit 1
-}
+printf '%s\n' "$catalog" | python3 -c '
+import json, sys
+catalog = json.load(sys.stdin)
+names = [addon["name"] for addon in catalog["addons"]]
+if names != ["expo", "safe-area", "compat-rn73"]:
+    raise SystemExit(
+        "Packaged catalog must be exactly expo, safe-area, compat-rn73: "
+        + json.dumps(names))
+'
 
 entitlements_dump=$(mktemp)
 codesign -d --entitlements "$entitlements_dump" "$stage/rnsim" >/dev/null 2>&1 || true

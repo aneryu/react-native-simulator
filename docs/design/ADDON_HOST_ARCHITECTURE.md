@@ -168,86 +168,48 @@ pinned engine. Implementers treat these as closed.
 10. `.dylib` and `.so` MODULE behavior is proven by real dynamic loads on both
     platforms, never inferred from in-process tests.
 
-## Current state (verified against the reviewed tree)
+## Current state (ABI 4, as implemented)
 
 Runtime and loader:
 
-- `runtime/include/react-native-simulator/SimulatorAddon.h` declares
-  `kSimulatorAddonAbiVersion = 3` (line 68) while the entry symbol is
-  `react_native_simulator_addon_v2` (line 81). Capability APIs return free-form
-  `{name, fidelity}` strings. `SimulatorAddonViewManagerConfig` (lines 34–38)
-  already exists as `{name, numericConstants, commands}` and is the ABI 3
-  ancestor of ABI 4 `AddonViewManagerConfig`.
-- `SimulatorAddonRegistry::load` (`runtime/src/core/SimulatorAddon.cpp:40–84`)
-  calls `dlopen`, then checks ABI/RN/Hermes, then `create()`. TurboModule
-  lookup (`:86–97`) is first-wins across addons. `Engine::addAddon(std::string)`
-  and `Engine::addAddon(unique_ptr)` (`Engine.h:185–186`,
-  `SimulatorEngine.cpp:1761–1776`) mutate the engine after construction.
-- `SimulatorEngine.cpp` loads addon paths (`:2000–2003`) before
-  `createRuntimeProfile` (`:2167`); runs addon `installJSI` (`:2599`) before
-  the `RN$LegacyInterop_UIManager_*` globals (`:2603`),
-  `__nativeComponentRegistry__hasComponent` (`:2684–2708`, addon names only)
-  and the Fabric binding (`:2736`); resets the Fabric host before the
-  `ReactInstance` on reload (`:3356` / `:3362`) and final teardown (`:4083` /
-  `:4091`); resets `hostEnvironment()` inside every generation (`:2111–2112`);
-  and keeps a second schema-2 serializer in `makeLiveInspectorSnapshot`
-  (`:1376–1387`). `classifyRuntimeCapability` (`:153–224`) infers class from
-  substrings such as `mock`, `descriptor-only`, `tester-stub`, `fixed-fixture`,
-  `adapter`, `headless`, and `host-`.
-- `runtime/src/modules/HeadlessRNModules.cpp` serves `RNCSafeAreaContext` for
-  every profile (`:1797–1798`) and reads `RNSIM_INITIAL_URL` with `getenv` on
-  each `getInitialURL` call (`IntentAndroid` `:1218`, `LinkingManager`
-  `:1328`). `android-rn73` differs from `android-rn87` only by
-  `PlatformConstantsAndroidRN73` (`:64–100`, `:1730–1731`, fidelity
-  `fixed-fixture`); `runtime/src/profiles/RuntimeProfile.cpp:77–83` reports it
-  as `0.73.10` / `partial-compatibility-adapter`.
-- `runtime/src/fabric/HeadlessOfficialComponents.h:56–60` lists official
-  `SafeAreaView` plus `RNCSafeAreaProvider` and `RNCSafeAreaView` in the
-  official table. `HeadlessReactFabric.cpp` registers every addon component as
-  `UnimplementedViewComponentDescriptor` (`:1463–1472`), hardcodes the
-  `topInsetsChange` emission in `emitSafeAreaInsetsIfNeeded` (`:3098–3122`),
-  and returns early from `uiManagerDidDispatchCommand` for `setNativeValue`
-  and non-TextInput nodes (`:1696–1779`). The host owns
-  `ComponentDescriptorProviderRegistry providers_`, `registry_`,
-  `uiManager_`, and `eventDispatcher_` (`:3526–3529`), and a
-  `gHeadlessUIManager` global (`:88`; getter `:3607`). Fallback names are recorded when RN requests an unknown
-  provider (`:1371–1380`) and serialized as `fallbackComponents`
-  (`SimulatorEngine.cpp:3570–3573`); `failOnComponentFallback` /
-  conformance fails if that list is non-empty (`:3810–3818`).
-- `runtime/addons/expo/ExpoAddon.cpp` `installJSI` calls `getTurboModule`
-  again to build `globalThis.expo.modules[...]` (`:491–504`). `ExpoAddon.cpp`
-  is compiled twice: into the executable (`runtime/CMakeLists.txt:411–414`)
-  and into its MODULE (`:400–405` with `RNS_EXPO_ADDON_DYLIB=1`).
-  `ExpoLinkingModule::getLinkingURL` currently returns `null` (`:160–166`)
-  and does not read the initial URL.
-- `frontend/InteractiveFrontend.cpp:1959–1967` treats every preparation
-  `std::exception` as retryable.
+- `SimulatorAddon.h` is ABI 4 (`kSimulatorAddonAbiVersion = 4`, entry
+  `react_native_simulator_addon_v4`). Capability rows are `{name, class, owner,
+  note}`. `AddonViewManagerConfig` carries `{name, numericConstants, commands}`
+  including numeric command IDs.
+- Launch is transactional: `LaunchDraft` → `prepareExplicitAddons` →
+  `finalizeLaunchPlan` → `Engine::applyLaunchPlan`. There is no
+  `Engine::addAddon` or `Engine::loadBundle`. MODULE paths are canonicalized
+  before `dlopen`; the RAII handle stays open through `destroy` then `dlclose`.
+- Generation teardown is `quiesceGeneration` → `stopSurface` → Fabric
+  `shutdown` → `instance.reset()` → `fabricHost.reset()` → `unbind` →
+  `destroy` → `dlclose`. Failed init, addon fatals, reload, and `requestStop`
+  (including headless) share that closer. `droppedPosts` is a final-metrics
+  field; live inspector snapshots omit generation-lifetime counters.
+- `safe-area` auto-loads for every project. `compat-rn73` overlays
+  `PlatformConstants` for RN 0.73.x JS on the RN 0.87 native engine. `expo`
+  auto-loads for Expo projects. Official `RNCSafeArea*` names are not in the
+  framework inventory. Non-canonical RN aliases such as
+  `AndroidHorizontalScrollView` and `RCTImageView` are not registered; RN's
+  `componentNameByReactViewName` maps them onto `ScrollView` and `Image`.
+- Snapshot insets are `0,0,0,0`. `EngineConfig.insetTop` is host chrome, not
+  SafeArea. `RNSIM_INITIAL_URL` is read once in the CLI; modules see the plan
+  `initialUrl`. The CLI sets `ProjectKind::Expo` from the launch cwd, a later
+  Metro-discovered project, or a bundle URL that looks like Expo
+  (`expo-router/`, `node_modules/expo/`, `/expo/AppEntry`).
+- `rnsim.json` is schema 2 (`addons` `{name}`/`{path}` objects,
+  `disabledAddons`, `autoAddons`). Metrics are schema 3.
 
 Build, config, tools:
 
-- Root `CMakeLists.txt` has `include(CTest)` after `add_subdirectory(runtime)`
-  (`:280` / `:282`). `runtime/CMakeLists.txt` guards a company addon with
-  `if(EXISTS .../addons/shopee/...)` (`:390–395`) and has no hidden-visibility
-  setting; there is no `RNS_EXPORT` macro. macOS links with
-  `cmake/macos-engine-exported-symbols.txt` (`:442–445`); Linux uses
-  `-rdynamic` (`:448–449`).
-- `SimulatorConfig.cpp` resolves every `addons` string as a config-relative
-  path (`:145–152`). Schema version is 1 (`:82–83`); unknown fields are
-  rejected (`:25–40`).
-- `tools/diagnostics/verify-runtime.mjs` asserts
-  `nativeCapabilities.modules.NativeMicrotasksCxx === "real-headless"` and
-  `schemaVersion === 2` (`:61–73`). `verify-addons.mjs:16–17` hardcodes
-  `.dylib`. `tools/release/generate-release-manifest.sh` hardcodes
-  `addonAbi: 2` (`:43`) plus RN and Hermes version strings. 
-  `cmake/ValidateCliMetadata.cmake:39` asserts `addonAbi == 3`.
-  `package-macos.sh` copies the build-tree binary into the DMG; it does not
-  run `cmake --install`.
-- Root CMake already has `RNS_RN0732_FIXTURE_BUNDLE` (`CMakeLists.txt:38–39`),
-  `RNS_RNTESTER_BUNDLE` (`:40–41`), and `RNS_REQUIRE_RNTESTER_BUNDLE`
-  (`:42–43`).
-- Nightly signing currently includes
-  `com.apple.security.cs.disable-library-validation`
-  (`tools/release/rnsim.entitlements:9–10`).
+- `include(CTest)` is before `add_subdirectory(runtime)`. Addons are declared
+  with `rns_declare_addon` (`FACTORY` required; `TEST_ONLY` applies to the
+  MODULE artifact, not the built-in catalog row). Nightly catalog is exactly
+  `expo`, `safe-area`, `compat-rn73`.
+- macOS non-sanitized engines export Folly C++ symbols so MODULE `dlopen` can
+  resolve `folly::dynamic` across the ABI. Fingerprint includes `buildType`,
+  `ndebug`, and `cxx11Abi`.
+- `RNS_RN073_BUSINESS_BUNDLE` / `RNS_RNTESTER_BUNDLE` remain optional CMake
+  inputs (org-private). Ordinary GitHub `core` jobs do not require them.
 
 Pinned React Native facts that constrain the design (submodule
 `4bc2473f5d0233ea5384c1ef24f6a55615de2220`):
@@ -693,11 +655,12 @@ terminal; an explicit request for a disabled name is a terminal contradiction.
 
 The CLI reads `RNSIM_INITIAL_URL` once at option-parse time. `--initial-url`
 overrides it. Neither is read again from the environment. Expo detection stays
-in the CLI (`main.cpp`, `detectExpoProject`). The engine never inspects cwd,
-`package.json`, Metro, or bundle URLs; it receives `ProjectKind`. The CLI
-sets `ProjectKind::Expo` when either the launch cwd or a later Metro-discovered
-project is Expo, and it does so before `finalizeLaunchPlan` even if
-`prepareExplicitAddons` already ran.
+in the CLI (`main.cpp`, `detectExpoProject`, `bundleUrlLooksLikeExpo`). The
+engine never inspects cwd, `package.json`, Metro, or bundle URLs; it receives
+`ProjectKind`. The CLI sets `ProjectKind::Expo` when the launch cwd is Expo, a
+later Metro-discovered project is Expo, or a selected bundle URL contains
+`expo-router/`, `node_modules/expo/`, or `/expo/AppEntry`, and it does so
+before `finalizeLaunchPlan` even if `prepareExplicitAddons` already ran.
 
 `--list-addons --json` prints the generated catalog, not discovered MODULE
 files:
@@ -1459,7 +1422,9 @@ Rules the host enforces or documents:
   adapters must hop through `AddonRuntimeExecutor::post`. The host records the
   runtime thread per generation; a delegate callback on another thread sets
   `pendingAddonFatal` and disables addon callbacks. Dropped posts increment
-  `droppedPosts`, which the final metrics envelope reports.
+  `droppedPosts`, which the final metrics envelope reports. Live inspector
+  snapshots use `validationMode: "live"` and omit `droppedPosts`, `jsErrors`,
+  and timeout fields.
 - Event types must be non-empty; `EventEmitter::normalizeEventType` writes
   `type[0]`. The addon's declared `events` list is informational and appears
   in metrics and chrome.
@@ -1919,10 +1884,11 @@ their own claim; the engine grants no privilege by name.
 rns_declare_addon(
   NAME safe-area
   SOURCES SafeAreaAddon.cpp
+  FACTORY createSafeAreaAddon
   BUILTIN                      # link into the engine; add to the catalog
   MODULE                       # also build rns-addon-safe-area.{dylib,so}
   AUTO always                  # always | expo | never   (BUILTIN only)
-  # TEST_ONLY                  # never catalogued or installed
+  # TEST_ONLY                  # MODULE is tests-only; BUILTIN catalog is unchanged
   # INSTALL_COMPONENT addon-development
 )
 ```
@@ -2157,23 +2123,27 @@ node tools/diagnostics/verify-runtime.mjs
 node tools/diagnostics/verify-addons.mjs
 ```
 
-Required CI lanes (a missing artifact, skipped condition, or zero matching
-tests fails the lane; a skip is never a pass):
+Required local/CI lanes (a missing artifact, skipped condition, or zero matching
+tests fails the lane when that lane is enabled; a skip is never a pass):
 
-- RN Tester: `-DRNS_REQUIRE_RNTESTER_BUNDLE=ON -DRNS_RNTESTER_BUNDLE=<path>`.
-- RN 0.73.10 business bundle (distinct from `RNS_RN0732_FIXTURE_BUNDLE`):
+- Ordinary `core` jobs in `.github/workflows/macos.yml` and `linux.yml` run
+  `ctest --preset release` without private bundles (`REQUIRE=OFF`).
+- RN Tester is an optional CMake input, not a default GitHub job:
+  `-DRNS_REQUIRE_RNTESTER_BUNDLE=ON -DRNS_RNTESTER_BUNDLE=<path>`.
+- RN 0.73.10 business bundle (distinct from `RNS_RN0732_FIXTURE_BUNDLE`) is the
+  same: optional CMake / org-private, never a default GHA job.
   ```
   -DRNS_REQUIRE_RN073_BUSINESS_BUNDLE=ON
   -DRNS_RN073_BUSINESS_BUNDLE=$RNS_RN073_BUSINESS_BUNDLE
   -DRNS_RN073_BUSINESS_PROVENANCE=$RNS_RN073_BUSINESS_PROVENANCE
   ```
-  Ordinary `core` jobs in `.github/workflows/macos.yml` and `linux.yml` keep
-  `REQUIRE=OFF` so they run without the private artifact. DoD requires a
-  separate job that sets `REQUIRE=ON` from those env vars (org download/secret
-  step; no URL is specified here). Missing env, missing file, SHA mismatch, or
-  failed `pass` assertions fail that job.
+  Provenance schema 1 requires `family`, `jsVisibleReactNativeVersion`,
+  `build.format` ∈ `{metro-source, hermesc-hbc}`, and `pass.metrics`.
+  `timeoutMs` is optional (default 15000). Missing env, missing file, SHA
+  mismatch, or failed `pass` assertions fail that optional job.
 - macOS non-sanitized Release `.dylib` load and Linux `.so` load of the Fabric
-  test addon, plus the minimal embedder executable.
+  test addon, plus the built-in `TEST_ONLY` MODULE copies of `expo`,
+  `safe-area`, and `compat-rn73`.
 
 Every handoff records native RN/Hermes identity, caller bundle source and
 format, exact command, exit/signal status, stdout JSON, relevant stderr, the
@@ -2222,9 +2192,10 @@ rejection; deterministic callback order and no false unmount/remount on move;
 executor post from a foreign thread delivered on the runtime thread; post after
 quiesce dropped and counted; exact `setNativeValue` routing not swallowed by
 Switch/TextInput; unknown command no-op counted; throwing callback contained;
-reload invalidates nothing the addon still holds unsafely (sanitizer stress);
-lifecycle trace proves descriptor-registry before provider-registry and
-instance-before-host-before-`dlclose`.
+reload invalidates nothing the addon still holds unsafely (sanitizer stress).
+Teardown order is enforced by the generation closer and by reverse-unbind
+assertions; a separate instance→host→`dlclose` trace log is not a shipping
+test.
 
 SafeArea: `initialWindowMetrics.frame` equals snapshot viewport at `(0,0)`
 (smoke `frame.width ===` viewport); Provider `topInsetsChange` carries the

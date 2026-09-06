@@ -45,8 +45,10 @@ is a display string and is never used as `--app-key`. Metro entry discovery
 resolves `package.json` `main` through `node_modules` (`expo/AppEntry`,
 `expo-router/entry`) and prefers those files when `./index.js` is absent.
 
-The built-in `expo` addon is loaded automatically from an Expo project root,
-or explicitly with `--addon expo` / `--addon /path/to/rns-addon-expo.dylib`.
+The built-in `expo` addon is loaded automatically from an Expo project root
+or explicitly with `--addon expo`. Nightly ships the catalogued built-in; a
+source tree may also build a tests-only MODULE copy (`rns-addon-expo.so` /
+`.dylib`) that is not part of the packaged Nightly binary.
 It host-adapts only the modules needed to boot Expo's JS runtime:
 
 - `global.expo` (`EventEmitter`, `NativeModule`, `SharedObject`, `SharedRef`, `modules`)
@@ -112,7 +114,7 @@ metrics output:
 build/release/runtime/rnsim headless \
   --profile android-rn87 \
   --bundle /path/to/application.bundle \
-  --addon /path/to/application-addon.dylib \
+  --addon /path/to/application-addon.so \
   --timeout-ms 5000
 ```
 

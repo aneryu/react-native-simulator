@@ -70,6 +70,9 @@ for (const sourcePath of [
   'runtime/src/modules/HeadlessRNModules.cpp',
   'runtime/src/modules/HeadlessTurboModules.cpp',
   'runtime/src/core/SimulatorEngine.cpp',
+  'runtime/src/core/FrameworkInventory.cpp',
+  'runtime/src/fabric/HeadlessOfficialComponents.cpp',
+  'runtime/src/fabric/HeadlessReactFabric.cpp',
 ]) {
   const source = readFileSync(sourcePath, 'utf8');
   assert.doesNotMatch(

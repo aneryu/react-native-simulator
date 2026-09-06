@@ -243,9 +243,16 @@ the config bundle list:
   "reactNative": "0.87.0",
   "platform": "android",
   "appKey": "MyApp",
-  "bundle": "./dist/index.android.jsbundle"
+  "bundle": "./dist/index.android.jsbundle",
+  "addons": [{ "name": "compat-rn73" }],
+  "disabledAddons": [],
+  "autoAddons": true
 }
 ```
+
+`addons` entries are `{name}` catalog keys or `{path}` MODULE files, never both.
+`--no-auto-addons` disables every automatic slot. `--list-addons [--json]`
+prints the compiled catalog. `--initial-url` freezes the session URL.
 
 ```sh
 rnsim --config ./rnsim.json

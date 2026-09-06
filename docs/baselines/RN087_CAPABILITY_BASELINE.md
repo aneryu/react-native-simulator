@@ -82,11 +82,14 @@ Root, View, RawText, Text, Paragraph, ScrollView, Image,
 AndroidTextInput/TextInput, ActivityIndicatorView, AndroidSwitch, Switch,
 AndroidProgressBar, ModalHostView, AndroidDrawerLayout,
 AndroidSwipeRefreshLayout, PullToRefreshView,
-AndroidHorizontalScrollView, AndroidHorizontalScrollContentView,
-SafeAreaView,
+AndroidHorizontalScrollContentView, SafeAreaView,
 InputAccessory, VirtualView, VirtualViewExperimental,
-DebuggingOverlay, RCTImageView
+DebuggingOverlay
 ```
+
+`AndroidHorizontalScrollView` and `RCTImageView` are RN aliases of `ScrollView`
+and `Image` (`componentNameByReactViewName`); they are not separate inventory
+rows.
 
 `HeadlessSampleView` is test-only and is not an RN platform capability.
 Unregistered components use an observable fallback descriptor. Addons may
@@ -116,7 +119,7 @@ not HWUI pixel equivalence. Known boundaries include:
   the profile. v1 insets are zero and `initialWindowMetrics.frame` matches the
   snapshot viewport; this is not Android 15 edge-to-edge WindowInsets;
 - `VirtualView`, `InputAccessory`, generic `Switch`, `PullToRefreshView`,
-  `RCTImageView`, and `DebuggingOverlay` remain primarily layout-only;
+  and `DebuggingOverlay` remain primarily layout-only;
 - no macOS accessibility platform source feeds the interactive frontend.
 
 ## Source inventory
