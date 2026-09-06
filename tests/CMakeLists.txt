@@ -379,12 +379,14 @@ add_test(NAME safe-area-addon-module
     --addon $<TARGET_FILE:react-native-simulator-addon-safe_area>
     --timeout-ms 1000)
 add_test(NAME compat-rn73-addon-module
-  COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
-    "${RNS_TEST_FIXTURES_DIR}/compat-rn73-constants.js"
-    --profile android-rn87
-    --no-auto-addons
-    --addon $<TARGET_FILE:react-native-simulator-addon-compat_rn73>
-    --timeout-ms 1000)
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    "-DARGS=headless;--bundle;${RNS_TEST_FIXTURES_DIR}/compat-rn73-constants.js;--profile;android-rn87;--no-auto-addons;--addon;$<TARGET_FILE:react-native-simulator-addon-compat_rn73>;--timeout-ms;1000"
+    "-DEXPECT1=\"workloadChecksum\":73"
+    "-DEXPECT2=\"targetFamily\":\"0.73.x\""
+    "-DEXPECT3=\"jsVisibleReactNativeVersion\":\"0.73.10\""
+    "-DEXPECT4=\"compatAddon\":\"compat-rn73\""
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateJsonContains.cmake")
 add_test(NAME safe-area-insets-event
   COMMAND $<TARGET_FILE:react-native-simulator> headless --bundle
     "${RNS_TEST_FIXTURES_DIR}/safe-area-insets-event.js"
@@ -444,14 +446,14 @@ add_test(NAME cli-no-addon-safe-area-fallback
     --timeout-ms 1000)
 set_tests_properties(cli-no-addon-safe-area-fallback PROPERTIES WILL_FAIL TRUE)
 add_test(NAME compat-rn73-constants
-  COMMAND $<TARGET_FILE:react-native-simulator> headless
-    --bundle "${RNS_TEST_FIXTURES_DIR}/compat-rn73-constants.js"
-    --profile android-rn87
-    --addon compat-rn73
-    --timeout-ms 1000)
-set_tests_properties(compat-rn73-constants PROPERTIES
-  PASS_REGULAR_EXPRESSION
-    "\"targetFamily\":\"0.73.x\".*\"jsVisibleReactNativeVersion\":\"0.73.10\".*\"workloadChecksum\":73")
+  COMMAND "${CMAKE_COMMAND}"
+    -DRNSIM=$<TARGET_FILE:react-native-simulator>
+    "-DARGS=headless;--bundle;${RNS_TEST_FIXTURES_DIR}/compat-rn73-constants.js;--profile;android-rn87;--addon;compat-rn73;--timeout-ms;1000"
+    "-DEXPECT1=\"workloadChecksum\":73"
+    "-DEXPECT2=\"targetFamily\":\"0.73.x\""
+    "-DEXPECT3=\"jsVisibleReactNativeVersion\":\"0.73.10\""
+    "-DEXPECT4=\"compatAddon\":\"compat-rn73\""
+    -P "${PROJECT_SOURCE_DIR}/cmake/ValidateJsonContains.cmake")
 add_test(NAME local-config-schema1
   COMMAND "${CMAKE_COMMAND}"
     -DRNSIM=$<TARGET_FILE:react-native-simulator>
@@ -530,9 +532,6 @@ set_tests_properties(expo-addon PROPERTIES
 set_tests_properties(expo-addon-module PROPERTIES
   PASS_REGULAR_EXPRESSION
     "\"name\":\"expo\".*\"name\":\"ExpoAsset\".*\"bundleLoaded\":true")
-set_tests_properties(compat-rn73-addon-module PROPERTIES
-  PASS_REGULAR_EXPRESSION
-    "\"targetFamily\":\"0.73.x\".*\"jsVisibleReactNativeVersion\":\"0.73.10\".*\"workloadChecksum\":73")
 set_tests_properties(safe-area-addon-module PROPERTIES
   PASS_REGULAR_EXPRESSION "\"workloadChecksum\":1")
 
