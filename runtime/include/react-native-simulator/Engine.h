@@ -334,15 +334,21 @@ class Engine final {
   Engine& operator=(const Engine&) = delete;
 
   EngineState state() const noexcept;
+  // Draft only. On success consumes `plan` and becomes Planned. On rejection
+  // the argument remains live when passed as an lvalue.
+  void applyLaunchPlan(PreparedLaunchPlan& plan);
   void applyLaunchPlan(PreparedLaunchPlan&& plan);
+  // Thread-safe while run() is active. Legal in Draft, Planned, and Running.
   void setSceneUpdateCallback(
       std::function<void(std::shared_ptr<const SceneSnapshot>)> callback);
   void setActionResultCallback(
       std::function<void(const InteractionResult&)> callback);
+  // Thread-safe while run() is active. Legal in Running.
   std::uint64_t enqueueAction(InteractionAction action);
   ApplicationLaunchState applicationLaunchState() const;
   RuntimeStatus runtimeStatus() const;
   void runApplication(std::string appKey, std::string initialPropsJson = "{}");
+  // Legal in Planned and Running, including headless and conformance.
   void requestStop() noexcept;
   void requestReload() noexcept;
   EngineResult run();

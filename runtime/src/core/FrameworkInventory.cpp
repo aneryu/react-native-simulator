@@ -344,11 +344,6 @@ FrameworkSurfaceInventory buildFrameworkSurfaceInventory(
       RuntimeCapabilityClass::LayoutOnly,
       owner,
       "layout-only-placeholder"));
-  inventory.officialComponents.push_back(unimplementedComponent(
-      "AndroidHorizontalScrollView",
-      RuntimeCapabilityClass::HostAdapted,
-      owner,
-      "headless-viewport-state"));
   inventory.officialComponents.push_back(
       realComponent<react::AndroidHorizontalScrollContentViewComponentDescriptor>(
           "AndroidHorizontalScrollContentView",
@@ -378,11 +373,6 @@ FrameworkSurfaceInventory buildFrameworkSurfaceInventory(
       "layout-only-placeholder"));
   inventory.officialComponents.push_back(unimplementedComponent(
       "DebuggingOverlay",
-      RuntimeCapabilityClass::LayoutOnly,
-      owner,
-      "layout-only-placeholder"));
-  inventory.officialComponents.push_back(unimplementedComponent(
-      "RCTImageView",
       RuntimeCapabilityClass::LayoutOnly,
       owner,
       "layout-only-placeholder"));

@@ -9,6 +9,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 
@@ -58,9 +59,28 @@ std::string normalizeInitialPropsJson(const std::string& json) {
 }
 
 SimulatorLocalConfig loadSimulatorConfig(const std::filesystem::path& path) {
+  std::ifstream input(path);
+  if (!input) {
+    throw std::invalid_argument("Cannot read config " + path.string());
+  }
+  const std::string body(
+      (std::istreambuf_iterator<char>(input)),
+      std::istreambuf_iterator<char>());
+  folly::dynamic parsed;
+  try {
+    parsed = folly::parseJson(body.empty() ? "{}" : body);
+  } catch (const std::exception& error) {
+    throw std::invalid_argument(
+        "Cannot parse config " + path.string() + ": " + error.what());
+  }
+  if (!parsed.isObject()) {
+    throw std::invalid_argument("rnsim.json must be a JSON object");
+  }
+
   boost::property_tree::ptree json;
   try {
-    boost::property_tree::read_json(path.string(), json);
+    std::istringstream stream(body);
+    boost::property_tree::read_json(stream, json);
   } catch (const boost::property_tree::json_parser::json_parser_error& error) {
     throw std::invalid_argument(
         "Cannot parse config " + path.string() + ": " + error.message());
@@ -80,7 +100,10 @@ SimulatorLocalConfig loadSimulatorConfig(const std::filesystem::path& path) {
   }
 
   SimulatorLocalConfig config;
-  config.schemaVersion = json.get<int>("schemaVersion", 0);
+  if (!parsed.count("schemaVersion") || !parsed["schemaVersion"].isInt()) {
+    throw std::invalid_argument("rnsim.json schemaVersion must be 2");
+  }
+  config.schemaVersion = static_cast<int>(parsed["schemaVersion"].asInt());
   if (config.schemaVersion == 1) {
     throw std::invalid_argument(
         "rnsim.json schemaVersion 1 is no longer accepted; use schemaVersion 2 with tagged addons entries");
@@ -148,7 +171,15 @@ SimulatorLocalConfig loadSimulatorConfig(const std::filesystem::path& path) {
   if (const auto value = json.get_optional<std::string>("fonts.directory")) {
     config.fontDirectory = resolvePath(path, *value);
   }
+  if (parsed.count("addons")) {
+    if (!parsed["addons"].isArray()) {
+      throw std::invalid_argument("rnsim.json addons must be an array");
+    }
+  }
   if (const auto addons = json.get_child_optional("addons")) {
+    if (!addons->data().empty() && addons->empty()) {
+      throw std::invalid_argument("rnsim.json addons must be an array");
+    }
     for (const auto& [key, value] : *addons) {
       if (!key.empty()) {
         throw std::invalid_argument("rnsim.json addons must be an array");
@@ -177,7 +208,15 @@ SimulatorLocalConfig loadSimulatorConfig(const std::filesystem::path& path) {
       config.addons.push_back(std::move(entry));
     }
   }
+  if (parsed.count("disabledAddons")) {
+    if (!parsed["disabledAddons"].isArray()) {
+      throw std::invalid_argument("rnsim.json disabledAddons must be an array");
+    }
+  }
   if (const auto disabled = json.get_child_optional("disabledAddons")) {
+    if (!disabled->data().empty() && disabled->empty()) {
+      throw std::invalid_argument("rnsim.json disabledAddons must be an array");
+    }
     for (const auto& [key, value] : *disabled) {
       if (!key.empty()) {
         throw std::invalid_argument("rnsim.json disabledAddons must be an array");
@@ -185,8 +224,11 @@ SimulatorLocalConfig loadSimulatorConfig(const std::filesystem::path& path) {
       config.disabledAddons.push_back(value.get_value<std::string>());
     }
   }
-  if (const auto autoAddons = json.get_optional<bool>("autoAddons")) {
-    config.autoAddons = *autoAddons;
+  if (parsed.count("autoAddons")) {
+    if (!parsed["autoAddons"].isBool()) {
+      throw std::invalid_argument("rnsim.json autoAddons must be a boolean");
+    }
+    config.autoAddons = parsed["autoAddons"].asBool();
   }
   if (const auto environment = json.get_child_optional("environment")) {
     validateObjectKeys(

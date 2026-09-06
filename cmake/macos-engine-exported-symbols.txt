@@ -4,8 +4,11 @@ __Z*20ReactNativeSimulator*
 # SimulatorAddon.h exposes JSI, TurboModule, and CallInvoker. ABI 4 Fabric
 # MODULE addons also instantiate ConcreteViewShadowNode and need renderer
 # RTTI, vtables, and YogaLayoutableShadowNode methods from the host.
+# folly::dynamic crosses the addon command/event boundary, so Folly C++
+# symbols must be visible to MODULEs linked with -undefined dynamic_lookup.
 __Z*8facebook3jsi*
 __Z*8facebook5react*
+__Z*5folly*
 
 # The in-tree CLI shell is a separate executable but these host services are
 # implementation details rather than part of the installed embedding headers.

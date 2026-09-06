@@ -273,7 +273,6 @@ void collectHeadlessOfficialComponentProviders(
         std::string(spec.name) == "Switch" ||
         std::string(spec.name) == "AndroidProgressBar" ||
         std::string(spec.name) == "ModalHostView" ||
-        std::string(spec.name) == "AndroidHorizontalScrollView" ||
         std::string(spec.name) == "AndroidHorizontalScrollContentView" ||
         std::string(spec.name) == "AndroidSwipeRefreshLayout" ||
         std::string(spec.name) == "AndroidDrawerLayout" ||

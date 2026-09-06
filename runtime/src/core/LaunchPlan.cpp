@@ -14,6 +14,10 @@
 #include <unordered_set>
 #include <utility>
 
+#if RNS_ENABLE_SKIA
+#include "SkiaTextLayoutEngine.h"
+#endif
+
 namespace rns = ReactNativeSimulator;
 
 namespace {
@@ -210,12 +214,13 @@ rns::CommittedAddon loadBuiltIn(const rns::BuiltInAddonSpec& spec,
 rns::CommittedAddon loadModule(const rns::ModuleAddonSpec& spec,
                                std::vector<rns::AddonRequestOrigin> origins) {
   auto library = std::make_shared<rns::DlLibrary>();
-  library->path = spec.path;
-  library->handle = dlopen(spec.path.c_str(), RTLD_NOW | RTLD_LOCAL);
+  auto identity = identifyFile(spec.path);
+  library->path = identity.canonical;
+  library->handle = dlopen(identity.canonical.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (library->handle == nullptr) {
     const char* error = dlerror();
     throw rns::TerminalLaunchPlanError(
-        "Cannot load addon " + spec.path.string() + ": " +
+        "Cannot load addon " + identity.canonical.string() + ": " +
         (error != nullptr ? error : "unknown dlopen error"));
   }
   ++rns::addonPreparationCounters().moduleOpens;
@@ -231,28 +236,39 @@ rns::CommittedAddon loadModule(const rns::ModuleAddonSpec& spec,
     throw rns::TerminalLaunchPlanError(
         "Invalid addon descriptor: " + spec.path.string());
   }
-  if (descriptor->descriptorSize < sizeof(rns::SimulatorAddonDescriptor) ||
-      descriptor->abiVersion != rns::kSimulatorAddonAbiVersion ||
-      descriptor->addonApiFingerprint == nullptr ||
-      descriptor->name == nullptr || descriptor->name[0] == '\0' ||
-      descriptor->reactNativeVersion == nullptr ||
-      descriptor->hermesVersion == nullptr || descriptor->create == nullptr ||
-      descriptor->destroy == nullptr) {
+  if (descriptor->descriptorSize != sizeof(rns::SimulatorAddonDescriptor)) {
     throw rns::TerminalLaunchPlanError(
         "Invalid addon descriptor: " + spec.path.string());
   }
-  if (std::string_view(descriptor->addonApiFingerprint) !=
-      kSimulatorAddonApiFingerprint) {
+  if (descriptor->abiVersion != rns::kSimulatorAddonAbiVersion) {
+    throw rns::TerminalLaunchPlanError(
+        spec.path.string() + " is not an ABI 4 addon");
+  }
+  if (descriptor->addonApiFingerprint == nullptr ||
+      std::string_view(descriptor->addonApiFingerprint) !=
+          kSimulatorAddonApiFingerprint) {
     throw rns::TerminalLaunchPlanError(
         "Addon API fingerprint mismatch for " + spec.path.string() +
         "; rebuild the MODULE against this engine");
   }
-  if (std::string_view(descriptor->reactNativeVersion) !=
+  if (descriptor->reactNativeVersion == nullptr ||
+      descriptor->hermesVersion == nullptr ||
+      std::string_view(descriptor->reactNativeVersion) !=
           RNS_REACT_NATIVE_VERSION ||
       std::string_view(descriptor->hermesVersion) != RNS_HERMES_VERSION) {
     throw rns::TerminalLaunchPlanError(
         std::string("Addon runtime version mismatch: ") +
-        descriptor->reactNativeVersion + "/" + descriptor->hermesVersion);
+        (descriptor->reactNativeVersion != nullptr
+             ? descriptor->reactNativeVersion
+             : "?") +
+        "/" +
+        (descriptor->hermesVersion != nullptr ? descriptor->hermesVersion
+                                              : "?"));
+  }
+  if (descriptor->name == nullptr || descriptor->name[0] == '\0' ||
+      descriptor->create == nullptr || descriptor->destroy == nullptr) {
+    throw rns::TerminalLaunchPlanError(
+        "Invalid addon descriptor: " + spec.path.string());
   }
   rns::SimulatorAddon* raw = nullptr;
   try {
@@ -436,8 +452,13 @@ void LaunchDraft::addAddonPath(
   if (impl_->explicitPrepared) {
     impl_->explicitMutatedAfterPrepare = true;
   }
+  std::error_code error;
+  auto canonical = std::filesystem::weakly_canonical(path, error);
+  if (error) {
+    canonical = std::filesystem::absolute(path);
+  }
   AddonRequest request;
-  request.spec = ModuleAddonSpec{path};
+  request.spec = ModuleAddonSpec{std::move(canonical)};
   request.requestedBy.push_back(origin);
   impl_->requests.push_back(std::move(request));
 }
@@ -488,7 +509,11 @@ PreparedAddonCandidates::PreparedAddonCandidates(
     PreparedAddonCandidates&&) noexcept = default;
 PreparedAddonCandidates& PreparedAddonCandidates::operator=(
     PreparedAddonCandidates&&) noexcept = default;
-PreparedAddonCandidates::~PreparedAddonCandidates() = default;
+PreparedAddonCandidates::~PreparedAddonCandidates() {
+  if (impl_) {
+    destroyCommittedAddons(impl_->addons);
+  }
+}
 PreparedAddonCandidates::operator bool() const noexcept {
   return impl_ && impl_->valid;
 }
@@ -498,7 +523,11 @@ PreparedLaunchPlan::PreparedLaunchPlan()
 PreparedLaunchPlan::PreparedLaunchPlan(PreparedLaunchPlan&&) noexcept = default;
 PreparedLaunchPlan& PreparedLaunchPlan::operator=(PreparedLaunchPlan&&) noexcept =
     default;
-PreparedLaunchPlan::~PreparedLaunchPlan() = default;
+PreparedLaunchPlan::~PreparedLaunchPlan() {
+  if (impl_) {
+    destroyCommittedAddons(impl_->addons);
+  }
+}
 PreparedLaunchPlan::operator bool() const noexcept {
   return impl_ && impl_->valid;
 }
@@ -567,12 +596,37 @@ PreparedAddonCandidates prepareExplicitAddons(LaunchDraft& draft) {
       seenFiles.emplace(identity.canonical.string(), identity);
     }
     auto loaded = loadRequest(request);
-    if (!seenNames.insert(loaded.manifest.name).second) {
+    if (auto found = seenNames.find(loaded.manifest.name);
+        found != seenNames.end()) {
+      const auto first = std::find_if(
+          candidates.impl_->addons.begin(),
+          candidates.impl_->addons.end(),
+          [&](const CommittedAddon& addon) {
+            return addon.manifest.name == loaded.manifest.name;
+          });
       throw TerminalLaunchPlanError(
           "Addon collision: duplicate addon name \"" + loaded.manifest.name +
-          "\"");
+          "\"\nfirst: " +
+          (first != candidates.impl_->addons.end()
+               ? describeAddonOrigin(first->origin)
+               : loaded.manifest.name) +
+          "\nsecond: " + describeAddonOrigin(loaded.origin));
     }
+    seenNames.insert(loaded.manifest.name);
     candidates.impl_->addons.push_back(std::move(loaded));
+  }
+  std::unordered_set<std::string> disabled(
+      draft.impl_->disabled.begin(), draft.impl_->disabled.end());
+  for (const auto& name : disabled) {
+    if (findBuiltinAddon(name) == nullptr) {
+      throw TerminalLaunchPlanError("unknown addon name '" + name + "'");
+    }
+  }
+  for (const auto& addon : candidates.impl_->addons) {
+    if (disabled.contains(addon.manifest.name)) {
+      throw TerminalLaunchPlanError(
+          "explicit addon '" + addon.manifest.name + "' is also disabled");
+    }
   }
   candidates.impl_->fingerprint = explicitFingerprint(*draft.impl_);
   candidates.impl_->valid = true;
@@ -614,6 +668,20 @@ PreparedLaunchPlan finalizeLaunchPlan(
     throw TerminalLaunchPlanError(
         "Unknown profile: " + draft.impl_->config.profile);
   }
+#if !RNS_ENABLE_SKIA
+  if (draft.impl_->config.fontDirectory) {
+    throw TerminalLaunchPlanError(
+        "EngineConfig::fontDirectory requires RNS_ENABLE_SKIA=ON");
+  }
+#else
+  if (draft.impl_->config.fontDirectory) {
+    try {
+      validateSkiaFontDirectory(*draft.impl_->config.fontDirectory);
+    } catch (const std::exception& error) {
+      throw TerminalLaunchPlanError(error.what());
+    }
+  }
+#endif
 
   std::unordered_set<std::string> disabled(
       draft.impl_->disabled.begin(), draft.impl_->disabled.end());
@@ -695,6 +763,11 @@ PreparedLaunchPlan finalizeLaunchPlan(
     addFrameworkModule(entry);
   }
   auto addFrameworkComponent = [&](const FrameworkComponentEntry& entry) {
+    if (!isFixedPointName(entry.contract.name)) {
+      throw TerminalLaunchPlanError(
+          "Framework component \"" + entry.contract.name +
+          "\" is not a fixed point of componentNameByReactViewName");
+    }
     frameworkComponents.insert(entry.contract.name);
     components.push_back({
         .requestedName = entry.contract.name,
@@ -721,9 +794,19 @@ PreparedLaunchPlan finalizeLaunchPlan(
 
   for (const auto& addon : merged) {
     if (!addonNames.insert(addon.manifest.name).second) {
+      const auto first = std::find_if(
+          merged.begin(),
+          merged.end(),
+          [&](const CommittedAddon& existing) {
+            return existing.manifest.name == addon.manifest.name;
+          });
       throw TerminalLaunchPlanError(
           "Addon collision: duplicate addon name \"" + addon.manifest.name +
-          "\"");
+          "\"\nfirst: " +
+          (first != merged.end()
+               ? describeAddonOrigin(first->origin)
+               : addon.manifest.name) +
+          "\nsecond: " + describeAddonOrigin(addon.origin));
     }
     if (!addon.manifest.allowedProfiles.empty()) {
       const auto allowed = std::find(

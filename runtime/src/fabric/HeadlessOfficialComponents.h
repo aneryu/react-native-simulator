@@ -51,14 +51,12 @@ inline constexpr HeadlessOfficialComponentSpec kHeadlessOfficialComponents[] = {
     {"AndroidDrawerLayout", "skia-drawer-layout", false, 0, 0},
     {"AndroidSwipeRefreshLayout", "skia-refresh-control", false, 0, 0},
     {"PullToRefreshView", "layout-only-placeholder", false, 0, 0},
-    {"AndroidHorizontalScrollView", "headless-viewport-state", false, 0, 0},
     {"AndroidHorizontalScrollContentView", "real-fabric-yoga", false, 0, 0},
     {"SafeAreaView", "window-relative-insets", false, 0, 0},
     {"InputAccessory", "layout-only-placeholder", false, 0, 0},
     {"VirtualView", "layout-only-placeholder", false, 0, 0},
     {"VirtualViewExperimental", "layout-only-placeholder", false, 0, 0},
     {"DebuggingOverlay", "layout-only-placeholder", false, 0, 0},
-    {"RCTImageView", "layout-only-placeholder", true, 0, 0},
 };
 
 extern const char HeadlessActivityIndicatorViewName[];

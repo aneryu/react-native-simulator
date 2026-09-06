@@ -51,7 +51,7 @@ if(APPLE)
       "${RNS_DOUBLE_CONVERSION_SHARED_LIBRARY}")
   else()
     target_link_libraries(rns_folly INTERFACE
-      "-Wl,-load_hidden,${FOLLY_STATIC_LIBRARY}"
+      "${FOLLY_STATIC_LIBRARY}"
       glog::glog
       "${RNS_FMT_STATIC_LIBRARY}"
       "${RNS_DOUBLE_CONVERSION_STATIC_LIBRARY}")

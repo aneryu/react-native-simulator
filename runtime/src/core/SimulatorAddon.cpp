@@ -167,6 +167,7 @@ bool AddonRuntimeExecutor::post(
     }
     return state_->enqueue(std::move(fn));
   } catch (...) {
+    state_->droppedPosts.fetch_add(1);
     return false;
   }
 }

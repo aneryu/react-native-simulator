@@ -560,7 +560,7 @@ Usage:
   rnsim [options]               Start an interactive session
   rnsim interactive [options]   Start an interactive session
   rnsim headless [options]      Run a finite headless workload
-  rnsim doctor [--json] [--url URL]
+  rnsim doctor [--json] [--url URL] [--addon compat-rn73]
                                  Diagnose this installation, RN project, and Metro
   rnsim --version [--json]      Print build and runtime contract versions
 
@@ -667,12 +667,29 @@ std::string stripVersionPrefix(std::string version) {
   return version;
 }
 
+bool mentionsReactNative073(const std::string& version) {
+  for (size_t index = 0; index < version.size(); ++index) {
+    if (version.compare(index, 4, "0.73") != 0) {
+      continue;
+    }
+    const bool startOk =
+        index == 0 || !std::isdigit(static_cast<unsigned char>(version[index - 1]));
+    const bool endOk = index + 4 == version.size() ||
+        version[index + 4] == '.' ||
+        !std::isdigit(static_cast<unsigned char>(version[index + 4]));
+    if (startOk && endOk) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool isReactNative073Family(const std::optional<std::string>& version) {
   if (!version) {
     return false;
   }
   const auto normalized = stripVersionPrefix(*version);
-  return normalized.rfind("0.73.", 0) == 0 || normalized == "0.73";
+  return mentionsReactNative073(normalized) || mentionsReactNative073(*version);
 }
 
 void printDoctor(
@@ -715,7 +732,7 @@ void printDoctor(
       : exactVersion(declaredVersion);
   const bool family073 = isReactNative073Family(familyVersion);
   std::string reactNativeFamily = exactCompatible
-      ? "0.87.0"
+      ? "0.87.x"
       : family073 ? "0.73.x" : (familyVersion ? "other" : "");
   std::string reactNativeStatus = exactCompatible
       ? "compatible"
@@ -1358,9 +1375,11 @@ int main(int argc, char **argv) {
         const std::string argument = argv[index];
         if (argument == "--json") {
           json = true;
-        } else if (argument == "headless" || argument == "interactive" ||
-                   argument == "conformance" || argument == "test") {
+        } else if (argument == "headless" || argument == "interactive") {
           continue;
+        } else if (argument == "conformance" || argument == "test") {
+          throw std::invalid_argument(
+              "Public conformance is unavailable; use --list-addons without a mode");
         } else {
           throw std::invalid_argument("Usage: rnsim --list-addons [--json]");
         }
@@ -1454,6 +1473,7 @@ int main(int argc, char **argv) {
           return bundleUrlLooksLikeExpo(url) ||
               (project && detectExpoProject(*project).detected);
         };
+    const auto runtimeConfig = options.runtime;
     rns::LaunchDraft draft(std::move(options.runtime));
     if (detectExpoProject(launchRoot).detected) {
       draft.setProjectKind(rns::ProjectKind::Expo);
@@ -1488,11 +1508,11 @@ int main(int argc, char **argv) {
     };
     if (options.mode == CliOptions::Mode::Interactive) {
       std::cerr << "starting interactive session ("
-                << options.runtime.profile << ", viewport "
-                << options.runtime.viewportWidth << "x"
-                << options.runtime.viewportHeight << ")\n";
+                << runtimeConfig.profile << ", viewport "
+                << runtimeConfig.viewportWidth << "x"
+                << runtimeConfig.viewportHeight << ")\n";
     }
-    const auto fontDirectory = options.runtime.fontDirectory.value_or(
+    const auto fontDirectory = runtimeConfig.fontDirectory.value_or(
         std::filesystem::path{});
     rns::EngineResult result;
     if (options.mode == CliOptions::Mode::Interactive) {

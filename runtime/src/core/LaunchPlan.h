@@ -24,6 +24,9 @@ namespace ReactNativeSimulator {
 struct DlLibrary {
   void* handle{nullptr};
   std::filesystem::path path;
+  DlLibrary() = default;
+  DlLibrary(const DlLibrary&) = delete;
+  DlLibrary& operator=(const DlLibrary&) = delete;
   ~DlLibrary() {
     if (handle != nullptr) {
       dlclose(handle);

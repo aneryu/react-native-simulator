@@ -36,7 +36,7 @@ class AddonFabricRegistrar::HostSession {
 
 class AddonRuntimeExecutor::State {
  public:
-  std::atomic<bool> open{true};
+  std::atomic<bool> open{false};
   std::thread::id runtimeThread;
   std::function<bool(std::function<void(facebook::jsi::Runtime&)>)> enqueue;
   std::atomic<std::uint64_t> droppedPosts{0};

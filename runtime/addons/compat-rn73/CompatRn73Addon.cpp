@@ -59,6 +59,10 @@ class PlatformConstantsRn73Overlay final : public react::TurboModule {
     return inner_->get(runtime, name);
   }
 
+  std::vector<jsi::PropNameID> getPropertyNames(jsi::Runtime& runtime) override {
+    return inner_->getPropertyNames(runtime);
+  }
+
  private:
   std::shared_ptr<react::TurboModule> inner_;
 };

@@ -18,6 +18,7 @@
 
 #include "AddonHostSupport.h"
 #include "AddonJson.h"
+#include "FrameworkInventory.h"
 #include "LaunchPlan.h"
 #include "SimulatorEventLoop.h"
 #include "HostChrome.h"
@@ -187,20 +188,26 @@ class rns::Engine::Impl {
   Impl() = default;
 
   void adoptPlanConfig() {
-#if !RNS_ENABLE_SKIA
-    if (config.fontDirectory) {
-      throw std::invalid_argument(
-          "EngineConfig::fontDirectory requires RNS_ENABLE_SKIA=ON");
-    }
-#endif
     launchState.configuredAppKey = config.appKey;
     launchState.configuredInitialPropsJson =
         config.initialPropsJson.empty() ? "{}" : config.initialPropsJson;
   }
 
-  rns::EngineState engineState{rns::EngineState::Draft};
+  void invokeSceneUpdate(std::shared_ptr<const SceneSnapshot> scene) {
+    std::function<void(std::shared_ptr<const SceneSnapshot>)> callback;
+    {
+      std::lock_guard lock(callbackMutex);
+      callback = config.onSceneUpdate;
+    }
+    if (callback) {
+      callback(std::move(scene));
+    }
+  }
+
+  std::atomic<rns::EngineState> engineState{rns::EngineState::Draft};
   rns::PreparedLaunchPlan plan;
   rns::EngineConfig config;
+  std::mutex callbackMutex;
   std::vector<InitialBundle> bundles;
   std::atomic<bool> ran{false};
   std::atomic<bool> running{false};
@@ -1794,7 +1801,7 @@ rns::Engine::~Engine() {
   if (!impl_) {
     return;
   }
-  if (impl_->engineState == rns::EngineState::Running &&
+  if (impl_->engineState.load() == rns::EngineState::Running &&
       impl_->running.load()) {
     impl_->stopRequested.store(true);
     if (impl_->runThread != std::thread::id{} &&
@@ -1806,10 +1813,10 @@ rns::Engine::~Engine() {
     return;
   }
   if (impl_->plan && impl_->plan.impl_ &&
-      impl_->engineState == rns::EngineState::Planned) {
+      impl_->engineState.load() == rns::EngineState::Planned) {
     rns::destroyCommittedAddons(impl_->plan.impl_->addons);
   }
-  impl_->engineState = rns::EngineState::Finished;
+  impl_->engineState.store(rns::EngineState::Finished);
 }
 
 rns::Engine::Engine(Engine&&) noexcept = default;
@@ -1817,18 +1824,34 @@ rns::Engine& rns::Engine::operator=(
     Engine&&) noexcept = default;
 
 rns::EngineState rns::Engine::state() const noexcept {
-  return impl_->engineState;
+  return impl_->engineState.load();
 }
 
-void rns::Engine::applyLaunchPlan(rns::PreparedLaunchPlan&& plan) {
-  if (impl_->engineState != rns::EngineState::Draft) {
+void rns::Engine::applyLaunchPlan(rns::PreparedLaunchPlan& plan) {
+  if (impl_->engineState.load() != rns::EngineState::Draft) {
     throw std::logic_error("applyLaunchPlan is only legal in Draft");
   }
   if (!plan) {
     throw std::logic_error("applyLaunchPlan requires a live PreparedLaunchPlan");
   }
+  std::function<void(std::shared_ptr<const SceneSnapshot>)> sceneCallback;
+  std::function<void(const InteractionResult&)> actionCallback;
+  {
+    std::lock_guard lock(impl_->callbackMutex);
+    sceneCallback = impl_->config.onSceneUpdate;
+    actionCallback = impl_->config.onActionResult;
+  }
   impl_->plan = std::move(plan);
   impl_->config = impl_->plan.impl_->config;
+  {
+    std::lock_guard lock(impl_->callbackMutex);
+    if (sceneCallback) {
+      impl_->config.onSceneUpdate = std::move(sceneCallback);
+    }
+    if (actionCallback) {
+      impl_->config.onActionResult = std::move(actionCallback);
+    }
+  }
   impl_->adoptPlanConfig();
   impl_->bundles.clear();
   for (const auto& bundle : impl_->plan.impl_->bundles) {
@@ -1840,29 +1863,36 @@ void rns::Engine::applyLaunchPlan(rns::PreparedLaunchPlan&& plan) {
         bundle.sourceUrl.starts_with("https://");
     if (loaded.path && !impl_->config.assetDirectory) {
       const auto assets = loaded.path->parent_path() / "assets";
-      if (std::filesystem::is_directory(assets)) {
+      std::error_code error;
+      if (std::filesystem::is_directory(assets, error) && !error) {
         impl_->config.assetDirectory = std::filesystem::weakly_canonical(assets);
       }
     }
     impl_->bundles.push_back(std::move(loaded));
   }
-  impl_->engineState = rns::EngineState::Planned;
+  impl_->engineState.store(rns::EngineState::Planned);
   ++rns::addonPreparationCounters().planApplications;
+}
+
+void rns::Engine::applyLaunchPlan(rns::PreparedLaunchPlan&& plan) {
+  applyLaunchPlan(plan);
 }
 
 void rns::Engine::setSceneUpdateCallback(
     std::function<void(std::shared_ptr<const SceneSnapshot>)> callback) {
-  if (impl_->engineState == rns::EngineState::Finished) {
+  if (impl_->engineState.load() == rns::EngineState::Finished) {
     throw std::logic_error("cannot change callbacks after the runtime has finished");
   }
+  std::lock_guard lock(impl_->callbackMutex);
   impl_->config.onSceneUpdate = std::move(callback);
 }
 
 void rns::Engine::setActionResultCallback(
     std::function<void(const InteractionResult&)> callback) {
-  if (impl_->engineState == rns::EngineState::Finished) {
+  if (impl_->engineState.load() == rns::EngineState::Finished) {
     throw std::logic_error("cannot change callbacks after the runtime has finished");
   }
+  std::lock_guard lock(impl_->callbackMutex);
   impl_->config.onActionResult = std::move(callback);
 }
 
@@ -1909,10 +1939,10 @@ void rns::Engine::requestReload() noexcept {
 }
 
 rns::EngineResult rns::Engine::run() {
-  if (impl_->engineState != rns::EngineState::Planned) {
+  if (impl_->engineState.load() != rns::EngineState::Planned) {
     return {.exitCode = 1, .error = "Engine::run requires a Planned launch"};
   }
-  impl_->engineState = rns::EngineState::Running;
+  impl_->engineState.store(rns::EngineState::Running);
   impl_->ran.store(true);
   impl_->running.store(true);
   impl_->runThread = std::this_thread::get_id();
@@ -1922,9 +1952,9 @@ rns::EngineResult rns::Engine::run() {
     ~RunState() {
       setDevSettingsReloadHandler(nullptr);
       impl.setRuntimePhase(rns::RuntimePhase::Stopped);
-      impl.running.store(false);
+      impl.engineState.store(rns::EngineState::Finished);
       impl.finished.store(true);
-      impl.engineState = rns::EngineState::Finished;
+      impl.running.store(false);
     }
   } runState{*impl_};
   if (impl_->bundles.empty()) {
@@ -1987,6 +2017,35 @@ rns::EngineResult rns::Engine::run() {
       options.mode == rns::SimulatorMode::Interactive;
   const bool conformanceMode =
       options.mode == rns::SimulatorMode::Conformance;
+  auto& launch = *impl_->plan.impl_;
+  rns::AddonHostSnapshot hostSnapshot{
+      .revision = 1,
+      .profileName = launch.inventory.profile.name,
+      .platform = launch.inventory.profile.platform,
+      .reactNativeVersion = RNS_REACT_NATIVE_VERSION,
+      .hermesVersion = RNS_HERMES_VERSION,
+      .bundleTargetFamily = launch.compatibility.targetFamily,
+      .jsVisibleReactNativeVersion =
+          launch.compatibility.jsVisibleReactNativeVersion,
+      .mode = options.mode,
+      .viewport =
+          {
+              .width = options.viewportWidth,
+              .height = options.viewportHeight,
+              .pointScaleFactor = options.pointScaleFactor,
+              .insetTop = 0,
+              .insetRight = 0,
+              .insetBottom = 0,
+              .insetLeft = 0,
+          },
+      .assetDirectory = options.assetDirectory,
+      .fontDirectory = options.fontDirectory,
+      .initialUrl = launch.initialUrl,
+      .colorScheme = options.colorScheme.value_or("light"),
+      .appState = options.appState.value_or("active"),
+      .reduceMotion = options.reduceMotion.value_or(false),
+  };
+  rns::EngineAddonHost addonHost(hostSnapshot);
   std::string runError;
   try {
     {
@@ -2034,35 +2093,6 @@ rns::EngineResult rns::Engine::run() {
         }
       });
     }
-    auto& launch = *impl_->plan.impl_;
-    rns::AddonHostSnapshot hostSnapshot{
-        .revision = 1,
-        .profileName = launch.inventory.profile.name,
-        .platform = launch.inventory.profile.platform,
-        .reactNativeVersion = RNS_REACT_NATIVE_VERSION,
-        .hermesVersion = RNS_HERMES_VERSION,
-        .bundleTargetFamily = launch.compatibility.targetFamily,
-        .jsVisibleReactNativeVersion =
-            launch.compatibility.jsVisibleReactNativeVersion,
-        .mode = options.mode,
-        .viewport =
-            {
-                .width = options.viewportWidth,
-                .height = options.viewportHeight,
-                .pointScaleFactor = options.pointScaleFactor,
-                .insetTop = 0,
-                .insetRight = 0,
-                .insetBottom = 0,
-                .insetLeft = 0,
-            },
-        .assetDirectory = options.assetDirectory,
-        .fontDirectory = options.fontDirectory,
-        .initialUrl = launch.initialUrl,
-        .colorScheme = options.colorScheme.value_or("light"),
-        .appState = options.appState.value_or("active"),
-        .reduceMotion = options.reduceMotion.value_or(false),
-    };
-    rns::EngineAddonHost addonHost(hostSnapshot);
     std::string bindError;
     size_t boundCount = 0;
     try {
@@ -2083,7 +2113,16 @@ rns::EngineResult rns::Engine::run() {
         }
       }
       rns::destroyCommittedAddons(launch.addons);
+      if (inspectorTransport) {
+        inspectorTransport->sendJson(folly::toJson(folly::dynamic::object
+            ("type", "error")
+            ("message", bindError)));
+      }
       return {.exitCode = 1, .error = std::move(bindError)};
+    }
+    if (impl_->stopRequested.load()) {
+      rns::unbindAndDestroyCommittedAddons(launch.addons);
+      return {.exitCode = 0};
     }
     if (launch.compatibility.compatAddon) {
       std::cerr
@@ -2093,7 +2132,9 @@ rns::EngineResult rns::Engine::run() {
           << launch.compatibility.targetFamily << " family via "
           << *launch.compatibility.compatAddon
           << ". This is a best-effort source-JS adapter,\n"
-             "not an RN 0.73 native engine. Hermes bytecode is not translated.\n";
+             "not an RN "
+          << launch.compatibility.targetFamily
+          << " native engine. Hermes bytecode is not translated.\n";
     }
     {
       auto& environment = hostEnvironment();
@@ -2177,6 +2218,7 @@ rns::EngineResult rns::Engine::run() {
                 [impl = impl_.get()] { return impl->stopRequested.load(); });
           } catch (const HttpRequestCancelled&) {
             if (impl_->stopRequested.load()) {
+              rns::unbindAndDestroyCommittedAddons(launch.addons);
               return {.exitCode = 0};
             }
             throw;
@@ -2204,6 +2246,7 @@ rns::EngineResult rns::Engine::run() {
             std::this_thread::sleep_for(std::chrono::milliseconds(25));
           }
           if (impl_->stopRequested.load()) {
+            rns::unbindAndDestroyCommittedAddons(launch.addons);
             return {.exitCode = 1, .error = reloadFetchError};
           }
           continue;
@@ -2390,14 +2433,62 @@ rns::EngineResult rns::Engine::run() {
     std::int64_t lastPublishedSceneRevision{-1};
     std::exception_ptr pendingAddonFatal;
     std::exception_ptr generationSetupError;
+    bool generationClosed = false;
+    const auto closeGeneration = [&]() {
+      if (generationClosed) {
+        return;
+      }
+      generationClosed = true;
+      hostChrome().onInvalidate = nullptr;
+      headlessKeyboard().emit = nullptr;
+      headlessBackPress().emit = nullptr;
+      headlessBackPress().invokeDefault = nullptr;
+      headlessBackPress().runOnJs = nullptr;
+      executorState->open.store(false);
+      executorState->enqueue = {};
+      for (auto it = launch.addons.rbegin(); it != launch.addons.rend(); ++it) {
+        if (it->addon) {
+          it->addon->quiesceGeneration(
+              static_cast<std::uint64_t>(sessionGeneration));
+        }
+      }
+      if (reactFabricHost) {
+        setHeadlessReactFabricCallbacksEnabled(*reactFabricHost, false);
+        stopHeadlessReactFabricSurface(*reactFabricHost);
+      }
+      if (eventLoop) {
+        eventLoop->drainUntilIdle();
+      }
+      if (reactFabricHost) {
+        shutdownHeadlessReactFabric(*reactFabricHost);
+      }
+      headlessWebSocketReset();
+      headlessBlobReset();
+      headlessImageRequestsReset();
+      turboModuleCache.clear();
+      timerManager.reset();
+      if (devTools && instance) {
+        instance->unregisterFromInspector();
+      }
+      instance.reset();
+      reactFabricHost.reset();
+      if (eventLoop) {
+        eventLoop->quitSynchronous();
+      }
+      if (launch.bindings) {
+        launch.bindings->eventLoop.reset();
+      }
+    };
     const auto surfacePendingFatal = [&]() {
       if (!pendingAddonFatal) {
         return;
       }
       auto error = pendingAddonFatal;
       pendingAddonFatal = {};
+      closeGeneration();
       std::rethrow_exception(error);
     };
+    try {
     instance->initializeRuntime(
         {.isProfiling = false},
         [&](jsi::Runtime& runtime) {
@@ -2655,8 +2746,15 @@ rns::EngineResult rns::Engine::run() {
           executorState->open.store(true);
           executorState->runtimeThread = std::this_thread::get_id();
           executorState->enqueue =
-              [runtimeExecutor](std::function<void(jsi::Runtime&)> fn) {
-                runtimeExecutor(std::move(fn));
+              [runtimeExecutor, executorState](
+                  std::function<void(jsi::Runtime&)> fn) {
+                runtimeExecutor([executorState,
+                                 work = std::move(fn)](jsi::Runtime& runtime) {
+                  if (!executorState->open.load(std::memory_order_acquire)) {
+                    return;
+                  }
+                  work(runtime);
+                });
                 return true;
               };
           rns::AddonGenerationContext generationContext{
@@ -2759,6 +2857,10 @@ rns::EngineResult rns::Engine::run() {
                   throw std::logic_error("missing framework factory for " + name);
                 }
                 module = factory(runtime, jsInvoker);
+                if (!module) {
+                  throw std::logic_error(
+                      "framework factory returned null for " + name);
+                }
                 if (owner->second.overlayOwner) {
                   const auto overlayName = owner->second.overlayOwner->substr(6);
                   const auto overlay = addonsByName.find(overlayName);
@@ -3018,12 +3120,23 @@ rns::EngineResult rns::Engine::run() {
             for (const auto& row : launch.expectedComponents) {
               fabricBindings.componentOwners[row.canonicalName] = row.owner;
             }
+            for (const auto& config : addonViewManagerConfigs) {
+              for (const auto& command : config.commands) {
+                fabricBindings.commandAliases[config.name]
+                    [std::to_string(command.id)] = command.name;
+              }
+            }
             fabricBindings.reportFatal =
                 [&pendingAddonFatal](std::exception_ptr error) {
                   if (!pendingAddonFatal) {
                     pendingAddonFatal = std::move(error);
                   }
                 };
+            std::vector<react::ComponentDescriptorProvider> frameworkProviders;
+            for (const auto& entry :
+                 rns::allInventoryComponents(launch.inventory)) {
+              frameworkProviders.push_back(entry.provider);
+            }
             reactFabricHost =
                 installHeadlessReactFabric(
                     runtime,
@@ -3040,6 +3153,7 @@ rns::EngineResult rns::Engine::run() {
                     runtimeProfile.platform,
                     addonComponents,
                     std::move(addonProviders),
+                    std::move(frameworkProviders),
                     [impl = impl_.get(),
                      componentFidelities = std::move(componentFidelities),
                      componentOwners,
@@ -3085,11 +3199,9 @@ rns::EngineResult rns::Engine::run() {
                                 "and behavior are not Android-equivalent.",
                         });
                       }
-                      if (options.onSceneUpdate) {
-                        options.onSceneUpdate(makeSceneSnapshot(
-                            options, result, runtimeGeneration));
-                        lastPublishedSceneRevision = result.mountingRevision;
-                      }
+                      impl->invokeSceneUpdate(makeSceneSnapshot(
+                          impl->config, result, runtimeGeneration));
+                      lastPublishedSceneRevision = result.mountingRevision;
                       if (inspectorTransport) {
                         const auto sequence = ++inspectorSequence;
                         inspectorTransport->sendJson(folly::toJson(
@@ -3123,31 +3235,75 @@ rns::EngineResult rns::Engine::run() {
             struct ProtectedGlobal {
               const char* name{nullptr};
               jsi::Value value;
-              std::vector<std::pair<std::string, jsi::Value>> properties;
+              jsi::Value bindingDescriptor;
+              std::vector<std::pair<std::string, jsi::Value>> descriptors;
             };
             std::vector<ProtectedGlobal> protectedGlobals;
             protectedGlobals.reserve(
                 sizeof(protectedNames) / sizeof(protectedNames[0]));
+            auto objectCtor =
+                runtime.global().getPropertyAsObject(runtime, "Object");
+            auto getOwnPropertyDescriptor = objectCtor.getPropertyAsFunction(
+                runtime, "getOwnPropertyDescriptor");
+            auto snapshotDescriptor =
+                [&](const jsi::Value& target, const std::string& key) {
+                  return getOwnPropertyDescriptor.callWithThis(
+                      runtime,
+                      objectCtor,
+                      target,
+                      jsi::String::createFromUtf8(runtime, key));
+                };
+            auto descriptorsEqual =
+                [&](const jsi::Value& left, const jsi::Value& right) {
+                  if (left.isUndefined() && right.isUndefined()) {
+                    return true;
+                  }
+                  if (!left.isObject() || !right.isObject()) {
+                    return jsi::Value::strictEquals(runtime, left, right);
+                  }
+                  auto a = left.getObject(runtime);
+                  auto b = right.getObject(runtime);
+                  const char* fields[] = {
+                      "enumerable",
+                      "configurable",
+                      "writable",
+                      "value",
+                      "get",
+                      "set"};
+                  for (const char* field : fields) {
+                    auto av = a.getProperty(runtime, field);
+                    auto bv = b.getProperty(runtime, field);
+                    if (!jsi::Value::strictEquals(runtime, av, bv)) {
+                      return false;
+                    }
+                  }
+                  return true;
+                };
             for (const char* name : protectedNames) {
               ProtectedGlobal snapshot;
               snapshot.name = name;
               snapshot.value = jsi::Value(
                   runtime, runtime.global().getProperty(runtime, name));
+              snapshot.bindingDescriptor = jsi::Value(
+                  runtime,
+                  snapshotDescriptor(
+                      jsi::Value(runtime, runtime.global()), name));
               if (snapshot.value.isObject()) {
                 auto object = snapshot.value.getObject(runtime);
                 auto names = object.getPropertyNames(runtime);
                 const auto count = names.size(runtime);
-                snapshot.properties.reserve(count);
+                snapshot.descriptors.reserve(count);
                 for (size_t index = 0; index < count; ++index) {
                   auto keyValue = names.getValueAtIndex(runtime, index);
                   if (!keyValue.isString()) {
                     continue;
                   }
                   auto key = keyValue.getString(runtime).utf8(runtime);
-                  snapshot.properties.emplace_back(
+                  snapshot.descriptors.emplace_back(
                       key,
                       jsi::Value(
-                          runtime, object.getProperty(runtime, key.c_str())));
+                          runtime,
+                          snapshotDescriptor(snapshot.value, key)));
                 }
               }
               protectedGlobals.push_back(std::move(snapshot));
@@ -3165,12 +3321,23 @@ rns::EngineResult rns::Engine::run() {
                     generationContext.generation,
                     std::string("protected global mutated: ") + previous.name);
               }
+              auto currentBinding = snapshotDescriptor(
+                  jsi::Value(runtime, runtime.global()), previous.name);
+              if (!descriptorsEqual(currentBinding, previous.bindingDescriptor)) {
+                throw rns::AddonContractViolation(
+                    "",
+                    "installJSI",
+                    previous.name,
+                    generationContext.generation,
+                    std::string("protected global descriptor mutated: ") +
+                        previous.name);
+              }
               if (!previous.value.isObject() || !current.isObject()) {
                 continue;
               }
               auto object = current.getObject(runtime);
               auto names = object.getPropertyNames(runtime);
-              if (names.size(runtime) != previous.properties.size()) {
+              if (names.size(runtime) != previous.descriptors.size()) {
                 throw rns::AddonContractViolation(
                     "",
                     "installJSI",
@@ -3178,9 +3345,9 @@ rns::EngineResult rns::Engine::run() {
                     generationContext.generation,
                     std::string("protected global mutated: ") + previous.name);
               }
-              for (const auto& [key, value] : previous.properties) {
-                auto now = object.getProperty(runtime, key.c_str());
-                if (!jsi::Value::strictEquals(runtime, now, value)) {
+              for (const auto& [key, descriptor] : previous.descriptors) {
+                auto now = snapshotDescriptor(current, key);
+                if (!descriptorsEqual(now, descriptor)) {
                   throw rns::AddonContractViolation(
                       "",
                       "installJSI",
@@ -3194,15 +3361,13 @@ rns::EngineResult rns::Engine::run() {
             hostChrome().onInvalidate = [
                 eventLoop,
                 lastFabric,
-                &options,
+                impl = impl_.get(),
                 runtimeGeneration =
                     static_cast<std::uint64_t>(sessionGeneration)]() {
               eventLoop->runOnQueue([
-                  lastFabric, &options, runtimeGeneration]() {
-                if (options.onSceneUpdate) {
-                  options.onSceneUpdate(makeSceneSnapshot(
-                      options, *lastFabric, runtimeGeneration));
-                }
+                  lastFabric, impl, runtimeGeneration]() {
+                impl->invokeSceneUpdate(makeSceneSnapshot(
+                    impl->config, *lastFabric, runtimeGeneration));
               });
             };
             runtimeInitialized = true;
@@ -3219,28 +3384,15 @@ rns::EngineResult rns::Engine::run() {
         },
         std::chrono::milliseconds(options.timeoutMs));
     if (generationSetupError) {
-      executorState->open.store(false);
-      for (auto it = launch.addons.rbegin(); it != launch.addons.rend(); ++it) {
-        if (it->addon) {
-          it->addon->quiesceGeneration(
-              static_cast<std::uint64_t>(sessionGeneration));
-        }
-      }
-      if (reactFabricHost) {
-        setHeadlessReactFabricCallbacksEnabled(*reactFabricHost, false);
-        stopHeadlessReactFabricSurface(*reactFabricHost);
-      }
-      eventLoop->drainUntilIdle();
-      if (reactFabricHost) {
-        shutdownHeadlessReactFabric(*reactFabricHost);
-      }
-      turboModuleCache.clear();
-      timerManager.reset();
-      instance.reset();
-      reactFabricHost.reset();
+      closeGeneration();
       std::rethrow_exception(generationSetupError);
     }
     if (!runtimeInitialized) {
+      closeGeneration();
+      if (jsErrorCount > 0) {
+        throw std::runtime_error(
+            "ReactInstance initializationError: JavaScript error during setup");
+      }
       throw std::runtime_error("ReactInstance initialization timed out");
     }
     surfacePendingFatal();
@@ -3337,7 +3489,10 @@ rns::EngineResult rns::Engine::run() {
           nullptr,
           [&loaded](jsi::Runtime&) { loaded = true; });
       eventLoopTasks += eventLoop->runUntil(
-          [&] { return loaded || jsErrorCount > errorsBeforeLoad; },
+          [&] {
+            return loaded || jsErrorCount > errorsBeforeLoad ||
+                impl_->stopRequested.load();
+          },
           remainingTimeout());
       record.loaded = loaded && jsErrorCount == errorsBeforeLoad;
       record.evaluationMs = std::chrono::duration<double, std::milli>(
@@ -3692,7 +3847,8 @@ rns::EngineResult rns::Engine::run() {
     } else if (developmentMode && !bundleLoadFailed && jsErrorCount == 0) {
       impl_->setRuntimePhase(rns::RuntimePhase::ChoosingApplication);
     }
-    while (!bundleLoadFailed && jsErrorCount == 0) {
+    while (!bundleLoadFailed && jsErrorCount == 0 &&
+           !impl_->stopRequested.load()) {
       processQueuedActions();
       processQueuedApplication();
       while (!requestedBundles.empty()) {
@@ -3710,7 +3866,7 @@ rns::EngineResult rns::Engine::run() {
           break;
         }
       }
-      if (bundleLoadFailed ||
+      if (bundleLoadFailed || impl_->stopRequested.load() ||
           (!developmentMode &&
            (workloadComplete || remainingTimeout().count() == 0)) ||
           (developmentMode &&
@@ -3724,7 +3880,8 @@ rns::EngineResult rns::Engine::run() {
       }
       eventLoopTasks += eventLoop->runUntil(
           [&] {
-            return (!developmentMode && workloadComplete) ||
+            return impl_->stopRequested.load() ||
+                (!developmentMode && workloadComplete) ||
                 (developmentMode &&
                  (impl_->stopRequested || impl_->reloadRequested ||
                   (options.devTools.waitForDisconnect &&
@@ -3771,37 +3928,7 @@ rns::EngineResult rns::Engine::run() {
         });
         eventLoop->drainUntilIdle();
       }
-      hostChrome().onInvalidate = nullptr;
-      headlessKeyboard().emit = nullptr;
-      headlessBackPress().emit = nullptr;
-      headlessBackPress().invokeDefault = nullptr;
-      headlessBackPress().runOnJs = nullptr;
-      executorState->open.store(false);
-      for (auto it = launch.addons.rbegin(); it != launch.addons.rend(); ++it) {
-        if (it->addon) {
-          it->addon->quiesceGeneration(
-              static_cast<std::uint64_t>(sessionGeneration));
-        }
-      }
-      if (reactFabricHost) {
-        setHeadlessReactFabricCallbacksEnabled(*reactFabricHost, false);
-        stopHeadlessReactFabricSurface(*reactFabricHost);
-      }
-      eventLoop->drainUntilIdle();
-      if (reactFabricHost) {
-        shutdownHeadlessReactFabric(*reactFabricHost);
-      }
-      headlessWebSocketReset();
-      headlessBlobReset();
-      headlessImageRequestsReset();
-      turboModuleCache.clear();
-      timerManager.reset();
-      if (devTools) {
-        instance->unregisterFromInspector();
-      }
-      instance.reset();
-      reactFabricHost.reset();
-      eventLoop->quitSynchronous();
+      closeGeneration();
       continue;
     }
     const bool bundleLoaded = !bundleLoadFailed &&
@@ -4385,9 +4512,8 @@ rns::EngineResult rns::Engine::run() {
         options,
         reactFabric,
         static_cast<std::uint64_t>(sessionGeneration));
-    if (options.onSceneUpdate &&
-        lastPublishedSceneRevision != scene->revision) {
-      options.onSceneUpdate(scene);
+    if (lastPublishedSceneRevision != scene->revision) {
+      impl_->invokeSceneUpdate(scene);
     }
     const auto lifecyclePassed =
         developmentMode || (workloadReady && workloadComplete);
@@ -4454,38 +4580,7 @@ rns::EngineResult rns::Engine::run() {
             std::chrono::milliseconds(options.devTools.keepAliveMs));
       }
     }
-    hostChrome().onInvalidate = nullptr;
-    headlessKeyboard().emit = nullptr;
-    headlessBackPress().emit = nullptr;
-    headlessBackPress().invokeDefault = nullptr;
-    headlessBackPress().runOnJs = nullptr;
-    executorState->open.store(false);
-    for (auto it = launch.addons.rbegin(); it != launch.addons.rend(); ++it) {
-      if (it->addon) {
-        it->addon->quiesceGeneration(
-            static_cast<std::uint64_t>(sessionGeneration));
-      }
-    }
-    if (reactFabricHost) {
-      setHeadlessReactFabricCallbacksEnabled(*reactFabricHost, false);
-      stopHeadlessReactFabricSurface(*reactFabricHost);
-    }
-    eventLoop->drainUntilIdle();
-    if (reactFabricHost) {
-      shutdownHeadlessReactFabric(*reactFabricHost);
-    }
-    headlessWebSocketReset();
-    headlessBlobReset();
-    headlessImageRequestsReset();
-    turboModuleCache.clear();
-    timerManager.reset();
-    if (devTools) {
-      instance->unregisterFromInspector();
-    }
-    instance.reset();
-    reactFabricHost.reset();
-    devTools.reset();
-    eventLoop->quitSynchronous();
+    closeGeneration();
     for (auto it = launch.addons.rbegin(); it != launch.addons.rend(); ++it) {
       if (it->bindEntered && it->addon) {
         it->addon->unbind();
@@ -4499,6 +4594,10 @@ rns::EngineResult rns::Engine::run() {
         .metricsJson = metricsJson,
         .scene = std::move(scene),
     };
+    } catch (...) {
+      closeGeneration();
+      throw;
+    }
     }
   } catch (...) {
     runError = rns::hostOwnedExceptionMessage("unknown runtime error");

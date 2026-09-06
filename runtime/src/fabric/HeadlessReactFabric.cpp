@@ -6,6 +6,7 @@
 
 #include <react/renderer/componentregistry/ComponentDescriptorProviderRegistry.h>
 #include <react/renderer/components/root/RootComponentDescriptor.h>
+#include <react/renderer/components/root/RootShadowNode.h>
 #include <react/renderer/components/scrollview/ScrollViewComponentDescriptor.h>
 #include <react/renderer/components/image/ImageComponentDescriptor.h>
 #include <react/renderer/components/image/ImageEventEmitter.h>
@@ -75,7 +76,9 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <limits>
+#include <optional>
 #include <string_view>
 #include <system_error>
 #include <stdexcept>
@@ -1242,6 +1245,7 @@ class HeadlessReactFabricHost final
     react::ShadowNodeFamily::Shared family;
     std::string owner;
     std::string canonicalName;
+    react::LayoutMetrics layoutMetrics{};
     int eventCount{0};
   };
 
@@ -1336,6 +1340,7 @@ class HeadlessReactFabricHost final
       std::vector<ReactNativeSimulator::AddonComponentDeclaration>
           addonComponents,
       std::vector<react::ComponentDescriptorProvider> addonProviders,
+      std::vector<react::ComponentDescriptorProvider> frameworkProviders,
       HeadlessReactFabricUpdate onUpdate,
       AddonFabricHostBindings addonBindings)
       : contextContainer_(std::make_shared<react::ContextContainer>()),
@@ -1438,44 +1443,48 @@ class HeadlessReactFabricHost final
         .contextContainer = contextContainer_,
         .flavor = nullptr};
     std::vector<react::ComponentDescriptorProvider> stagedProviders;
-    stagedProviders.push_back(
-        react::concreteComponentDescriptorProvider<
-            react::RootComponentDescriptor>());
-    stagedProviders.push_back(
-        react::concreteComponentDescriptorProvider<
-            react::ViewComponentDescriptor>());
-    stagedProviders.push_back(
-        react::concreteComponentDescriptorProvider<
-            react::LayoutConformanceComponentDescriptor>());
-    stagedProviders.push_back(
-        react::concreteComponentDescriptorProvider<
-            react::RawTextComponentDescriptor>());
-    stagedProviders.push_back(
-        react::concreteComponentDescriptorProvider<
-            react::TextComponentDescriptor>());
-    stagedProviders.push_back(
-        react::concreteComponentDescriptorProvider<
-            react::ParagraphComponentDescriptor>());
-    stagedProviders.push_back(
-        react::concreteComponentDescriptorProvider<
-            react::ScrollViewComponentDescriptor>());
-    stagedProviders.push_back(
-        react::concreteComponentDescriptorProvider<
-            react::ImageComponentDescriptor>());
-    react::collectHeadlessOfficialComponentProviders(
-        stagedProviders, officialComponentFlavors_);
-    if (platform == "ios") {
-      stagedProviders.push_back(
-          react::concreteComponentDescriptorProvider<
-              react::HeadlessIOSTextInputComponentDescriptor>());
+    if (!frameworkProviders.empty()) {
+      stagedProviders = std::move(frameworkProviders);
     } else {
       stagedProviders.push_back(
           react::concreteComponentDescriptorProvider<
-              react::HeadlessAndroidTextInputComponentDescriptor>());
+              react::RootComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::ViewComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::LayoutConformanceComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::RawTextComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::TextComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::ParagraphComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::ScrollViewComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::ImageComponentDescriptor>());
+      react::collectHeadlessOfficialComponentProviders(
+          stagedProviders, officialComponentFlavors_);
+      if (platform == "ios") {
+        stagedProviders.push_back(
+            react::concreteComponentDescriptorProvider<
+                react::HeadlessIOSTextInputComponentDescriptor>());
+      } else {
+        stagedProviders.push_back(
+            react::concreteComponentDescriptorProvider<
+                react::HeadlessAndroidTextInputComponentDescriptor>());
+      }
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::HeadlessSampleViewComponentDescriptor>());
     }
-    stagedProviders.push_back(
-        react::concreteComponentDescriptorProvider<
-            react::HeadlessSampleViewComponentDescriptor>());
     for (const auto& component : addonComponents) {
       if (component.kind !=
           ReactNativeSimulator::AddonComponentKind::DescriptorOnlyMock) {
@@ -1532,11 +1541,9 @@ class HeadlessReactFabricHost final
   }
 
   ~HeadlessReactFabricHost() override {
+    // stopSurface must run while ReactInstance is still alive. closeGeneration
+    // does that before reset(); this destructor only shuts the host down.
     shutdown();
-    if (surfaceRunning_ && uiManager_) {
-      uiManager_->stopSurface(kReactSurfaceId);
-      surfaceRunning_ = false;
-    }
   }
 
   void stopSurfaceOnce() {
@@ -1671,6 +1678,12 @@ class HeadlessReactFabricHost final
   void uiManagerDidFinishTransaction(
       std::shared_ptr<const react::MountingCoordinator> coordinator,
       bool) override {
+    if (runtimeThread_ != std::thread::id{} &&
+        std::this_thread::get_id() != runtimeThread_) {
+      recordAddonFatal(
+          "transaction callback arrived on a non-runtime thread");
+      return;
+    }
     if (animationDriver_ && !mountingOverrideInstalled_) {
       coordinator->setMountingOverrideDelegate(animationDriver_);
       mountingOverrideInstalled_ = true;
@@ -1772,7 +1785,11 @@ class HeadlessReactFabricHost final
         sawUpdatedYogaWidths_ ||
         (transactionHasWidth(120) && transactionHasWidth(180));
     validateMountedViewTree();
-    refreshCommittedShadowNodes();
+    refreshCommittedShadowNodes(
+        coordinator && coordinator->getBaseRevision().rootShadowNode
+            ? std::static_pointer_cast<const react::ShadowNode>(
+                  coordinator->getBaseRevision().rootShadowNode)
+            : nullptr);
     snapshotMountedViewTree();
     if (onUpdate_) {
       onUpdate_(result());
@@ -1807,16 +1824,22 @@ class HeadlessReactFabricHost final
       ++staleCommands_;
       return;
     }
-    if (auto* handler = findAddonCommand(
-            record->owner, record->canonicalName, commandName)) {
-      try {
-        (*handler)(makePublicMountedNode(*record), commandName, args);
-      } catch (...) {
-        recordAddonFatal("addon command handler threw");
-      }
-      return;
+    std::string resolvedCommand = commandName;
+    if (auto alias = resolveCommandAlias(record->canonicalName, commandName)) {
+      resolvedCommand = std::move(*alias);
     }
-    if (dispatchFrameworkCommand(*record, commandName, args, shadowNode)) {
+    if (addonCallbacksEnabled_) {
+      if (auto* handler = findAddonCommand(
+              record->owner, record->canonicalName, resolvedCommand)) {
+        try {
+          (*handler)(makePublicMountedNode(*record), resolvedCommand, args);
+        } catch (...) {
+          recordAddonFatal("addon command handler threw");
+        }
+        return;
+      }
+    }
+    if (dispatchFrameworkCommand(*record, resolvedCommand, args, shadowNode)) {
       return;
     }
     ++unknownCommands_;
@@ -3191,7 +3214,7 @@ class HeadlessReactFabricHost final
   }
 
   void recordAddonFatal(std::string message) {
-    callbacksEnabled_ = false;
+    addonCallbacksEnabled_ = false;
     if (!addonBindings_.reportFatal) {
       return;
     }
@@ -3218,13 +3241,7 @@ class HeadlessReactFabricHost final
       item.componentName = record.canonicalName.empty()
           ? record.node.componentName
           : record.canonicalName;
-      item.layout = {
-          .frame =
-              {
-                  .origin = {record.node.x, record.node.y},
-                  .size = {record.node.width, record.node.height},
-              },
-      };
+      item.layout = record.layoutMetrics;
       item.shadowNode = record.shadowNode;
       item.family = record.family;
       item.owner = record.owner;
@@ -3235,27 +3252,40 @@ class HeadlessReactFabricHost final
     return snapshot;
   }
 
-  void refreshCommittedShadowNodes() {
-    if (!uiManager_) {
+  void refreshCommittedShadowNodes(
+      const std::shared_ptr<const react::ShadowNode>& root) {
+    if (addonBindings_.mountHandlers.empty() &&
+        addonBindings_.commandHandlers.empty()) {
       return;
     }
-    for (auto& [tag, record] : mountedViews_) {
-      if (auto node = uiManager_->findShadowNodeByTag_DEPRECATED(tag)) {
-        record.shadowNode = node;
-        record.family = node->getFamilyShared();
-        record.canonicalName = node->getComponentName() == nullptr
-            ? record.node.componentName
-            : node->getComponentName();
-      }
-      if (record.owner.empty()) {
-        const auto owner = addonBindings_.componentOwners.find(
-            record.canonicalName.empty() ? record.node.componentName
-                                         : record.canonicalName);
-        if (owner != addonBindings_.componentOwners.end()) {
-          record.owner = owner->second;
-        }
-      }
+    if (!root) {
+      return;
     }
+    std::function<void(const std::shared_ptr<const react::ShadowNode>&)> walk =
+        [&](const std::shared_ptr<const react::ShadowNode>& node) {
+          if (!node) {
+            return;
+          }
+          auto found = mountedViews_.find(node->getTag());
+          if (found != mountedViews_.end()) {
+            found->second.shadowNode = node;
+            found->second.family = node->getFamilyShared();
+            found->second.canonicalName = node->getComponentName() == nullptr
+                ? found->second.node.componentName
+                : node->getComponentName();
+            if (found->second.owner.empty()) {
+              const auto owner = addonBindings_.componentOwners.find(
+                  found->second.canonicalName);
+              if (owner != addonBindings_.componentOwners.end()) {
+                found->second.owner = owner->second;
+              }
+            }
+          }
+          for (const auto& child : node->getChildren()) {
+            walk(child);
+          }
+        };
+    walk(root);
   }
 
   ReactNativeSimulator::AddonMountedNode makePublicMountedNode(
@@ -3268,16 +3298,16 @@ class HeadlessReactFabricHost final
         ? record.node.componentName
         : record.canonicalName;
     node.shadowNode = record.shadowNode;
-    node.layoutMetrics.frame.origin.x = record.node.x;
-    node.layoutMetrics.frame.origin.y = record.node.y;
-    node.layoutMetrics.frame.size.width = record.node.width;
-    node.layoutMetrics.frame.size.height = record.node.height;
+    node.layoutMetrics = record.layoutMetrics;
     return node;
   }
 
   void invokeMountHandler(
       ReactNativeSimulator::AddonMountKind kind,
       const MountedViewRecord& record) {
+    if (!addonCallbacksEnabled_) {
+      return;
+    }
     const auto name = record.canonicalName.empty()
         ? record.node.componentName
         : record.canonicalName;
@@ -3354,6 +3384,10 @@ class HeadlessReactFabricHost final
         }
       }
     };
+    std::vector<std::pair<
+        ReactNativeSimulator::AddonMountKind,
+        MountedViewRecord>>
+        pending;
     walkUnmountedPostOrder(unmounted, [&](react::Tag tag) {
       const auto found = before.find(tag);
       if (found == before.end()) {
@@ -3366,18 +3400,20 @@ class HeadlessReactFabricHost final
       record.shadowNode = found->second.shadowNode;
       record.family = found->second.family;
       record.owner = found->second.owner;
+      record.layoutMetrics = found->second.layout;
       record.node.x = found->second.layout.frame.origin.x;
       record.node.y = found->second.layout.frame.origin.y;
       record.node.width = found->second.layout.frame.size.width;
       record.node.height = found->second.layout.frame.size.height;
-      invokeMountHandler(ReactNativeSimulator::AddonMountKind::Unmounted, record);
+      pending.emplace_back(
+          ReactNativeSimulator::AddonMountKind::Unmounted, std::move(record));
     });
     std::function<void(react::Tag)> walkPre = [&](react::Tag tag) {
       if (tag != kReactSurfaceId &&
           std::find(mounted.begin(), mounted.end(), tag) != mounted.end()) {
         const auto found = mountedViews_.find(tag);
         if (found != mountedViews_.end()) {
-          invokeMountHandler(
+          pending.emplace_back(
               ReactNativeSimulator::AddonMountKind::Mounted, found->second);
         }
       }
@@ -3392,9 +3428,12 @@ class HeadlessReactFabricHost final
     for (const auto tag : updated) {
       const auto found = mountedViews_.find(tag);
       if (found != mountedViews_.end()) {
-        invokeMountHandler(
+        pending.emplace_back(
             ReactNativeSimulator::AddonMountKind::Updated, found->second);
       }
+    }
+    for (const auto& [kind, record] : pending) {
+      invokeMountHandler(kind, record);
     }
   }
 
@@ -3516,9 +3555,32 @@ class HeadlessReactFabricHost final
     }
     auto command = component->second.find(commandName);
     if (command == component->second.end()) {
+      const auto aliases = addonBindings_.commandAliases.find(componentName);
+      if (aliases != addonBindings_.commandAliases.end()) {
+        const auto alias = aliases->second.find(commandName);
+        if (alias != aliases->second.end()) {
+          command = component->second.find(alias->second);
+        }
+      }
+    }
+    if (command == component->second.end()) {
       return nullptr;
     }
     return &command->second;
+  }
+
+  std::optional<std::string> resolveCommandAlias(
+      const std::string& componentName,
+      const std::string& commandName) const {
+    const auto aliases = addonBindings_.commandAliases.find(componentName);
+    if (aliases == addonBindings_.commandAliases.end()) {
+      return std::nullopt;
+    }
+    const auto alias = aliases->second.find(commandName);
+    if (alias == aliases->second.end()) {
+      return std::nullopt;
+    }
+    return alias->second;
   }
 
   void applyMountingMutation(const react::ShadowViewMutation& mutation) {
@@ -3537,6 +3599,7 @@ class HeadlessReactFabricHost final
             record.node = std::move(updated);
             record.eventEmitter = mutation.newChildShadowView.eventEmitter;
             record.state = mutation.newChildShadowView.state;
+            record.layoutMetrics = mutation.newChildShadowView.layoutMetrics;
             break;
           }
           reportMountingError(
@@ -3547,6 +3610,7 @@ class HeadlessReactFabricHost final
         record.node = mountedNodeFromShadowView(mutation.newChildShadowView);
         record.eventEmitter = mutation.newChildShadowView.eventEmitter;
         record.state = mutation.newChildShadowView.state;
+        record.layoutMetrics = mutation.newChildShadowView.layoutMetrics;
         bindMountedImage(record, mutation.newChildShadowView);
         mountedViews_.emplace(tag, std::move(record));
         if (mutation.newChildShadowView.componentName != nullptr &&
@@ -3658,6 +3722,7 @@ class HeadlessReactFabricHost final
         found->second.node = std::move(updated);
         found->second.eventEmitter = mutation.newChildShadowView.eventEmitter;
         found->second.state = mutation.newChildShadowView.state;
+        found->second.layoutMetrics = mutation.newChildShadowView.layoutMetrics;
         if (imageStateChanged || !found->second.imageObserver) {
           bindMountedImage(found->second, mutation.newChildShadowView);
         }
@@ -3969,6 +4034,7 @@ class HeadlessReactFabricHost final
   std::thread::id runtimeThread_{};
   bool preflighting_{false};
   bool callbacksEnabled_{true};
+  bool addonCallbacksEnabled_{true};
   bool surfaceRunning_{true};
   bool shutdown_{false};
   std::size_t staleCommands_{0};
@@ -3991,6 +4057,7 @@ std::shared_ptr<HeadlessReactFabricHost> installHeadlessReactFabric(
     std::vector<ReactNativeSimulator::AddonComponentDeclaration>
         addonComponents,
     std::vector<react::ComponentDescriptorProvider> addonProviders,
+    std::vector<react::ComponentDescriptorProvider> frameworkProviders,
     HeadlessReactFabricUpdate onUpdate,
     AddonFabricHostBindings addonBindings) {
   return std::make_shared<HeadlessReactFabricHost>(
@@ -4008,6 +4075,7 @@ std::shared_ptr<HeadlessReactFabricHost> installHeadlessReactFabric(
       platform,
       std::move(addonComponents),
       std::move(addonProviders),
+      std::move(frameworkProviders),
       std::move(onUpdate),
       std::move(addonBindings));
 }

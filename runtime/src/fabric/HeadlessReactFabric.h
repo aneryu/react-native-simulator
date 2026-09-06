@@ -75,6 +75,8 @@ struct AddonFabricHostBindings {
       std::unordered_map<std::string, ReactNativeSimulator::AddonCommandHandler>>
       commandHandlers;
   std::unordered_map<std::string, std::string> componentOwners;
+  std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
+      commandAliases;
   std::function<void(std::exception_ptr)> reportFatal;
 };
 
@@ -101,6 +103,8 @@ std::shared_ptr<HeadlessReactFabricHost> installHeadlessReactFabric(
         addonComponents = {},
     std::vector<facebook::react::ComponentDescriptorProvider>
         addonProviders = {},
+    std::vector<facebook::react::ComponentDescriptorProvider>
+        frameworkProviders = {},
     HeadlessReactFabricUpdate onUpdate = {},
     AddonFabricHostBindings addonBindings = {});
 
