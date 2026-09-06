@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -119,6 +120,10 @@ class StubMetro {
     thread_ = std::thread([this] { acceptLoop(); });
   }
 
+  ~StubMetro() {
+    stop();
+  }
+
   void stop() {
     stopping_ = true;
     boost::system::error_code ignored;
@@ -126,6 +131,16 @@ class StubMetro {
     context_.stop();
     if (thread_.joinable()) {
       thread_.join();
+    }
+    std::vector<std::thread> workers;
+    {
+      std::lock_guard lock(workersMutex_);
+      workers.swap(workers_);
+    }
+    for (auto& worker : workers) {
+      if (worker.joinable()) {
+        worker.join();
+      }
     }
   }
 
@@ -158,7 +173,9 @@ class StubMetro {
         if (stopping_) {
           break;
         }
-        std::thread(&StubMetro::handleSocket, this, std::move(socket)).detach();
+        std::thread worker(&StubMetro::handleSocket, this, std::move(socket));
+        std::lock_guard lock(workersMutex_);
+        workers_.push_back(std::move(worker));
       } catch (const std::exception&) {
         if (stopping_) {
           break;
@@ -240,6 +257,8 @@ class StubMetro {
   tcp::acceptor acceptor_;
   uint16_t port_{0};
   std::thread thread_;
+  std::vector<std::thread> workers_;
+  std::mutex workersMutex_;
   std::atomic<bool> stopping_{false};
   mutable std::mutex mutex_;
   std::string pendingHot_;

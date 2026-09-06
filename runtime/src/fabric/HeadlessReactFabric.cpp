@@ -1693,28 +1693,33 @@ class HeadlessReactFabricHost final
     return eventLoop_ && eventLoop_->onOwnerThread();
   }
 
-  bool hopToRuntimeThread(std::function<void()> work) {
+  void hopToRuntimeThread(std::function<void()> work) {
+    auto run = [weak = weak_from_this(), work = std::move(work)]() {
+      const auto self = weak.lock();
+      if (!self || self->shutdown_.load(std::memory_order_acquire)) {
+        return;
+      }
+      try {
+        work();
+      } catch (...) {
+        self->recordAddonFatal("Fabric callback threw");
+      }
+    };
     if (onRuntimeThread()) {
-      return false;
+      run();
+      return;
     }
     if (shutdown_.load(std::memory_order_acquire)) {
-      return true;
+      return;
     }
     if (!eventLoop_) {
       recordAddonFatal("Fabric callback arrived on a non-runtime thread");
-      return true;
+      return;
     }
     // Queue onto the event loop only. ReactInstance::getUnbufferedRuntimeExecutor
     // captures a raw RuntimeScheduler* and must not be invoked after
     // instance.reset() during closeGeneration.
-    eventLoop_->runOnQueue(
-        [weak = weak_from_this(), work = std::move(work)]() {
-          if (auto self = weak.lock();
-              self && !self->shutdown_.load(std::memory_order_acquire)) {
-            work();
-          }
-        });
-    return true;
+    eventLoop_->runOnQueue(std::move(run));
   }
 
   void uiManagerDidFinishTransaction(
@@ -1723,16 +1728,12 @@ class HeadlessReactFabricHost final
     if (shutdown_ || !callbacksEnabled_) {
       return;
     }
-    if (hopToRuntimeThread(
-            [weak = weak_from_this(), coordinator, mountSynchronously]() {
-              if (auto self = weak.lock()) {
-                self->applyFinishedTransaction(
-                    coordinator, mountSynchronously);
-              }
-            })) {
-      return;
-    }
-    applyFinishedTransaction(coordinator, mountSynchronously);
+    hopToRuntimeThread(
+        [weak = weak_from_this(), coordinator, mountSynchronously]() {
+          if (auto self = weak.lock()) {
+            self->applyFinishedTransaction(coordinator, mountSynchronously);
+          }
+        });
   }
 
   void applyFinishedTransaction(
@@ -1865,16 +1866,13 @@ class HeadlessReactFabricHost final
     if (shutdown_ || !callbacksEnabled_) {
       return;
     }
-    if (hopToRuntimeThread(
-            [weak = weak_from_this(), shadowNode, commandName, args]() {
-              if (auto self = weak.lock()) {
-                self->dispatchCommandOnRuntimeThread(
-                    shadowNode, commandName, args);
-              }
-            })) {
-      return;
-    }
-    dispatchCommandOnRuntimeThread(shadowNode, commandName, args);
+    hopToRuntimeThread(
+        [weak = weak_from_this(), shadowNode, commandName, args]() {
+          if (auto self = weak.lock()) {
+            self->dispatchCommandOnRuntimeThread(
+                shadowNode, commandName, args);
+          }
+        });
   }
 
   void dispatchCommandOnRuntimeThread(
@@ -1901,8 +1899,15 @@ class HeadlessReactFabricHost final
     if (addonCallbacksEnabled_) {
       if (auto* handler = findAddonCommand(
               record->owner, record->canonicalName, resolvedCommand)) {
+        ReactNativeSimulator::AddonCommandHandler handlerCopy;
         try {
-          (*handler)(makePublicMountedNode(*record), resolvedCommand, args);
+          handlerCopy = *handler;
+        } catch (...) {
+          recordAddonFatal("addon command handler threw");
+          return;
+        }
+        try {
+          handlerCopy(makePublicMountedNode(*record), resolvedCommand, args);
         } catch (...) {
           recordAddonFatal("addon command handler threw");
         }

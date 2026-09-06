@@ -5,15 +5,21 @@
 
 #include <ReactCommon/TurboModule.h>
 #include <react/renderer/components/unimplementedview/UnimplementedViewComponentDescriptor.h>
+#include <react/renderer/components/view/ConcreteViewShadowNode.h>
+#include <react/renderer/components/view/ViewEventEmitter.h>
+#include <react/renderer/components/view/ViewProps.h>
 #include <react/renderer/core/ComponentDescriptor.h>
+#include <react/renderer/core/ConcreteComponentDescriptor.h>
 
-#include <dlfcn.h>
+#include <execinfo.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -286,6 +292,14 @@ class DuplicateProviderAddon final : public CountingAddon {
   }
 };
 
+const char kThrowCmdName[] = "RNSThrowCmdView";
+using ThrowCmdShadowNode = facebook::react::ConcreteViewShadowNode<
+    kThrowCmdName,
+    facebook::react::ViewProps,
+    facebook::react::ViewEventEmitter>;
+using ThrowCmdDescriptor =
+    facebook::react::ConcreteComponentDescriptor<ThrowCmdShadowNode>;
+
 class ThrowingCommandAddon final : public CountingAddon {
  public:
   using CountingAddon::CountingAddon;
@@ -305,14 +319,8 @@ class ThrowingCommandAddon final : public CountingAddon {
       const rns::AddonGenerationContext& context,
       rns::AddonFabricRegistrar& registrar) override {
     CountingAddon::configureFabric(context, registrar);
-    flavor_ = std::make_shared<std::string>("RNSThrowCmdView");
-    registrar.registerDescriptor({
-        reinterpret_cast<facebook::react::ComponentHandle>(flavor_->c_str()),
-        "RNSThrowCmdView",
-        flavor_,
-        &facebook::react::concreteComponentDescriptorConstructor<
-            facebook::react::UnimplementedViewComponentDescriptor>,
-    });
+    registrar.registerDescriptor(
+        facebook::react::concreteComponentDescriptorProvider<ThrowCmdDescriptor>());
     registrar.onCommand(
         "RNSThrowCmdView",
         "boom",
@@ -320,9 +328,6 @@ class ThrowingCommandAddon final : public CountingAddon {
           throw std::runtime_error("command boom");
         });
   }
-
- private:
-  std::shared_ptr<std::string> flavor_;
 };
 
 class OverlayWrapAddon final : public CountingAddon {
@@ -625,6 +630,16 @@ std::string readInspectorSnapshots(int server) {
 
 int main(int argc, char** argv) {
   try {
+    const auto crash = [](int signal) {
+      std::cerr << "addon-abi-lifecycle: signal " << signal << std::endl;
+      void* frames[64];
+      const int count = ::backtrace(frames, 64);
+      ::backtrace_symbols_fd(frames, count, STDERR_FILENO);
+      _Exit(128 + signal);
+    };
+    std::signal(SIGSEGV, crash);
+    std::signal(SIGABRT, crash);
+    std::signal(SIGBUS, crash);
     rns::EngineConfig config;
     config.iterations = 1;
     config.timeoutMs = 1000;
@@ -854,7 +869,8 @@ int main(int argc, char** argv) {
           "throw-cmd",
           "const uim = globalThis.nativeFabricUIManager;\n"
           "const node = uim.createNode(100, 'RNSThrowCmdView', 21,"
-          " {width: 10, height: 10}, {tag: 100});\n"
+          " {width: 10, height: 10, alignSelf: 'flex-start',"
+          " flexGrow: 0, flexShrink: 0}, {tag: 100});\n"
           "const set = uim.createChildSet();\n"
           "uim.appendChildToSet(set, node);\n"
           "uim.completeRoot(21, set);\n"
@@ -873,6 +889,7 @@ int main(int argc, char** argv) {
       }
     }
 
+    mark("throw-provider");
     {
       auto counts = std::make_shared<HookCounts>();
       const auto result = runWith(
@@ -887,6 +904,7 @@ int main(int argc, char** argv) {
       }
     }
 
+    mark("mismatch-provider");
     {
       auto counts = std::make_shared<HookCounts>();
       const auto result = runWith(
@@ -901,6 +919,7 @@ int main(int argc, char** argv) {
       }
     }
 
+    mark("dup-handle");
     {
       auto counts = std::make_shared<HookCounts>();
       try {
@@ -922,6 +941,7 @@ int main(int argc, char** argv) {
       }
     }
 
+    mark("overlay-wrap");
     {
       auto counts = std::make_shared<HookCounts>();
       const auto result = runWithScript(
@@ -945,6 +965,7 @@ int main(int argc, char** argv) {
       }
     }
 
+    mark("throw-module");
     {
       auto counts = std::make_shared<HookCounts>();
       const auto result = runWithScript(
@@ -961,6 +982,7 @@ int main(int argc, char** argv) {
       }
     }
 
+    mark("null-module");
     {
       auto counts = std::make_shared<HookCounts>();
       const auto result = runWithScript(
@@ -977,6 +999,7 @@ int main(int argc, char** argv) {
       }
     }
 
+    mark("held-module");
     {
       auto counts = std::make_shared<HookCounts>();
       auto pings = std::make_shared<std::atomic<int>>(0);
@@ -1054,28 +1077,11 @@ int main(int argc, char** argv) {
     }
 
     if (argc > 1) {
-      mark("module-noload");
+      mark("module-run");
       const std::filesystem::path modulePath = argv[1];
       rns::LaunchDraft draft(config);
       draft.addAddonPath(modulePath, rns::AddonRequestOrigin::Test);
       auto candidates = rns::prepareExplicitAddons(draft);
-      void* handle = dlopen(modulePath.c_str(), RTLD_NOW | RTLD_NOLOAD);
-      Dl_info info{};
-      auto* symbol = handle == nullptr
-          ? nullptr
-          : dlsym(handle, rns::kSimulatorAddonEntryPoint);
-      const bool provenance = symbol != nullptr && dladdr(symbol, &info) != 0 &&
-          info.dli_fname != nullptr &&
-          std::string(info.dli_fname).find("rns-addon-fabric-probe") !=
-              std::string::npos;
-      // Keep the RTLD_NOLOAD handle until process exit. An extra dlclose here
-      // can unmap the MODULE while CommittedAddon still owns the RTLD_LOCAL
-      // mapping, which SIGSEGVs during engine.run() on macOS dyld.
-      if (!provenance) {
-        std::cerr << "dladdr provenance failed while MODULE was mapped\n";
-        return 1;
-      }
-      mark("module-run");
       draft.addBundle(rns::test::memoryBundle(
           "const has = globalThis.__nativeComponentRegistry__hasComponent"
           "('RNSFabricProbeView');\n"
