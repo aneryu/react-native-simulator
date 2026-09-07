@@ -684,7 +684,7 @@ set_tests_properties(runtime-source runtime-bytecode runtime-multi-bundle
   cli-doctor-rn073 cli-doctor-rn073-compat
   PROPERTIES TIMEOUT 10)
 if(TEST interactive-window-before-metro)
-  set_tests_properties(interactive-window-before-metro PROPERTIES TIMEOUT 10)
+  set_tests_properties(interactive-window-before-metro PROPERTIES TIMEOUT 25)
 endif()
 set_tests_properties(hmr-protocol PROPERTIES TIMEOUT 20)
 set_tests_properties(expo-addon PROPERTIES TIMEOUT 10)

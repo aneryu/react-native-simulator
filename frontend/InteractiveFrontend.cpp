@@ -1930,7 +1930,11 @@ EngineResult runInteractiveFrontend(
     throw std::runtime_error(
         std::string("SDL_CreateRenderer failed: ") + SDL_GetError());
   }
-  SDL_SetRenderVSync(renderer, 1);
+  if (std::getenv("RNS_INTERACTIVE_SMOKE_OUTPUT") == nullptr) {
+    SDL_SetRenderVSync(renderer, 1);
+  } else {
+    SDL_SetRenderVSync(renderer, 0);
+  }
   SDL_StartTextInput(window);
   const SimulatorWindowChrome chrome = applySimulatorWindowChrome(window);
 
