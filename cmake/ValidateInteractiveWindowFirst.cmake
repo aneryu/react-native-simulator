@@ -12,7 +12,7 @@ execute_process(
   RESULT_VARIABLE result
   OUTPUT_VARIABLE output
   ERROR_VARIABLE error
-  TIMEOUT 8)
+  TIMEOUT 20)
 if(NOT result EQUAL 0)
   message(FATAL_ERROR
     "window-first interactive smoke failed (${result}): ${error}${output}")

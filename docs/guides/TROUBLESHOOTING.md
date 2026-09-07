@@ -90,20 +90,27 @@ Binary users should load a caller-built source `.jsbundle`; compiling HBC
 requires `build/release/bin/hermesc` from the exact source revision. Never mix
 HBC produced by another Hermes revision.
 
+There is no `android-rn73` profile. RN 0.73.x JavaScript runs on the RN 0.87
+native engine with `--profile android-rn87 --addon compat-rn73`. Doctor reports
+`needs-compat-addon` or `compatible-via-addon`. Hermes bytecode from another
+family is not translated.
+
 ## Addon fails to load
 
 Compare `rnsim --version --json` with the addon's build metadata. The addon must
-use ABI 3, RN 0.87.0, Hermes `260318099.0.1`, arm64, and the matching engine
-major/minor release. Application-specific native contracts belong in an addon,
-not in the framework provider.
+use ABI 4, the exact addon API fingerprint from this engine, RN 0.87.0, Hermes
+`260318099.0.1`, and the same compiler/stdlib/sanitizer mode. A fingerprint
+mismatch means rebuild the MODULE, not that the file is untrusted.
+Application-specific native contracts belong in an addon, not in the framework
+provider.
 
 ## Missing UI or “fallback component” diagnostics
 
 Consult the [RN 0.87 capability baseline](../baselines/RN087_CAPABILITY_BASELINE.md).
 Several platform components are explicitly adapted, layout-only, or unavailable.
-`RNCSafeAreaProvider` is temporarily host-adapted so
-`react-native-safe-area-context` can render children. Root insets are 0 because
-host notch/nav chrome sits outside the RN window; other third-party components
+`RNCSafeAreaProvider` is served by the auto-loaded `safe-area` addon so
+`react-native-safe-area-context` can render children. Disable it with
+`--no-addon safe-area`. Root insets are 0 in v1; other third-party components
 still need an explicit addon.
 This experimental release does not certify arbitrary RN applications. Run a
 finite diagnostic workload with explicit requirements when appropriate:

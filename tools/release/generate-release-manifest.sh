@@ -29,7 +29,9 @@ sdk_version=$(xcrun --show-sdk-version)
 built_at=$(date -u -r "$(git -C "$project_root" show -s --format=%ct HEAD)" \
   '+%Y-%m-%dT%H:%M:%SZ')
 build_info=$($runtime --version --json)
-
+build_react_native=$(printf '%s' "$build_info" | sed -n 's/.*"reactNative":"\([^"]*\)".*/\1/p')
+build_hermes=$(printf '%s' "$build_info" | sed -n 's/.*"hermes":"\([^"]*\)".*/\1/p')
+build_addon_abi=$(printf '%s' "$build_info" | sed -n 's/.*"addonAbi":\([0-9]*\).*/\1/p')
 printf '%s\n' \
   '{' \
   "  \"schemaVersion\": 1," \
@@ -38,9 +40,9 @@ printf '%s\n' \
   "  \"gitCommit\": \"$commit\"," \
   "  \"dirty\": $dirty," \
   "  \"sourceDate\": \"$built_at\"," \
-  '  "reactNative": "0.87.0",' \
-  '  "hermes": "260318099.0.1",' \
-  '  "addonAbi": 2,' \
+  "  \"reactNative\": \"$build_react_native\"," \
+  "  \"hermes\": \"$build_hermes\"," \
+  "  \"addonAbi\": $build_addon_abi," \
   '  "architecture": "arm64",' \
   '  "minimumMacOS": "15.0",' \
   "  \"toolchain\": \"$clang_version\"," \

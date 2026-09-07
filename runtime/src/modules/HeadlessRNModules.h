@@ -6,13 +6,8 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
-#include <vector>
-
-struct HeadlessModuleCapability {
-  std::string name;
-  std::string fidelity;
-};
 
 struct HeadlessRNModuleHost {
   float viewportWidth{390.0f};
@@ -22,6 +17,7 @@ struct HeadlessRNModuleHost {
   float insetBottom{0.0f};
   std::string scriptURL{"react-native-simulator://bundle"};
   std::filesystem::path assetDirectory;
+  std::optional<std::string> initialUrl;
 };
 
 std::shared_ptr<facebook::react::TurboModule> getHeadlessRNModule(
@@ -30,7 +26,3 @@ std::shared_ptr<facebook::react::TurboModule> getHeadlessRNModule(
     const std::string& profile,
     const std::shared_ptr<facebook::react::CallInvoker>& jsInvoker,
     const HeadlessRNModuleHost& host = {});
-
-std::vector<std::string> getHeadlessRNModuleNames(const std::string& profile);
-std::vector<HeadlessModuleCapability> getHeadlessRNModuleCapabilities(
-    const std::string& profile);

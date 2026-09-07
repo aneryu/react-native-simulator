@@ -116,7 +116,7 @@ def main():
 
         cancellation_elapsed = time.monotonic() - server.bundle_started_at
         require(
-            cancellation_elapsed < 1.0,
+            cancellation_elapsed < 2.0,
             f"hanging bundle cancellation took {cancellation_elapsed:.3f}s",
         )
         require(

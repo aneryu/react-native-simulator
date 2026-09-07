@@ -14,7 +14,12 @@
 #include <react/runtime/TimerManager.h>
 
 #include <react-native-simulator/Engine.h>
+#include <react-native-simulator/SimulatorAddon.h>
 
+#include "AddonHostSupport.h"
+#include "AddonJson.h"
+#include "FrameworkInventory.h"
+#include "LaunchPlan.h"
 #include "SimulatorEventLoop.h"
 #include "HostChrome.h"
 #include "HeadlessBlob.h"
@@ -33,7 +38,6 @@
 #include "HeadlessOfficialComponents.h"
 #include "HeadlessRNModules.h"
 #include "HeadlessTurboModules.h"
-#include "RuntimeProfile.h"
 #include "HostPlatform.h"
 #include <react/featureflags/ReactNativeFeatureFlags.h>
 #include <react/featureflags/ReactNativeFeatureFlagsDynamicProvider.h>
@@ -62,9 +66,12 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
+#include <exception>
 
 #include <sys/resource.h>
 #include <unistd.h>
@@ -75,7 +82,7 @@ namespace rns = ReactNativeSimulator;
 
 jsi::Object makeLegacyViewManagerConfig(
     jsi::Runtime& runtime,
-    const rns::SimulatorAddonViewManagerConfig* addonConfig) {
+    const rns::AddonViewManagerConfig* addonConfig) {
   jsi::Object config(runtime);
   jsi::Object nativeProps(runtime);
   jsi::Object commands(runtime);
@@ -150,79 +157,6 @@ struct QueuedInteractionAction {
   std::size_t batchIndex{0};
 };
 
-rns::RuntimeCapabilityClass classifyRuntimeCapability(
-    std::string_view type,
-    std::string_view name,
-    std::string_view fidelity) {
-  if (fidelity.find("unavailable") != std::string_view::npos) {
-    return rns::RuntimeCapabilityClass::Unavailable;
-  }
-  if (type == "component" &&
-      (fidelity.find("fallback") != std::string_view::npos ||
-       fidelity.find("layout-only") != std::string_view::npos)) {
-    return rns::RuntimeCapabilityClass::LayoutOnly;
-  }
-  static const std::unordered_set<std::string_view> kMockedModules{
-      "SoundManager",
-      "HeadlessJsTaskSupport",
-      "FrameRateLogger",
-      "ModalManager",
-  };
-  if (fidelity.find("mock") != std::string_view::npos ||
-      fidelity.find("descriptor-only") != std::string_view::npos ||
-      fidelity.find("tester-stub") != std::string_view::npos ||
-      fidelity.find("fixed-fixture") != std::string_view::npos ||
-      (type == "module" && kMockedModules.contains(name))) {
-    return rns::RuntimeCapabilityClass::Mocked;
-  }
-  if (fidelity == "real-headless") {
-    return rns::RuntimeCapabilityClass::Implemented;
-  }
-  static const std::unordered_set<std::string_view> kHostAdaptedModules{
-      "NativePerformanceCxx",
-      "DevSettings",
-      "DeviceInfo",
-      "SourceCode",
-      "AppState",
-      "Appearance",
-      "WebSocketModule",
-      "BlobModule",
-      "FileReaderModule",
-      "ImageLoader",
-      "ImageEditingManager",
-      "ImageStoreManager",
-      "Clipboard",
-      "KeyboardObserver",
-      "AccessibilityInfo",
-      "I18nManager",
-      "Networking",
-      "SegmentFetcher",
-      "PlatformConstants",
-      "StatusBarManager",
-      "ToastAndroid",
-      "DeviceEventManager",
-      "ExceptionsManager",
-      "LogBox",
-      "DevLoadingView",
-      "RedBox",
-      "PushNotificationManager",
-      "SettingsManager",
-      "ReactDevToolsSettingsManager",
-      "ReactDevToolsRuntimeSettingsModule",
-  };
-  if ((type == "module" && kHostAdaptedModules.contains(name)) ||
-      fidelity.find("adapter") != std::string_view::npos ||
-      fidelity.find("headless") != std::string_view::npos ||
-      fidelity.find("host-") != std::string_view::npos ||
-      fidelity.find("urlsession") != std::string_view::npos ||
-      fidelity.find("nspasteboard") != std::string_view::npos ||
-      fidelity.find("imageio") != std::string_view::npos ||
-      fidelity.find("partial") != std::string_view::npos) {
-    return rns::RuntimeCapabilityClass::HostAdapted;
-  }
-  return rns::RuntimeCapabilityClass::Implemented;
-}
-
 std::string componentFidelityForBuild(std::string_view fidelity) {
 #if RNS_ENABLE_SKIA
   return std::string(fidelity);
@@ -237,41 +171,50 @@ std::string componentFidelityForBuild(std::string_view fidelity) {
 rns::RuntimeCapabilityUsage makeRuntimeCapabilityUsage(
     std::string type,
     std::string name,
-    std::string fidelity) {
-  const auto classification =
-      classifyRuntimeCapability(type, name, fidelity);
+    std::string note,
+    rns::RuntimeCapabilityClass classification,
+    std::string owner) {
   return {
       .type = std::move(type),
       .name = std::move(name),
-      .fidelity = std::move(fidelity),
+      .note = std::move(note),
       .classification = classification,
+      .owner = std::move(owner),
   };
 }
 
 class rns::Engine::Impl {
  public:
-  explicit Impl(rns::EngineConfig configValue)
-      : config(std::move(configValue)) {
-#if !RNS_ENABLE_SKIA
-    if (config.fontDirectory) {
-      throw std::invalid_argument(
-          "EngineConfig::fontDirectory requires RNS_ENABLE_SKIA=ON");
-    }
-#endif
+  Impl() = default;
+
+  void adoptPlanConfig() {
     launchState.configuredAppKey = config.appKey;
     launchState.configuredInitialPropsJson =
         config.initialPropsJson.empty() ? "{}" : config.initialPropsJson;
   }
 
+  void invokeSceneUpdate(std::shared_ptr<const SceneSnapshot> scene) {
+    std::function<void(std::shared_ptr<const SceneSnapshot>)> callback;
+    {
+      std::lock_guard lock(callbackMutex);
+      callback = config.onSceneUpdate;
+    }
+    if (callback) {
+      callback(std::move(scene));
+    }
+  }
+
+  std::atomic<rns::EngineState> engineState{rns::EngineState::Draft};
+  rns::PreparedLaunchPlan plan;
   rns::EngineConfig config;
-  std::vector<std::string> addons;
-  std::vector<std::unique_ptr<rns::SimulatorAddon>> ownedAddons;
+  std::mutex callbackMutex;
   std::vector<InitialBundle> bundles;
   std::atomic<bool> ran{false};
   std::atomic<bool> running{false};
   std::atomic<bool> finished{false};
   std::atomic<bool> stopRequested{false};
   std::atomic<bool> reloadRequested{false};
+  std::thread::id runThread{};
   std::string lastInitialPropsJson{"{}"};
   std::mutex actionMutex;
   std::deque<QueuedInteractionAction> actions;
@@ -1373,9 +1316,107 @@ static folly::dynamic makeSceneWireSnapshot(
       ("nodes", serializeHeadlessViewNodes(fabric.mountedViewNodes));
 }
 
+static folly::dynamic makeAddonMetadataJson(
+    const std::vector<rns::CommittedAddon>& addons) {
+  folly::dynamic addonMetadata = folly::dynamic::array;
+  for (const auto& addon : addons) {
+    folly::dynamic origins = folly::dynamic::array;
+    for (const auto origin : addon.origin.requestedBy) {
+      origins.push_back(rns::jsonAddonOrigin(origin));
+    }
+    addonMetadata.push_back(folly::dynamic::object
+        ("name", addon.manifest.name)
+        ("source", rns::jsonAddonSource(addon.origin.source))
+        ("origins", std::move(origins))
+        ("role", rns::jsonAddonRole(addon.manifest.role))
+        ("version", addon.manifest.addonVersion));
+  }
+  return addonMetadata;
+}
+
+static folly::dynamic makeBundleCompatibilityJson(
+    const rns::ResolvedBundleCompatibility& compatibility) {
+  return folly::dynamic::object
+      ("nativeReactNativeVersion", compatibility.nativeReactNativeVersion)
+      ("targetFamily", compatibility.targetFamily)
+      ("jsVisibleReactNativeVersion",
+       compatibility.jsVisibleReactNativeVersion)
+      ("level", compatibility.level)
+      ("compatAddon",
+       compatibility.compatAddon ? folly::dynamic(*compatibility.compatAddon)
+                                 : folly::dynamic(nullptr))
+      ("hbcTranslation", compatibility.hbcTranslation);
+}
+
+static folly::dynamic makeProfileJson(
+    const rns::RuntimeProfileDescriptor& profile) {
+  return folly::dynamic::object
+      ("name", profile.name)
+      ("platform", profile.platform)
+      ("nativeReactNativeVersion", profile.nativeReactNativeVersion)
+      ("compatibilityLevel", profile.compatibilityLevel);
+}
+
+static folly::dynamic makeNativeCapabilitiesJson(
+    const rns::PreparedLaunchPlan::Impl& launch,
+    const HeadlessReactFabricResult& fabric) {
+  folly::dynamic moduleCapabilities = folly::dynamic::array;
+  auto emitModule = [&](const rns::FrameworkModuleEntry& entry) {
+    moduleCapabilities.push_back(folly::dynamic::object
+        ("name", entry.contract.name)
+        ("class", rns::jsonCapabilityClass(entry.contract.classification))
+        ("owner", entry.contract.owner)
+        ("note", entry.contract.note));
+  };
+  for (const auto& entry : launch.inventory.hostModules) {
+    emitModule(entry);
+  }
+  for (const auto& entry : launch.inventory.profileModules) {
+    emitModule(entry);
+  }
+  for (const auto& addon : launch.addons) {
+    for (const auto& module : addon.manifest.modules) {
+      moduleCapabilities.push_back(folly::dynamic::object
+          ("name", module.name)
+          ("class", rns::jsonCapabilityClass(module.classification))
+          ("owner", "addon:" + addon.manifest.name)
+          ("note", module.note));
+    }
+  }
+  folly::dynamic componentCapabilities = folly::dynamic::array;
+  for (const auto& row : launch.expectedComponents) {
+    folly::dynamic events = folly::dynamic::array;
+    for (const auto& event : row.events) {
+      events.push_back(event);
+    }
+    componentCapabilities.push_back(folly::dynamic::object
+        ("name", row.canonicalName)
+        ("class", rns::jsonCapabilityClass(row.contract.classification))
+        ("owner", row.owner)
+        ("kind", rns::jsonComponentKind(row.kind))
+        ("note", row.contract.note)
+        ("events", std::move(events)));
+  }
+  folly::dynamic moduleOverlays = folly::dynamic::array;
+  for (const auto& [module, owner] : launch.overlays) {
+    moduleOverlays.push_back(folly::dynamic::object
+        ("module", module)
+        ("owner", "addon:" + owner));
+  }
+  folly::dynamic fallbackComponents = folly::dynamic::array;
+  for (const auto& componentName : fabric.fallbackComponentNames) {
+    fallbackComponents.push_back(componentName);
+  }
+  return folly::dynamic::object
+      ("modules", std::move(moduleCapabilities))
+      ("components", std::move(componentCapabilities))
+      ("moduleOverlays", std::move(moduleOverlays))
+      ("fallbackComponents", std::move(fallbackComponents));
+}
+
 static folly::dynamic makeLiveInspectorSnapshot(
     const rns::EngineConfig& options,
-    const std::string& platform,
+    const rns::PreparedLaunchPlan::Impl& launch,
     const HeadlessReactFabricResult& fabric,
     const std::string& state,
     std::uint64_t sequence,
@@ -1383,14 +1424,18 @@ static folly::dynamic makeLiveInspectorSnapshot(
   auto trees = makeFabricTreeMetadata(fabric);
   return folly::dynamic::object
       ("host", "react-native-simulator")
-      ("schemaVersion", 2)
+      ("schemaVersion", 3)
+      ("addonAbi", static_cast<int>(rns::kSimulatorAddonAbiVersion))
       ("engine", "Hermes")
       ("reactNativeVersion", RNS_REACT_NATIVE_VERSION)
       ("hermesVersion", RNS_HERMES_VERSION)
       ("workload", options.workload)
       ("validationMode", "live")
-      ("profile", options.profile)
-      ("platformProfile", platform)
+      ("profile", makeProfileJson(launch.inventory.profile))
+      ("bundleCompatibility", makeBundleCompatibilityJson(launch.compatibility))
+      ("addons", makeAddonMetadataJson(launch.addons))
+      ("nativeCapabilities", makeNativeCapabilitiesJson(launch, fabric))
+      ("platformProfile", launch.inventory.profile.platform)
       ("runtimeState", state)
       ("sequence", sequence)
       ("viewport", folly::dynamic::object
@@ -1734,7 +1779,7 @@ static void installConsole(
                           : "Headless stays strict. ")
                   << "For a matching pair use react-native@0.87.0 "
                      "(expo@canary). RN 0.73 Metro bundles need "
-                     "--profile android-rn73.\n";
+                     "--profile android-rn87 --addon compat-rn73.\n";
             }
           }
           return jsi::Value::undefined();
@@ -1744,8 +1789,7 @@ static void installConsole(
   runtime.global().setProperty(runtime, "console", std::move(console));
 }
 
-rns::Engine::Engine(rns::EngineConfig config)
-    : impl_(std::make_unique<Impl>(std::move(config))) {
+rns::Engine::Engine() : impl_(std::make_unique<Impl>()) {
   static std::once_flag loggingInitialized;
   std::call_once(loggingInitialized, [] {
     google::InitGoogleLogging("react-native-simulator");
@@ -1753,82 +1797,102 @@ rns::Engine::Engine(rns::EngineConfig config)
   });
 }
 
-rns::Engine::~Engine() = default;
+rns::Engine::~Engine() {
+  if (!impl_) {
+    return;
+  }
+  if (impl_->engineState.load() == rns::EngineState::Running &&
+      impl_->running.load()) {
+    impl_->stopRequested.store(true);
+    if (impl_->runThread != std::thread::id{} &&
+        impl_->runThread != std::this_thread::get_id()) {
+      while (impl_->running.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+    }
+    return;
+  }
+  if (impl_->plan && impl_->plan.impl_ &&
+      impl_->engineState.load() == rns::EngineState::Planned) {
+    rns::destroyCommittedAddons(impl_->plan.impl_->addons);
+  }
+  impl_->engineState.store(rns::EngineState::Finished);
+}
+
 rns::Engine::Engine(Engine&&) noexcept = default;
 rns::Engine& rns::Engine::operator=(
     Engine&&) noexcept = default;
 
-void rns::Engine::addAddon(std::string addon) {
-  if (impl_->ran) {
-    throw std::logic_error("cannot add an addon after the runtime has run");
-  }
-  impl_->addons.push_back(std::move(addon));
+rns::EngineState rns::Engine::state() const noexcept {
+  return impl_->engineState.load();
 }
 
-void rns::Engine::addAddon(std::unique_ptr<rns::SimulatorAddon> addon) {
-  if (impl_->ran) {
-    throw std::logic_error("cannot add an addon after the runtime has run");
+void rns::Engine::applyLaunchPlan(rns::PreparedLaunchPlan& plan) {
+  if (impl_->engineState.load() != rns::EngineState::Draft) {
+    throw std::logic_error("applyLaunchPlan is only legal in Draft");
   }
-  if (addon == nullptr) {
-    throw std::invalid_argument("addon must not be null");
+  if (!plan) {
+    throw std::logic_error("applyLaunchPlan requires a live PreparedLaunchPlan");
   }
-  impl_->ownedAddons.push_back(std::move(addon));
+  std::function<void(std::shared_ptr<const SceneSnapshot>)> sceneCallback;
+  std::function<void(const InteractionResult&)> actionCallback;
+  {
+    std::lock_guard lock(impl_->callbackMutex);
+    sceneCallback = impl_->config.onSceneUpdate;
+    actionCallback = impl_->config.onActionResult;
+  }
+  impl_->plan = std::move(plan);
+  impl_->config = impl_->plan.impl_->config;
+  {
+    std::lock_guard lock(impl_->callbackMutex);
+    if (sceneCallback) {
+      impl_->config.onSceneUpdate = std::move(sceneCallback);
+    }
+    if (actionCallback) {
+      impl_->config.onActionResult = std::move(actionCallback);
+    }
+  }
+  impl_->adoptPlanConfig();
+  impl_->bundles.clear();
+  for (const auto& bundle : impl_->plan.impl_->bundles) {
+    InitialBundle loaded;
+    loaded.sourceUrl = bundle.sourceUrl;
+    loaded.path = bundle.path;
+    loaded.bytes = bundle.body;
+    loaded.http = bundle.sourceUrl.starts_with("http://") ||
+        bundle.sourceUrl.starts_with("https://");
+    if (loaded.path && !impl_->config.assetDirectory) {
+      const auto assets = loaded.path->parent_path() / "assets";
+      std::error_code error;
+      if (std::filesystem::is_directory(assets, error) && !error) {
+        impl_->config.assetDirectory = std::filesystem::weakly_canonical(assets);
+      }
+    }
+    impl_->bundles.push_back(std::move(loaded));
+  }
+  impl_->engineState.store(rns::EngineState::Planned);
+  ++rns::addonPreparationCounters().planApplications;
 }
 
-void rns::Engine::loadBundle(const std::filesystem::path& path) {
-  if (impl_->ran) {
-    throw std::logic_error("cannot queue a bundle after the runtime has run");
-  }
-  std::error_code error;
-  auto resolved = std::filesystem::absolute(path, error);
-  if (error) {
-    resolved = path;
-  } else if (const auto canonical =
-                 std::filesystem::weakly_canonical(resolved, error);
-             !error) {
-    resolved = canonical;
-  }
-  impl_->bundles.push_back({
-      .sourceUrl = std::string("file://") + resolved.generic_string(),
-      .path = resolved,
-  });
-  const auto assets = resolved.parent_path() / "assets";
-  if (!impl_->config.assetDirectory &&
-      std::filesystem::is_directory(assets)) {
-    impl_->config.assetDirectory = std::filesystem::weakly_canonical(assets);
-  }
-}
-
-void rns::Engine::loadBundle(
-    std::string bytes,
-    std::string sourceUrl) {
-  if (impl_->ran) {
-    throw std::logic_error("cannot queue a bundle after the runtime has run");
-  }
-  if (sourceUrl.empty()) {
-    throw std::invalid_argument("bundle sourceUrl must not be empty");
-  }
-  const bool http = sourceUrl.starts_with("http://");
-  impl_->bundles.push_back({
-      .sourceUrl = std::move(sourceUrl),
-      .bytes = std::move(bytes),
-      .http = http,
-  });
+void rns::Engine::applyLaunchPlan(rns::PreparedLaunchPlan&& plan) {
+  applyLaunchPlan(plan);
 }
 
 void rns::Engine::setSceneUpdateCallback(
     std::function<void(std::shared_ptr<const SceneSnapshot>)> callback) {
-  if (impl_->ran) {
-    throw std::logic_error("cannot change callbacks after the runtime has run");
+  if (impl_->engineState.load() == rns::EngineState::Finished) {
+    throw std::logic_error("cannot change callbacks after the runtime has finished");
   }
+  std::lock_guard lock(impl_->callbackMutex);
   impl_->config.onSceneUpdate = std::move(callback);
 }
 
 void rns::Engine::setActionResultCallback(
     std::function<void(const InteractionResult&)> callback) {
-  if (impl_->ran) {
-    throw std::logic_error("cannot change callbacks after the runtime has run");
+  if (impl_->engineState.load() == rns::EngineState::Finished) {
+    throw std::logic_error("cannot change callbacks after the runtime has finished");
   }
+  std::lock_guard lock(impl_->callbackMutex);
   impl_->config.onActionResult = std::move(callback);
 }
 
@@ -1875,21 +1939,28 @@ void rns::Engine::requestReload() noexcept {
 }
 
 rns::EngineResult rns::Engine::run() {
-  if (impl_->ran.exchange(true)) {
-    return {.exitCode = 1, .error = "Engine can only run once"};
+  if (impl_->engineState.load() != rns::EngineState::Planned) {
+    return {.exitCode = 1, .error = "Engine::run requires a Planned launch"};
   }
+  impl_->engineState.store(rns::EngineState::Running);
+  impl_->ran.store(true);
   impl_->running.store(true);
+  impl_->runThread = std::this_thread::get_id();
   impl_->setRuntimePhase(rns::RuntimePhase::Initializing);
   struct RunState final {
     rns::Engine::Impl& impl;
     ~RunState() {
       setDevSettingsReloadHandler(nullptr);
       impl.setRuntimePhase(rns::RuntimePhase::Stopped);
-      impl.running.store(false);
+      impl.engineState.store(rns::EngineState::Finished);
       impl.finished.store(true);
+      impl.running.store(false);
     }
   } runState{*impl_};
   if (impl_->bundles.empty()) {
+    if (impl_->plan && impl_->plan.impl_) {
+      rns::destroyCommittedAddons(impl_->plan.impl_->addons);
+    }
     return {.exitCode = 1, .error = "at least one bundle is required"};
   }
 #if RNS_ENABLE_SKIA
@@ -1946,6 +2017,36 @@ rns::EngineResult rns::Engine::run() {
       options.mode == rns::SimulatorMode::Interactive;
   const bool conformanceMode =
       options.mode == rns::SimulatorMode::Conformance;
+  auto& launch = *impl_->plan.impl_;
+  rns::AddonHostSnapshot hostSnapshot{
+      .revision = 1,
+      .profileName = launch.inventory.profile.name,
+      .platform = launch.inventory.profile.platform,
+      .reactNativeVersion = RNS_REACT_NATIVE_VERSION,
+      .hermesVersion = RNS_HERMES_VERSION,
+      .bundleTargetFamily = launch.compatibility.targetFamily,
+      .jsVisibleReactNativeVersion =
+          launch.compatibility.jsVisibleReactNativeVersion,
+      .mode = options.mode,
+      .viewport =
+          {
+              .width = options.viewportWidth,
+              .height = options.viewportHeight,
+              .pointScaleFactor = options.pointScaleFactor,
+              .insetTop = 0,
+              .insetRight = 0,
+              .insetBottom = 0,
+              .insetLeft = 0,
+          },
+      .assetDirectory = options.assetDirectory,
+      .fontDirectory = options.fontDirectory,
+      .initialUrl = launch.initialUrl,
+      .colorScheme = options.colorScheme.value_or("light"),
+      .appState = options.appState.value_or("active"),
+      .reduceMotion = options.reduceMotion.value_or(false),
+  };
+  rns::EngineAddonHost addonHost(hostSnapshot);
+  std::string runError;
   try {
     {
       static std::once_flag featureFlagsOnce;
@@ -1992,121 +2093,49 @@ rns::EngineResult rns::Engine::run() {
         }
       });
     }
-    rns::SimulatorAddonRegistry addonRegistry;
-    for (auto& addon : impl_->ownedAddons) {
-      addonRegistry.add(std::move(addon));
-    }
-    impl_->ownedAddons.clear();
-    for (const auto& addonPath : impl_->addons) {
-      addonRegistry.load(
-          addonPath, RNS_REACT_NATIVE_VERSION, RNS_HERMES_VERSION);
-    }
-    if (developmentMode) {
-      setDevSettingsReloadHandler([impl = impl_.get()]() {
-        impl->reloadRequested.store(true);
-      });
-    }
-
-    std::optional<std::string> rerunAppKey;
-    std::string rerunInitialPropsJson = options.initialPropsJson;
-    int sessionGeneration = 0;
-    for (;;) {
-      ++sessionGeneration;
-      impl_->reloadRequested.store(false);
-      impl_->beginRuntimeGeneration(
-          static_cast<std::uint64_t>(sessionGeneration),
-          sessionGeneration > 1 ? rns::RuntimePhase::Reloading
-                                : rns::RuntimePhase::Initializing);
-      {
-        std::lock_guard lock(impl_->applicationMutex);
-        impl_->launchState.runtimeGeneration =
-            static_cast<std::uint64_t>(sessionGeneration);
+    std::string bindError;
+    size_t boundCount = 0;
+    try {
+      for (auto& addon : launch.addons) {
+        addon.bindEntered = true;
+        ++boundCount;
+        addon.addon->bind(addonHost);
       }
-      if (sessionGeneration > 1) {
-        std::cerr << "reloading ReactInstance (generation "
-                  << sessionGeneration << ")\n";
-        std::string reloadFetchError;
-        for (auto& bundle : impl_->bundles) {
-          if (!bundle.http) {
-            continue;
-          }
-          try {
-            bundle.bytes = fetchHttpBundle(
-                bundle.sourceUrl,
-                60000,
-                [impl = impl_.get()] { return impl->stopRequested.load(); });
-          } catch (const HttpRequestCancelled&) {
-            if (impl_->stopRequested.load()) {
-              return {.exitCode = 0};
-            }
-            throw;
-          } catch (const std::exception& error) {
-            reloadFetchError = "Cannot reload bundle from " +
-                bundle.sourceUrl + ": " + error.what();
-            break;
-          }
+    } catch (...) {
+      bindError = rns::hostOwnedExceptionMessage("addon bind() failed");
+    }
+    if (!bindError.empty()) {
+      for (size_t i = boundCount; i > 0; --i) {
+        auto& addon = launch.addons[i - 1];
+        if (addon.bindEntered && addon.addon) {
+          addon.addon->unbind();
+          addon.bindEntered = false;
         }
-        if (!reloadFetchError.empty()) {
-          {
-            std::lock_guard lock(impl_->applicationMutex);
-            impl_->launchState.lastError = reloadFetchError;
-            impl_->launchState.pending = false;
-          }
-          impl_->recordRuntimeDiagnostic({
-              .kind = rns::RuntimeDiagnosticKind::ApplicationError,
-              .message = reloadFetchError,
-          });
-          impl_->setRuntimePhase(rns::RuntimePhase::PausedAfterError);
-          std::cerr << reloadFetchError << '\n'
-                    << "fix Metro, then use Reload to retry\n";
-          while (!impl_->stopRequested.load() &&
-                 !impl_->reloadRequested.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(25));
-          }
-          if (impl_->stopRequested.load()) {
-            return {.exitCode = 1, .error = reloadFetchError};
-          }
-          continue;
-        }
-        {
-          std::lock_guard lock(impl_->applicationMutex);
-          impl_->launchState.initialBundlesLoaded = false;
-          impl_->launchState.appRegistryReady = false;
-          impl_->launchState.pending = false;
-          impl_->launchState.appKeys.clear();
-          impl_->launchState.lastError.clear();
-          impl_->launchState.runningAppKey.reset();
-          impl_->runningRootTag.reset();
-          impl_->pendingApplication.reset();
-        }
-        (void)impl_->takeActions();
       }
-
-    auto eventLoop = std::make_shared<SimulatorEventLoop>();
-    auto timerRegistry = eventLoop->createTimerRegistry();
-    auto* timerRegistryRaw = timerRegistry.get();
-    auto timerManager =
-        std::make_shared<react::TimerManager>(std::move(timerRegistry));
-    timerRegistryRaw->setTimerManager(timerManager);
-
-    auto hermesRuntime = facebook::hermes::makeHermesRuntime(
-        ::hermes::vm::RuntimeConfig::Builder()
-            .withMicrotaskQueue(true)
-            .withGCConfig(
-                ::hermes::vm::GCConfig::Builder()
-                    .withShouldRecordStats(true)
-                    .build())
-            .build());
-    auto* runtime = hermesRuntime.get();
-    installConsole(*runtime, options.profile, developmentMode);
-    std::size_t jsErrorCount = 0;
-    std::vector<JsErrorRecord> jsErrors;
-    bool workloadReady = false;
-    bool workloadComplete = false;
-    std::vector<double> workloadRootTags;
-    std::vector<WorkloadMark> workloadMarks;
-    std::deque<BundleRequest> requestedBundles;
-    std::vector<BundleRecord> bundleRecords;
+      rns::destroyCommittedAddons(launch.addons);
+      if (inspectorTransport) {
+        inspectorTransport->sendJson(folly::toJson(folly::dynamic::object
+            ("type", "error")
+            ("message", bindError)));
+      }
+      return {.exitCode = 1, .error = std::move(bindError)};
+    }
+    if (impl_->stopRequested.load()) {
+      rns::unbindAndDestroyCommittedAddons(launch.addons);
+      return {.exitCode = 0};
+    }
+    if (launch.compatibility.compatAddon) {
+      std::cerr
+          << "rnsim: native RN " RNS_REACT_NATIVE_VERSION " + Hermes "
+          << RNS_HERMES_VERSION
+          << " is running JavaScript targeting\nthe RN "
+          << launch.compatibility.targetFamily << " family via "
+          << *launch.compatibility.compatAddon
+          << ". This is a best-effort source-JS adapter,\n"
+             "not an RN "
+          << launch.compatibility.targetFamily
+          << " native engine. Hermes bytecode is not translated.\n";
+    }
     {
       auto& environment = hostEnvironment();
       environment.reset();
@@ -2153,6 +2182,114 @@ rns::EngineResult rns::Engine::run() {
         environment.setOrientation(*options.orientation);
       }
     }
+    if (developmentMode) {
+      setDevSettingsReloadHandler([impl = impl_.get()]() {
+        impl->reloadRequested.store(true);
+      });
+    }
+
+    std::optional<std::string> rerunAppKey;
+    std::string rerunInitialPropsJson = options.initialPropsJson;
+    int sessionGeneration = 0;
+    for (;;) {
+      ++sessionGeneration;
+      impl_->reloadRequested.store(false);
+      impl_->beginRuntimeGeneration(
+          static_cast<std::uint64_t>(sessionGeneration),
+          sessionGeneration > 1 ? rns::RuntimePhase::Reloading
+                                : rns::RuntimePhase::Initializing);
+      {
+        std::lock_guard lock(impl_->applicationMutex);
+        impl_->launchState.runtimeGeneration =
+            static_cast<std::uint64_t>(sessionGeneration);
+      }
+      if (sessionGeneration > 1) {
+        std::cerr << "reloading ReactInstance (generation "
+                  << sessionGeneration << ")\n";
+        std::string reloadFetchError;
+        for (auto& bundle : impl_->bundles) {
+          if (!bundle.http) {
+            continue;
+          }
+          try {
+            bundle.bytes = fetchHttpBundle(
+                bundle.sourceUrl,
+                60000,
+                [impl = impl_.get()] { return impl->stopRequested.load(); });
+          } catch (const HttpRequestCancelled&) {
+            if (impl_->stopRequested.load()) {
+              rns::unbindAndDestroyCommittedAddons(launch.addons);
+              return {.exitCode = 0};
+            }
+            throw;
+          } catch (const std::exception& error) {
+            reloadFetchError = "Cannot reload bundle from " +
+                bundle.sourceUrl + ": " + error.what();
+            break;
+          }
+        }
+        if (!reloadFetchError.empty()) {
+          {
+            std::lock_guard lock(impl_->applicationMutex);
+            impl_->launchState.lastError = reloadFetchError;
+            impl_->launchState.pending = false;
+          }
+          impl_->recordRuntimeDiagnostic({
+              .kind = rns::RuntimeDiagnosticKind::ApplicationError,
+              .message = reloadFetchError,
+          });
+          impl_->setRuntimePhase(rns::RuntimePhase::PausedAfterError);
+          std::cerr << reloadFetchError << '\n'
+                    << "fix Metro, then use Reload to retry\n";
+          while (!impl_->stopRequested.load() &&
+                 !impl_->reloadRequested.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+          }
+          if (impl_->stopRequested.load()) {
+            rns::unbindAndDestroyCommittedAddons(launch.addons);
+            return {.exitCode = 1, .error = reloadFetchError};
+          }
+          continue;
+        }
+        {
+          std::lock_guard lock(impl_->applicationMutex);
+          impl_->launchState.initialBundlesLoaded = false;
+          impl_->launchState.appRegistryReady = false;
+          impl_->launchState.pending = false;
+          impl_->launchState.appKeys.clear();
+          impl_->launchState.lastError.clear();
+          impl_->launchState.runningAppKey.reset();
+          impl_->runningRootTag.reset();
+          impl_->pendingApplication.reset();
+        }
+        (void)impl_->takeActions();
+      }
+
+    auto eventLoop = std::make_shared<SimulatorEventLoop>();
+    auto timerRegistry = eventLoop->createTimerRegistry();
+    auto* timerRegistryRaw = timerRegistry.get();
+    auto timerManager =
+        std::make_shared<react::TimerManager>(std::move(timerRegistry));
+    timerRegistryRaw->setTimerManager(timerManager);
+
+    auto hermesRuntime = facebook::hermes::makeHermesRuntime(
+        ::hermes::vm::RuntimeConfig::Builder()
+            .withMicrotaskQueue(true)
+            .withGCConfig(
+                ::hermes::vm::GCConfig::Builder()
+                    .withShouldRecordStats(true)
+                    .build())
+            .build());
+    auto* runtime = hermesRuntime.get();
+    installConsole(*runtime, options.profile, developmentMode);
+    std::size_t jsErrorCount = 0;
+    std::vector<JsErrorRecord> jsErrors;
+    bool workloadReady = false;
+    bool workloadComplete = false;
+    std::vector<double> workloadRootTags;
+    std::vector<WorkloadMark> workloadMarks;
+    std::deque<BundleRequest> requestedBundles;
+    std::vector<BundleRecord> bundleRecords;
     HeadlessRNModuleHost moduleHost{
         .viewportWidth = options.viewportWidth,
         .viewportHeight = options.viewportHeight,
@@ -2163,43 +2300,39 @@ rns::EngineResult rns::Engine::run() {
             ? std::string("react-native-simulator://bundle")
             : impl_->bundles.front().sourceUrl,
         .assetDirectory = options.assetDirectory.value_or(std::filesystem::path{}),
+        .initialUrl = launch.initialUrl,
     };
-    auto runtimeProfile = createRuntimeProfile(options.profile, moduleHost);
-    std::unordered_map<std::string, std::string> moduleFidelities;
-    for (const auto& capability : runtimeProfile->moduleCapabilities()) {
-      moduleFidelities.emplace(capability.name, capability.fidelity);
+    launch.bindings->moduleHost = moduleHost;
+    const auto& runtimeProfile = launch.inventory.profile;
+    std::unordered_map<std::string, const rns::ModuleOwnerRow*> moduleOwnerByName;
+    for (const auto& [name, row] : launch.moduleOwners) {
+      moduleOwnerByName[name] = &row;
     }
-    for (const auto& capability : addonRegistry.moduleCapabilities()) {
-      moduleFidelities[capability.name] = capability.fidelity;
+    std::unordered_map<std::string, std::string> componentFidelities;
+    std::unordered_map<std::string, std::string> componentOwners;
+    for (const auto& row : launch.expectedComponents) {
+      componentFidelities[row.canonicalName] = row.contract.note;
+      componentOwners[row.canonicalName] = row.owner;
     }
-    std::unordered_map<std::string, std::string> componentFidelities{
-        {"Root", "real-fabric-root"},
-        {"RootView", "real-fabric-root"},
-        {"View", "real-fabric-yoga"},
-        {"RawText", "real-fabric-virtual-text"},
-        {"Text", "real-fabric-virtual-text"},
-#if RNS_ENABLE_SKIA
-        {"Paragraph", "skia-prepared-text"},
-#else
-        {"Paragraph", "unavailable-without-skia"},
-#endif
-        {"ScrollView", "headless-viewport-state"},
-#if RNS_ENABLE_SKIA
-        {"Image", "skia-local-and-http-image"},
-#else
-        {"Image", "unavailable-without-skia"},
-#endif
+    componentFidelities["Root"] = "real-fabric-root";
+    componentOwners["Root"] = "host";
+    std::unordered_map<std::string, std::string> moduleNotes;
+    std::unordered_map<std::string, rns::RuntimeCapabilityClass> moduleClasses;
+    auto rememberModule = [&](const rns::ModuleContract& contract) {
+      moduleNotes[contract.name] = contract.note;
+      moduleClasses[contract.name] = contract.classification;
     };
-    for (const auto& spec : react::kHeadlessOfficialComponents) {
-      componentFidelities[spec.name] =
-          componentFidelityForBuild(spec.fidelity);
+    for (const auto& entry : launch.inventory.hostModules) {
+      rememberModule(entry.contract);
     }
-    componentFidelities[
-        runtimeProfile->platform() == "ios" ? "TextInput"
-                                             : "AndroidTextInput"] =
-        "rn-fabric-headless-platform-adapter";
-    for (const auto& capability : addonRegistry.componentCapabilities()) {
-      componentFidelities[capability.name] = capability.fidelity;
+    for (const auto& entry : launch.inventory.profileModules) {
+      rememberModule(entry.contract);
+    }
+    for (const auto& addon : launch.addons) {
+      for (const auto& module : addon.manifest.modules) {
+        moduleNotes[module.name] = module.note;
+        moduleClasses[module.name] = module.classification;
+      }
     }
     auto instance = std::make_unique<react::ReactInstance>(
         std::make_unique<SimulatorHermesRuntime>(std::move(hermesRuntime)),
@@ -2259,7 +2392,8 @@ rns::EngineResult rns::Engine::run() {
                     std::string::npos) {
               std::cerr
                   << "rnsim: a required native module is missing. "
-                     "RN 0.73 Metro bundles need --profile android-rn73; "
+                     "RN 0.73 Metro bundles need --profile android-rn87 "
+                     "--addon compat-rn73; "
                      "application and third-party modules need an explicit "
                      "--addon path/to/addon library.\n";
             }
@@ -2275,6 +2409,10 @@ rns::EngineResult rns::Engine::run() {
     // runtime they reference (locals are destroyed in reverse order).
     std::unordered_map<std::string, std::shared_ptr<react::TurboModule>>
         turboModuleCache;
+    std::unordered_map<std::string, rns::CommittedAddon*> addonsByName;
+    for (auto& addon : launch.addons) {
+      addonsByName[addon.manifest.name] = &addon;
+    }
     timerManager->setRuntimeExecutor(instance->getBufferedRuntimeExecutor());
     eventLoop->drainUntilIdle();
 
@@ -2289,9 +2427,75 @@ rns::EngineResult rns::Engine::run() {
             instance->getRuntimeScheduler());
     std::shared_ptr<HeadlessReactFabricHost> reactFabricHost;
     auto lastFabric = std::make_shared<HeadlessReactFabricResult>();
+    auto executorState = std::make_shared<rns::AddonRuntimeExecutor::State>();
     bool runtimeInitialized = false;
     std::uint64_t inspectorSequence{0};
     std::int64_t lastPublishedSceneRevision{-1};
+    std::exception_ptr pendingAddonFatal;
+    std::exception_ptr generationSetupError;
+    bool generationClosed = false;
+    const auto closeGeneration = [&]() {
+      if (generationClosed) {
+        return;
+      }
+      generationClosed = true;
+      hostChrome().onInvalidate = nullptr;
+      headlessKeyboard().emit = nullptr;
+      headlessBackPress().emit = nullptr;
+      headlessBackPress().invokeDefault = nullptr;
+      headlessBackPress().runOnJs = nullptr;
+      executorState->open.store(false, std::memory_order_release);
+      for (auto it = launch.addons.rbegin(); it != launch.addons.rend(); ++it) {
+        if (it->addon) {
+          it->addon->quiesceGeneration(
+              static_cast<std::uint64_t>(sessionGeneration));
+        }
+      }
+      {
+        std::lock_guard lock(executorState->mutex);
+        executorState->enqueue = {};
+      }
+      if (reactFabricHost) {
+        setHeadlessReactFabricCallbacksEnabled(*reactFabricHost, false);
+        stopHeadlessReactFabricSurface(*reactFabricHost);
+      }
+      if (eventLoop) {
+        eventLoop->drainUntilIdle();
+        eventLoop->drainUntilIdle();
+      }
+      if (reactFabricHost) {
+        shutdownHeadlessReactFabric(*reactFabricHost);
+      }
+      headlessWebSocketReset();
+      headlessBlobReset();
+      headlessImageRequestsReset();
+      // Drop host TurboModule refs while Hermes is still alive. JS access
+      // attaches jsi::WeakObject to TurboModule::jsRepresentation_; destroying
+      // that after instance.reset() is a use-after-free on macOS.
+      turboModuleCache.clear();
+      timerManager.reset();
+      if (devTools && instance) {
+        instance->unregisterFromInspector();
+      }
+      instance.reset();
+      reactFabricHost.reset();
+      if (eventLoop) {
+        eventLoop->quitSynchronous();
+      }
+      if (launch.bindings) {
+        launch.bindings->eventLoop.reset();
+      }
+    };
+    const auto surfacePendingFatal = [&]() {
+      if (!pendingAddonFatal) {
+        return;
+      }
+      auto error = pendingAddonFatal;
+      pendingAddonFatal = {};
+      closeGeneration();
+      std::rethrow_exception(error);
+    };
+    try {
     instance->initializeRuntime(
         {.isProfiling = false},
         [&](jsi::Runtime& runtime) {
@@ -2545,20 +2749,77 @@ rns::EngineResult rns::Engine::run() {
               runtime, "remoteModuleConfig", jsi::Array(runtime, 0));
           runtime.global().setProperty(
               runtime, "__fbBatchedBridgeConfig", std::move(bridgeConfig));
+          launch.bindings->eventLoop = eventLoop;
+          {
+            std::lock_guard lock(executorState->mutex);
+            executorState->runtimeThread = std::this_thread::get_id();
+            executorState->enqueue =
+                [eventLoop, runtimeExecutor, executorState](
+                    std::function<void(jsi::Runtime&)> fn) {
+                  eventLoop->runOnQueue([runtimeExecutor,
+                                         executorState,
+                                         work = std::move(fn)]() {
+                    if (!executorState->open.load(std::memory_order_acquire)) {
+                      executorState->droppedPosts.fetch_add(1);
+                      return;
+                    }
+                    runtimeExecutor([executorState,
+                                     work](jsi::Runtime& runtime) {
+                      if (!executorState->open.load(
+                              std::memory_order_acquire)) {
+                        return;
+                      }
+                      work(runtime);
+                    });
+                  });
+                  return true;
+                };
+            executorState->open.store(true, std::memory_order_release);
+          }
+          rns::AddonGenerationContext generationContext{
+              .generation = static_cast<std::uint64_t>(sessionGeneration),
+              .executor = rns::makeAddonRuntimeExecutor(executorState),
+          };
+          auto lookupFactory = [&](const std::string& name) -> rns::TurboModuleFactory {
+            for (const auto& entry : launch.inventory.hostModules) {
+              if (entry.contract.name == name) {
+                return entry.factory;
+              }
+            }
+            for (const auto& entry : launch.inventory.profileModules) {
+              if (entry.contract.name == name) {
+                return entry.factory;
+              }
+            }
+            return {};
+          };
+          std::vector<rns::AddonComponentDeclaration> addonComponents;
+          std::vector<rns::AddonViewManagerConfig> addonViewManagerConfigs;
+          for (const auto& addon : launch.addons) {
+            addonComponents.insert(
+                addonComponents.end(),
+                addon.manifest.components.begin(),
+                addon.manifest.components.end());
+            addonViewManagerConfigs.insert(
+                addonViewManagerConfigs.end(),
+                addon.manifest.viewManagerConfigs.begin(),
+                addon.manifest.viewManagerConfigs.end());
+          }
           auto moduleProvider =
               [jsInvoker,
-               profile = runtimeProfile.get(),
-               &addonRegistry,
                &turboModuleCache,
-               &moduleFidelities,
+               &launch,
+               &addonsByName,
+               lookupFactory,
+               generationContext,
+               &pendingAddonFatal,
+               &moduleNotes,
+               &moduleClasses,
                impl = impl_.get(),
-               profileName = options.profile,
-               eventLoop](
+               profileName = options.profile](
                   jsi::Runtime& runtime,
                   const std::string& name)
                   -> std::shared_ptr<react::TurboModule> {
-            // React and Metro probe objects for metadata. These are property
-            // reads on nativeModuleProxy, not native-module requests.
             if (name == "$$typeof" || name == "__esModule") {
               return nullptr;
             }
@@ -2566,40 +2827,137 @@ rns::EngineResult rns::Engine::run() {
                 found != turboModuleCache.end()) {
               return found->second;
             }
-            auto module = getHeadlessTurboModule(
-                runtime, name, *profile, addonRegistry, jsInvoker, eventLoop);
-            const auto fidelity = moduleFidelities.find(name);
-            if (module) {
+            try {
+              const auto owner = launch.moduleOwners.find(name);
+              if (owner == launch.moduleOwners.end()) {
+                turboModuleCache.emplace(name, nullptr);
+                impl->recordCapabilityUsage(makeRuntimeCapabilityUsage(
+                    "module",
+                    name,
+                    "unavailable",
+                    rns::RuntimeCapabilityClass::Unavailable,
+                    ""));
+                impl->recordRuntimeDiagnostic({
+                    .kind = rns::RuntimeDiagnosticKind::MissingNativeModule,
+                    .name = name,
+                    .message = "NativeModule '" + name +
+                        "' is unavailable for " + profileName +
+                        "; provide an explicit addon or continue this flow on "
+                        "Android Emulator.",
+                });
+                return nullptr;
+              }
+              std::shared_ptr<react::TurboModule> module;
+              if (owner->second.owner.rfind("addon:", 0) == 0) {
+                const auto addonName = owner->second.owner.substr(6);
+                const auto addon = addonsByName.find(addonName);
+                if (addon == addonsByName.end() || addon->second == nullptr ||
+                    addon->second->addon == nullptr) {
+                  throw rns::AddonContractViolation(
+                      addonName,
+                      "getTurboModule",
+                      name,
+                      generationContext.generation,
+                      "declared owner is not bound");
+                }
+                module = addon->second->addon->getTurboModule(
+                    generationContext, runtime, name, jsInvoker);
+                if (!module) {
+                  throw rns::AddonContractViolation(
+                      addonName,
+                      "getTurboModule",
+                      name,
+                      generationContext.generation,
+                      "declared owner returned null");
+                }
+              } else {
+                auto factory = lookupFactory(name);
+                if (!factory) {
+                  throw std::logic_error("missing framework factory for " + name);
+                }
+                module = factory(runtime, jsInvoker);
+                if (!module) {
+                  throw std::logic_error(
+                      "framework factory returned null for " + name);
+                }
+                if (owner->second.overlayOwner) {
+                  const auto overlayName = owner->second.overlayOwner->substr(6);
+                  const auto overlay = addonsByName.find(overlayName);
+                  if (overlay == addonsByName.end() ||
+                      overlay->second == nullptr ||
+                      overlay->second->addon == nullptr) {
+                    throw rns::AddonContractViolation(
+                        overlayName,
+                        "wrapTurboModule",
+                        name,
+                        generationContext.generation,
+                        "overlay is not bound");
+                  }
+                  module = overlay->second->addon->wrapTurboModule(
+                      generationContext,
+                      runtime,
+                      name,
+                      std::move(module),
+                      jsInvoker);
+                  if (!module) {
+                    throw rns::AddonContractViolation(
+                        overlayName,
+                        "wrapTurboModule",
+                        name,
+                        generationContext.generation,
+                        "overlay returned null");
+                  }
+                }
+              }
               turboModuleCache.emplace(name, module);
+              const auto note = moduleNotes.find(name);
+              const auto classification = moduleClasses.find(name);
               impl->recordCapabilityUsage(makeRuntimeCapabilityUsage(
                   "module",
                   name,
-                  fidelity == moduleFidelities.end()
-                      ? "available"
-                      : fidelity->second));
-            } else {
-              impl->recordCapabilityUsage(makeRuntimeCapabilityUsage(
-                  "module", name, "unavailable"));
-              impl->recordRuntimeDiagnostic({
-                  .kind = rns::RuntimeDiagnosticKind::MissingNativeModule,
-                  .name = name,
-                  .message = "NativeModule '" + name +
-                      "' is unavailable for " + profileName +
-                      "; provide an explicit addon or continue this flow on "
-                      "Android Emulator.",
-              });
+                  note == moduleNotes.end() ? "" : note->second,
+                  classification == moduleClasses.end()
+                      ? rns::RuntimeCapabilityClass::Implemented
+                      : classification->second,
+                  owner->second.owner));
+              return module;
+            } catch (const rns::AddonContractViolation& error) {
+              if (!pendingAddonFatal) {
+                pendingAddonFatal = std::make_exception_ptr(error);
+              }
+              turboModuleCache.emplace(name, nullptr);
+              return nullptr;
+            } catch (const std::exception& error) {
+              if (!pendingAddonFatal) {
+                pendingAddonFatal = std::make_exception_ptr(
+                    rns::AddonContractViolation(
+                        "",
+                        "moduleProvider",
+                        name,
+                        generationContext.generation,
+                        error.what()));
+              }
+              turboModuleCache.emplace(name, nullptr);
+              return nullptr;
+            } catch (...) {
+              if (!pendingAddonFatal) {
+                pendingAddonFatal = std::make_exception_ptr(
+                    rns::AddonContractViolation(
+                        "",
+                        "moduleProvider",
+                        name,
+                        generationContext.generation,
+                        "non-std::exception"));
+              }
+              turboModuleCache.emplace(name, nullptr);
+              return nullptr;
             }
-            return module;
           };
-          if (runtimeProfile->platform() == "android") {
+          if (runtimeProfile.platform == "android") {
             (void)moduleProvider(runtime, "DeviceEventManager");
           }
           react::TurboModuleBinding::install(
               runtime, std::move(moduleProvider));
-          addonRegistry.installJSI(runtime, jsInvoker);
-          const auto addonComponents = addonRegistry.componentCapabilities();
-          const auto addonViewManagerConfigs =
-              addonRegistry.viewManagerConfigs();
           runtime.global().setProperty(
               runtime,
               "RN$LegacyInterop_UIManager_getConstants",
@@ -2689,7 +3047,7 @@ rns::EngineResult rns::Engine::run() {
                   jsi::PropNameID::forAscii(
                       runtime, "__nativeComponentRegistry__hasComponent"),
                   1,
-                  [addonComponents](
+                  [ledger = launch.expectedComponents](
                       jsi::Runtime& runtime,
                       const jsi::Value&,
                       const jsi::Value* args,
@@ -2699,11 +3057,14 @@ rns::EngineResult rns::Engine::run() {
                     }
                     const auto name =
                         args[0].getString(runtime).utf8(runtime);
+                    const auto normalized =
+                        rns::componentNameByReactViewNameGuarded(name);
                     return std::any_of(
-                        addonComponents.begin(),
-                        addonComponents.end(),
-                        [&name](const auto& component) {
-                          return component.name == name;
+                        ledger.begin(),
+                        ledger.end(),
+                        [&](const auto& row) {
+                          return row.canonicalName == normalized ||
+                              row.requestedName == name;
                         });
                   }));
           // TurboModuleBinding exposes nativeModuleProxy in bridgeless mode,
@@ -2733,97 +3094,327 @@ rns::EngineResult rns::Engine::run() {
                         args[0].getString(runtime).utf8(runtime);
                     return proxy.getProperty(runtime, moduleName.c_str());
                   }));
-          reactFabricHost =
-              installHeadlessReactFabric(
-                  runtime,
-                  runtimeExecutor,
-                  instance->getRuntimeScheduler(),
-                  eventLoop,
-                  options.viewportWidth,
-                  options.viewportHeight,
-                  options.pointScaleFactor,
-                  options.insetTop,
-                  options.insetBottom,
-                  options.fontDirectory.value_or(std::filesystem::path{}),
-                  options.assetDirectory.value_or(std::filesystem::path{}),
-                  runtimeProfile->platform(),
-                  addonRegistry.componentCapabilities(),
-                  [impl = impl_.get(),
-                   componentFidelities = std::move(componentFidelities),
-                   inspectorTransport,
-                   &options,
-                   platform = runtimeProfile->platform(),
-                   runtimeGeneration =
-                       static_cast<std::uint64_t>(sessionGeneration),
-                   &inspectorSequence,
-                   &lastPublishedSceneRevision,
-                   lastFabric](
-                      const HeadlessReactFabricResult& result) mutable {
-                    *lastFabric = result;
-                    for (const auto& node : result.mountedViewNodes) {
-                      const auto capability =
-                          componentFidelities.find(node.componentName);
-                      if (capability != componentFidelities.end()) {
+          rns::AddonFabricRegistrar::HostSession fabricSession;
+          std::vector<facebook::react::ComponentDescriptorProvider>
+              addonProviders;
+          size_t configuredAddons = 0;
+          try {
+            for (auto& addon : launch.addons) {
+              rns::AddonFabricRegistrar registrar(
+                  fabricSession, addon.manifest.name, addon.manifest);
+              addon.addon->configureFabric(generationContext, registrar);
+              registrar.releaseSession();
+              ++configuredAddons;
+              for (const auto& component : addon.manifest.components) {
+                if (component.kind !=
+                    rns::AddonComponentKind::FabricDescriptor) {
+                  continue;
+                }
+                const auto registered = std::any_of(
+                    fabricSession.providers.begin(),
+                    fabricSession.providers.end(),
+                    [&](const auto& staged) {
+                      return staged.addonName == addon.manifest.name &&
+                          staged.provider.name != nullptr &&
+                          std::string(staged.provider.name) == component.name;
+                    });
+                if (!registered) {
+                  throw rns::AddonContractViolation(
+                      addon.manifest.name,
+                      "configureFabric",
+                      component.name,
+                      generationContext.generation,
+                      "missing descriptor provider for " + component.name);
+                }
+              }
+            }
+            for (const auto& staged : fabricSession.providers) {
+              addonProviders.push_back(staged.provider);
+            }
+            AddonFabricHostBindings fabricBindings;
+            fabricBindings.generation =
+                static_cast<std::uint64_t>(sessionGeneration);
+            fabricBindings.mountHandlers = fabricSession.mountHandlers;
+            fabricBindings.commandHandlers = fabricSession.commandHandlers;
+            for (const auto& row : launch.expectedComponents) {
+              fabricBindings.componentOwners[row.canonicalName] = row.owner;
+            }
+            for (const auto& config : addonViewManagerConfigs) {
+              for (const auto& command : config.commands) {
+                fabricBindings.commandAliases[config.name]
+                    [std::to_string(command.id)] = command.name;
+              }
+            }
+            fabricBindings.reportFatal =
+                [&pendingAddonFatal](std::exception_ptr error) {
+                  if (!pendingAddonFatal) {
+                    pendingAddonFatal = std::move(error);
+                  }
+                };
+            std::vector<react::ComponentDescriptorProvider> frameworkProviders;
+            for (const auto& entry :
+                 rns::allInventoryComponents(launch.inventory)) {
+              frameworkProviders.push_back(entry.provider);
+            }
+            reactFabricHost =
+                installHeadlessReactFabric(
+                    runtime,
+                    runtimeExecutor,
+                    instance->getRuntimeScheduler(),
+                    eventLoop,
+                    options.viewportWidth,
+                    options.viewportHeight,
+                    options.pointScaleFactor,
+                    options.insetTop,
+                    options.insetBottom,
+                    options.fontDirectory.value_or(std::filesystem::path{}),
+                    options.assetDirectory.value_or(std::filesystem::path{}),
+                    runtimeProfile.platform,
+                    addonComponents,
+                    std::move(addonProviders),
+                    std::move(frameworkProviders),
+                    [impl = impl_.get(),
+                     componentFidelities = std::move(componentFidelities),
+                     componentOwners,
+                     inspectorTransport,
+                     &options,
+                     &launch,
+                     runtimeGeneration =
+                         static_cast<std::uint64_t>(sessionGeneration),
+                     &inspectorSequence,
+                     &lastPublishedSceneRevision,
+                     lastFabric](
+                        const HeadlessReactFabricResult& result) mutable {
+                      *lastFabric = result;
+                      for (const auto& node : result.mountedViewNodes) {
+                        const auto capability =
+                            componentFidelities.find(node.componentName);
+                        if (capability != componentFidelities.end()) {
+                          const auto owner =
+                              componentOwners.find(node.componentName);
+                          impl->recordCapabilityUsage(makeRuntimeCapabilityUsage(
+                              "component",
+                              capability->first,
+                              capability->second,
+                              rns::RuntimeCapabilityClass::Implemented,
+                              owner == componentOwners.end()
+                                  ? ""
+                                  : owner->second));
+                        }
+                      }
+                      for (const auto& name : result.fallbackComponentNames) {
                         impl->recordCapabilityUsage(makeRuntimeCapabilityUsage(
                             "component",
-                            capability->first,
-                            capability->second));
+                            name,
+                            "fallback-descriptor",
+                            rns::RuntimeCapabilityClass::LayoutOnly,
+                            ""));
+                        impl->recordRuntimeDiagnostic({
+                            .kind =
+                                rns::RuntimeDiagnosticKind::FallbackComponent,
+                            .name = name,
+                            .message = "Fabric component '" + name +
+                                "' is using a fallback descriptor; its pixels "
+                                "and behavior are not Android-equivalent.",
+                        });
                       }
-                    }
-                    for (const auto& name : result.fallbackComponentNames) {
-                      impl->recordCapabilityUsage(makeRuntimeCapabilityUsage(
-                          "component", name, "fallback-descriptor"));
-                      impl->recordRuntimeDiagnostic({
-                          .kind = rns::RuntimeDiagnosticKind::FallbackComponent,
-                          .name = name,
-                          .message = "Fabric component '" + name +
-                              "' is using a fallback descriptor; its pixels "
-                              "and behavior are not Android-equivalent.",
-                      });
-                    }
-                    if (options.onSceneUpdate) {
-                      options.onSceneUpdate(makeSceneSnapshot(
-                          options, result, runtimeGeneration));
+                      impl->invokeSceneUpdate(makeSceneSnapshot(
+                          impl->config, result, runtimeGeneration));
                       lastPublishedSceneRevision = result.mountingRevision;
+                      if (inspectorTransport) {
+                        const auto sequence = ++inspectorSequence;
+                        inspectorTransport->sendJson(folly::toJson(
+                            folly::dynamic::object
+                                ("type", "snapshot")
+                                ("state", "running")
+                                ("metrics", makeLiveInspectorSnapshot(
+                                    options,
+                                    launch,
+                                    result,
+                                    "running",
+                                    sequence,
+                                    true))
+                                ("scene",
+                                 makeSceneWireSnapshot(options, result))));
+                      }
+                    },
+                    std::move(fabricBindings));
+            const char* protectedNames[] = {
+                "RN$Simulator",
+                "nativeModuleProxy",
+                "__turboModuleProxy",
+                "nativeRuntimeScheduler",
+                "RN$LegacyInterop_UIManager_getConstants",
+                "RN$LegacyInterop_UIManager_getConstantsForViewManager",
+                "RN$LegacyInterop_UIManager_getDefaultEventTypes",
+                "__nativeComponentRegistry__hasComponent",
+                "__fbBatchedBridgeConfig",
+                "console",
+            };
+            struct ProtectedGlobal {
+              const char* name{nullptr};
+              jsi::Value value;
+              jsi::Value bindingDescriptor;
+              std::vector<std::pair<std::string, jsi::Value>> descriptors;
+            };
+            std::vector<ProtectedGlobal> protectedGlobals;
+            protectedGlobals.reserve(
+                sizeof(protectedNames) / sizeof(protectedNames[0]));
+            auto objectCtor =
+                runtime.global().getPropertyAsObject(runtime, "Object");
+            auto getOwnPropertyDescriptor = objectCtor.getPropertyAsFunction(
+                runtime, "getOwnPropertyDescriptor");
+            auto snapshotDescriptor =
+                [&](const jsi::Value& target, const std::string& key) {
+                  return getOwnPropertyDescriptor.callWithThis(
+                      runtime,
+                      objectCtor,
+                      target,
+                      jsi::String::createFromUtf8(runtime, key));
+                };
+            auto descriptorsEqual =
+                [&](const jsi::Value& left, const jsi::Value& right) {
+                  if (left.isUndefined() && right.isUndefined()) {
+                    return true;
+                  }
+                  if (!left.isObject() || !right.isObject()) {
+                    return jsi::Value::strictEquals(runtime, left, right);
+                  }
+                  auto a = left.getObject(runtime);
+                  auto b = right.getObject(runtime);
+                  const char* fields[] = {
+                      "enumerable",
+                      "configurable",
+                      "writable",
+                      "value",
+                      "get",
+                      "set"};
+                  for (const char* field : fields) {
+                    auto av = a.getProperty(runtime, field);
+                    auto bv = b.getProperty(runtime, field);
+                    if (!jsi::Value::strictEquals(runtime, av, bv)) {
+                      return false;
                     }
-                    if (inspectorTransport) {
-                      const auto sequence = ++inspectorSequence;
-                      inspectorTransport->sendJson(folly::toJson(
-                          folly::dynamic::object
-                              ("type", "snapshot")
-                              ("state", "running")
-                              ("metrics", makeLiveInspectorSnapshot(
-                                  options,
-                                  platform,
-                                  result,
-                                  "running",
-                                  sequence,
-                                  true))
-                              ("scene", makeSceneWireSnapshot(options, result))));
-                    }
-                  });
-          hostChrome().onInvalidate = [
-              eventLoop,
-              lastFabric,
-              &options,
-              runtimeGeneration =
-                  static_cast<std::uint64_t>(sessionGeneration)]() {
-            eventLoop->runOnQueue([
-                lastFabric, &options, runtimeGeneration]() {
-              if (options.onSceneUpdate) {
-                options.onSceneUpdate(makeSceneSnapshot(
-                    options, *lastFabric, runtimeGeneration));
+                  }
+                  return true;
+                };
+            for (const char* name : protectedNames) {
+              ProtectedGlobal snapshot;
+              snapshot.name = name;
+              snapshot.value = jsi::Value(
+                  runtime, runtime.global().getProperty(runtime, name));
+              snapshot.bindingDescriptor = jsi::Value(
+                  runtime,
+                  snapshotDescriptor(
+                      jsi::Value(runtime, runtime.global()), name));
+              if (snapshot.value.isObject()) {
+                auto object = snapshot.value.getObject(runtime);
+                auto names = object.getPropertyNames(runtime);
+                const auto count = names.size(runtime);
+                snapshot.descriptors.reserve(count);
+                for (size_t index = 0; index < count; ++index) {
+                  auto keyValue = names.getValueAtIndex(runtime, index);
+                  if (!keyValue.isString()) {
+                    continue;
+                  }
+                  auto key = keyValue.getString(runtime).utf8(runtime);
+                  snapshot.descriptors.emplace_back(
+                      key,
+                      jsi::Value(
+                          runtime,
+                          snapshotDescriptor(snapshot.value, key)));
+                }
               }
-            });
-          };
-          runtimeInitialized = true;
+              protectedGlobals.push_back(std::move(snapshot));
+            }
+            for (auto& addon : launch.addons) {
+              addon.addon->installJSI(generationContext, runtime, jsInvoker);
+            }
+            for (const auto& previous : protectedGlobals) {
+              auto current = runtime.global().getProperty(runtime, previous.name);
+              if (!jsi::Value::strictEquals(runtime, current, previous.value)) {
+                throw rns::AddonContractViolation(
+                    "",
+                    "installJSI",
+                    previous.name,
+                    generationContext.generation,
+                    std::string("protected global mutated: ") + previous.name);
+              }
+              auto currentBinding = snapshotDescriptor(
+                  jsi::Value(runtime, runtime.global()), previous.name);
+              if (!descriptorsEqual(currentBinding, previous.bindingDescriptor)) {
+                throw rns::AddonContractViolation(
+                    "",
+                    "installJSI",
+                    previous.name,
+                    generationContext.generation,
+                    std::string("protected global descriptor mutated: ") +
+                        previous.name);
+              }
+              if (!previous.value.isObject() || !current.isObject()) {
+                continue;
+              }
+              auto object = current.getObject(runtime);
+              auto names = object.getPropertyNames(runtime);
+              if (names.size(runtime) != previous.descriptors.size()) {
+                throw rns::AddonContractViolation(
+                    "",
+                    "installJSI",
+                    previous.name,
+                    generationContext.generation,
+                    std::string("protected global mutated: ") + previous.name);
+              }
+              for (const auto& [key, descriptor] : previous.descriptors) {
+                auto now = snapshotDescriptor(current, key);
+                if (!descriptorsEqual(now, descriptor)) {
+                  throw rns::AddonContractViolation(
+                      "",
+                      "installJSI",
+                      previous.name,
+                      generationContext.generation,
+                      std::string("protected global mutated: ") + previous.name +
+                          "." + key);
+                }
+              }
+            }
+            hostChrome().onInvalidate = [
+                eventLoop,
+                lastFabric,
+                impl = impl_.get(),
+                runtimeGeneration =
+                    static_cast<std::uint64_t>(sessionGeneration)]() {
+              eventLoop->runOnQueue([
+                  lastFabric, impl, runtimeGeneration]() {
+                impl->invokeSceneUpdate(makeSceneSnapshot(
+                    impl->config, *lastFabric, runtimeGeneration));
+              });
+            };
+            runtimeInitialized = true;
+          } catch (...) {
+            generationSetupError = std::make_exception_ptr(std::runtime_error(
+                rns::hostOwnedExceptionMessage("generation setup failed")));
+            (void)configuredAddons;
+          }
         });
     eventLoop->runUntil(
-        [&] { return runtimeInitialized || jsErrorCount > 0; },
+        [&] {
+          return runtimeInitialized || jsErrorCount > 0 ||
+              static_cast<bool>(generationSetupError);
+        },
         std::chrono::milliseconds(options.timeoutMs));
+    if (generationSetupError) {
+      closeGeneration();
+      std::rethrow_exception(generationSetupError);
+    }
     if (!runtimeInitialized) {
+      closeGeneration();
+      if (jsErrorCount > 0) {
+        throw std::runtime_error(
+            "ReactInstance initializationError: JavaScript error during setup");
+      }
       throw std::runtime_error("ReactInstance initialization timed out");
     }
+    surfacePendingFatal();
     impl_->setRuntimePhase(rns::RuntimePhase::LoadingBundle);
     if (inspectorTransport) {
       inspectorTransport->sendJson(folly::toJson(folly::dynamic::object
@@ -2917,7 +3508,10 @@ rns::EngineResult rns::Engine::run() {
           nullptr,
           [&loaded](jsi::Runtime&) { loaded = true; });
       eventLoopTasks += eventLoop->runUntil(
-          [&] { return loaded || jsErrorCount > errorsBeforeLoad; },
+          [&] {
+            return loaded || jsErrorCount > errorsBeforeLoad ||
+                impl_->stopRequested.load();
+          },
           remainingTimeout());
       record.loaded = loaded && jsErrorCount == errorsBeforeLoad;
       record.evaluationMs = std::chrono::duration<double, std::milli>(
@@ -3272,7 +3866,8 @@ rns::EngineResult rns::Engine::run() {
     } else if (developmentMode && !bundleLoadFailed && jsErrorCount == 0) {
       impl_->setRuntimePhase(rns::RuntimePhase::ChoosingApplication);
     }
-    while (!bundleLoadFailed && jsErrorCount == 0) {
+    while (!bundleLoadFailed && jsErrorCount == 0 &&
+           !impl_->stopRequested.load()) {
       processQueuedActions();
       processQueuedApplication();
       while (!requestedBundles.empty()) {
@@ -3290,27 +3885,35 @@ rns::EngineResult rns::Engine::run() {
           break;
         }
       }
-      if (bundleLoadFailed ||
+      if (bundleLoadFailed || impl_->stopRequested.load() ||
           (!developmentMode &&
            (workloadComplete || remainingTimeout().count() == 0)) ||
           (developmentMode &&
            (impl_->stopRequested || impl_->reloadRequested ||
             (options.devTools.waitForDisconnect &&
              (!devTools || !devTools->hasSession()))))) {
+        if (pendingAddonFatal) {
+          surfacePendingFatal();
+        }
         break;
       }
       eventLoopTasks += eventLoop->runUntil(
           [&] {
-            return (!developmentMode && workloadComplete) ||
+            return impl_->stopRequested.load() ||
+                (!developmentMode && workloadComplete) ||
                 (developmentMode &&
                  (impl_->stopRequested || impl_->reloadRequested ||
                   (options.devTools.waitForDisconnect &&
                    (!devTools || !devTools->hasSession())))) ||
                 jsErrorCount > 0 || !requestedBundles.empty() ||
-                impl_->hasActions() || impl_->hasApplicationRequest();
+                impl_->hasActions() || impl_->hasApplicationRequest() ||
+                static_cast<bool>(pendingAddonFatal);
           },
           developmentMode ? std::chrono::milliseconds(25)
                           : remainingTimeout());
+      if (pendingAddonFatal) {
+        surfacePendingFatal();
+      }
     }
     if (developmentMode && (bundleLoadFailed || jsErrorCount > 0) &&
         !impl_->stopRequested.load() && !impl_->reloadRequested.load()) {
@@ -3344,23 +3947,7 @@ rns::EngineResult rns::Engine::run() {
         });
         eventLoop->drainUntilIdle();
       }
-      hostChrome().onInvalidate = nullptr;
-      headlessKeyboard().emit = nullptr;
-      headlessBackPress().emit = nullptr;
-      headlessBackPress().invokeDefault = nullptr;
-      headlessBackPress().runOnJs = nullptr;
-      hostEnvironment().reset();
-      headlessWebSocketReset();
-      headlessBlobReset();
-      headlessImageRequestsReset();
-      reactFabricHost.reset();
-      turboModuleCache.clear();
-      timerManager.reset();
-      if (devTools) {
-        instance->unregisterFromInspector();
-      }
-      instance.reset();
-      eventLoop->quitSynchronous();
+      closeGeneration();
       continue;
     }
     const bool bundleLoaded = !bundleLoadFailed &&
@@ -3487,58 +4074,14 @@ rns::EngineResult rns::Engine::run() {
           ("loaded", record.loaded)
           ("error", record.error));
     }
-    folly::dynamic addonMetadata = folly::dynamic::array;
-    for (const auto& addonName : addonRegistry.names()) {
-      addonMetadata.push_back(addonName);
-    }
-    folly::dynamic frameworkModuleMetadata = folly::dynamic::array;
-    for (const auto& capability : runtimeProfile->moduleCapabilities()) {
-      frameworkModuleMetadata.push_back(capability.name);
-    }
-    folly::dynamic addonModuleMetadata = folly::dynamic::array;
-    for (const auto& moduleName : addonRegistry.moduleNames()) {
-      addonModuleMetadata.push_back(moduleName);
-    }
-    folly::dynamic frameworkComponentCapabilities = folly::dynamic::object
-        ("RootView", "real-fabric-root")
-        ("View", "real-fabric-yoga")
-        ("RawText", "real-fabric-virtual-text")
-        ("Text", "real-fabric-virtual-text")
-#if RNS_ENABLE_SKIA
-        ("Paragraph", "skia-prepared-text")
-#else
-        ("Paragraph", "unavailable-without-skia")
-#endif
-        ("ScrollView", "headless-viewport-state")
-#if RNS_ENABLE_SKIA
-        ("Image", "skia-local-and-http-image");
-#else
-        ("Image", "unavailable-without-skia");
-#endif
-    for (const auto& spec : react::kHeadlessOfficialComponents) {
-      frameworkComponentCapabilities[spec.name] =
-          componentFidelityForBuild(spec.fidelity);
-    }
-    if (runtimeProfile->platform() == "ios") {
-      frameworkComponentCapabilities["TextInput"] =
-          "rn-fabric-headless-platform-adapter";
-    } else {
-      frameworkComponentCapabilities["AndroidTextInput"] =
-          "rn-fabric-headless-platform-adapter";
-    }
-    folly::dynamic moduleCapabilities = folly::dynamic::object;
-    for (const auto& capability : runtimeProfile->moduleCapabilities()) {
-      moduleCapabilities[capability.name] = capability.fidelity;
-    }
-    for (const auto& capability : addonRegistry.moduleCapabilities()) {
-      moduleCapabilities[capability.name] = capability.fidelity;
-    }
+    const auto addonMetadata = makeAddonMetadataJson(launch.addons);
+    auto nativeCapabilities = makeNativeCapabilitiesJson(launch, reactFabric);
 #if RNS_ENABLE_SKIA
     const auto textFontProfile = options.fontDirectory
         ? "configured-font-directory"
-        : runtimeProfile->platform() == "ios"
+        : runtimeProfile.platform == "ios"
         ? (hostOsName() == "macos" ? "ios-coretext-system" : "ios-host-fonts-unverified")
-        : runtimeProfile->platform() == "android"
+        : runtimeProfile.platform == "android"
         ? (hostOsName() == "macos"
                ? "android-macos-coretext-fallback-unverified"
                : "android-linux-fontconfig-fallback-unverified")
@@ -3553,7 +4096,7 @@ rns::EngineResult rns::Engine::run() {
         ("headEllipsis", "android-truncate-at-start")
         ("middleEllipsis", "android-truncate-at-middle")
         ("adjustsFontSizeToFit", "android-spannable-binary-search")
-        ("androidFontPadding", runtimeProfile->platform() == "android"
+        ("androidFontPadding", runtimeProfile.platform == "android"
             ? "android-font-metrics"
             : "unsupported")
         ("hyphenation", "camel-case-soft-hyphen")
@@ -3567,10 +4110,7 @@ rns::EngineResult rns::Engine::run() {
         ("engine", "unavailable-without-skia")
         ("fontProfile", "unavailable-without-skia");
 #endif
-    folly::dynamic fallbackComponents = folly::dynamic::array;
-    for (const auto& componentName : reactFabric.fallbackComponentNames) {
-      fallbackComponents.push_back(componentName);
-    }
+    nativeCapabilities["text"] = textCapabilities;
     const auto serializeViewNodes = [](const auto& sourceNodes) {
       folly::dynamic nodes = folly::dynamic::array;
       for (const auto& node : sourceNodes) {
@@ -3766,10 +4306,6 @@ rns::EngineResult rns::Engine::run() {
         ("nodeCount", reactFabric.mountedViewNodes.size())
         ("errors", std::move(mountingErrors))
         ("nodes", serializeViewNodes(reactFabric.mountedViewNodes));
-    folly::dynamic componentCapabilities = frameworkComponentCapabilities;
-    for (const auto& capability : addonRegistry.componentCapabilities()) {
-      componentCapabilities[capability.name] = capability.fidelity;
-    }
     folly::dynamic workloadMarkMetadata = folly::dynamic::array;
     for (const auto& mark : workloadMarks) {
       workloadMarkMetadata.push_back(folly::dynamic::object
@@ -3823,7 +4359,8 @@ rns::EngineResult rns::Engine::run() {
         : folly::dynamic(nullptr);
     std::ostringstream metrics;
     metrics << "{\"host\":\"react-native-simulator\","
-              << "\"schemaVersion\":2,"
+              << "\"schemaVersion\":3,"
+              << "\"addonAbi\":" << rns::kSimulatorAddonAbiVersion << ','
               << "\"engine\":\"Hermes\","
               << "\"reactNativeVersion\":\"" RNS_REACT_NATIVE_VERSION "\","
               << "\"reactVersion\":\"external-bundle\","
@@ -3837,32 +4374,18 @@ rns::EngineResult rns::Engine::run() {
                              ? "conformance"
                              : (workloadResultPresent ? "workload" : "runtime")))
               << "\","
-              << "\"profile\":\"" << options.profile << "\","
-              << "\"platformProfile\":\"" << runtimeProfile->platform()
-              << "\","
-              << "\"bundleTargetReactNativeVersion\":\""
-              << runtimeProfile->bundleTargetReactNativeVersion() << "\","
-              << "\"compatibilityLevel\":\""
-              << runtimeProfile->compatibilityLevel() << "\","
+              << "\"profile\":"
+              << folly::toJson(makeProfileJson(runtimeProfile)) << ","
+              << "\"bundleCompatibility\":"
+              << folly::toJson(makeBundleCompatibilityJson(launch.compatibility))
+              << ","
               << "\"viewport\":{\"width\":" << options.viewportWidth
               << ",\"height\":" << options.viewportHeight
               << ",\"pointScaleFactor\":" << options.pointScaleFactor
               << "},"
               << "\"addons\":" << folly::toJson(addonMetadata) << ','
-              << "\"rnFrameworkModules\":"
-              << folly::toJson(frameworkModuleMetadata) << ','
-              << "\"rnFrameworkComponents\":"
-              << folly::toJson(frameworkComponentCapabilities) << ','
-              << "\"addonModules\":"
-              << folly::toJson(addonModuleMetadata) << ','
-              << "\"nativeCapabilities\":{\"modules\":"
-              << folly::toJson(moduleCapabilities)
-              << ",\"text\":"
-              << folly::toJson(textCapabilities)
-              << ",\"fallbackComponents\":"
-              << folly::toJson(fallbackComponents)
-              << ",\"components\":"
-              << folly::toJson(componentCapabilities) << "},"
+              << "\"nativeCapabilities\":"
+              << folly::toJson(nativeCapabilities) << ','
               << "\"requirements\":{"
               << "\"requireReactFabric\":"
               << (requireReactFabric ? "true" : "false") << ','
@@ -3916,6 +4439,10 @@ rns::EngineResult rns::Engine::run() {
               << (nativeComponentPassed ? "true" : "false")
               << ",\"customNativeCommands\":"
               << reactFabric.customCommands
+              << ",\"unknownCommands\":"
+              << reactFabric.unknownCommands
+              << ",\"staleCommands\":"
+              << reactFabric.staleCommands
               << ",\"mockedNativeComponents\":"
               << reactFabric.mockedComponents
               << ",\"yogaWidths\":[" << fabric.firstWidth << ','
@@ -3996,15 +4523,16 @@ rns::EngineResult rns::Engine::run() {
               << "\"eventLoopTasks\":" << eventLoopTasks << ','
               << "\"jsErrors\":" << jsErrorCount << ','
               << "\"jsErrorDetails\":"
-              << folly::toJson(jsErrorMetadata) << "}\n";
+              << folly::toJson(jsErrorMetadata) << ','
+              << "\"droppedPosts\":"
+              << executorState->droppedPosts.load() << "}\n";
     const auto metricsJson = metrics.str();
     auto scene = makeSceneSnapshot(
         options,
         reactFabric,
         static_cast<std::uint64_t>(sessionGeneration));
-    if (options.onSceneUpdate &&
-        lastPublishedSceneRevision != scene->revision) {
-      options.onSceneUpdate(scene);
+    if (lastPublishedSceneRevision != scene->revision) {
+      impl_->invokeSceneUpdate(scene);
     }
     const auto lifecyclePassed =
         developmentMode || (workloadReady && workloadComplete);
@@ -4071,39 +4599,35 @@ rns::EngineResult rns::Engine::run() {
             std::chrono::milliseconds(options.devTools.keepAliveMs));
       }
     }
-    hostChrome().onInvalidate = nullptr;
-    headlessKeyboard().emit = nullptr;
-    headlessBackPress().emit = nullptr;
-    headlessBackPress().invokeDefault = nullptr;
-    headlessBackPress().runOnJs = nullptr;
-    hostEnvironment().reset();
-    headlessWebSocketReset();
-    headlessBlobReset();
-    headlessImageRequestsReset();
-    reactFabricHost.reset();
-    turboModuleCache.clear();
-    // ReactInstance must be the final TimerManager owner so its member
-    // destruction releases pending JSI timer callbacks before the runtime.
-    timerManager.reset();
-    if (devTools) {
-      instance->unregisterFromInspector();
+    closeGeneration();
+    for (auto it = launch.addons.rbegin(); it != launch.addons.rend(); ++it) {
+      if (it->bindEntered && it->addon) {
+        it->addon->unbind();
+        it->bindEntered = false;
+      }
     }
-    instance.reset();
-    devTools.reset();
-    eventLoop->quitSynchronous();
+    rns::destroyCommittedAddons(launch.addons);
     return {
         .exitCode = exitCode,
         .error = std::move(failureReason),
         .metricsJson = metricsJson,
         .scene = std::move(scene),
     };
+    } catch (...) {
+      closeGeneration();
+      throw;
     }
-  } catch (const std::exception& error) {
-    if (inspectorTransport) {
-      inspectorTransport->sendJson(folly::toJson(folly::dynamic::object
-          ("type", "error")
-          ("message", error.what())));
     }
-    return {.exitCode = 1, .error = error.what()};
+  } catch (...) {
+    runError = rns::hostOwnedExceptionMessage("unknown runtime error");
   }
+  if (inspectorTransport) {
+    inspectorTransport->sendJson(folly::toJson(folly::dynamic::object
+        ("type", "error")
+        ("message", runError)));
+  }
+  if (impl_->plan && impl_->plan.impl_) {
+    rns::unbindAndDestroyCommittedAddons(impl_->plan.impl_->addons);
+  }
+  return {.exitCode = 1, .error = std::move(runError)};
 }

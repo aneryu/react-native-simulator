@@ -6,6 +6,7 @@
 
 #include <react/renderer/componentregistry/ComponentDescriptorProviderRegistry.h>
 #include <react/renderer/components/root/RootComponentDescriptor.h>
+#include <react/renderer/components/root/RootShadowNode.h>
 #include <react/renderer/components/scrollview/ScrollViewComponentDescriptor.h>
 #include <react/renderer/components/image/ImageComponentDescriptor.h>
 #include <react/renderer/components/image/ImageEventEmitter.h>
@@ -47,6 +48,7 @@
 #include <react/renderer/components/view/LayoutConformanceComponentDescriptor.h>
 #include <react/renderer/components/view/TouchEventEmitter.h>
 #include <react/renderer/components/unimplementedview/UnimplementedViewComponentDescriptor.h>
+#include <react/renderer/core/ComponentDescriptor.h>
 #include <react/renderer/core/EventDispatcher.h>
 #include <react/renderer/core/EventEmitter.h>
 #include <react/renderer/core/EventQueueProcessor.h>
@@ -69,14 +71,19 @@
 #include <react-native-simulator/SceneTransform.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <limits>
+#include <optional>
 #include <string_view>
 #include <system_error>
+#include <stdexcept>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -1235,6 +1242,11 @@ class HeadlessReactFabricHost final
     react::EventEmitter::Shared eventEmitter;
     react::State::Shared state;
     std::shared_ptr<const react::ImageResponseObserver> imageObserver;
+    std::shared_ptr<const react::ShadowNode> shadowNode;
+    react::ShadowNodeFamily::Shared family;
+    std::string owner;
+    std::string canonicalName;
+    react::LayoutMetrics layoutMetrics{};
     int eventCount{0};
   };
 
@@ -1326,9 +1338,12 @@ class HeadlessReactFabricHost final
       const std::filesystem::path& fontDirectory,
       const std::filesystem::path& assetDirectory,
       const std::string& platform,
-      std::vector<ReactNativeSimulator::SimulatorAddonCapability>
+      std::vector<ReactNativeSimulator::AddonComponentDeclaration>
           addonComponents,
-      HeadlessReactFabricUpdate onUpdate)
+      std::vector<react::ComponentDescriptorProvider> addonProviders,
+      std::vector<react::ComponentDescriptorProvider> frameworkProviders,
+      HeadlessReactFabricUpdate onUpdate,
+      AddonFabricHostBindings addonBindings)
       : contextContainer_(std::make_shared<react::ContextContainer>()),
         runtimeExecutor_(runtimeExecutor),
         runtimeScheduler_(std::move(runtimeScheduler)),
@@ -1339,7 +1354,9 @@ class HeadlessReactFabricHost final
         viewportWidth_(viewportWidth),
         viewportHeight_(viewportHeight),
         platform_(platform),
-        onUpdate_(std::move(onUpdate)) {
+        onUpdate_(std::move(onUpdate)),
+        addonBindings_(std::move(addonBindings)),
+        runtimeThread_(std::this_thread::get_id()) {
     textLayoutManager_ = std::make_shared<react::HeadlessTextLayoutManager>(
         contextContainer_, fontDirectory, platform);
     contextContainer_->insert(
@@ -1370,6 +1387,10 @@ class HeadlessReactFabricHost final
     mountedViews_.emplace(kReactSurfaceId, std::move(rootView));
     providers_.setComponentDescriptorProviderRequest(
         [this](react::ComponentName componentName) {
+          if (preflighting_) {
+            throw std::runtime_error(
+                "re-entrant provider registration during preflight");
+          }
           fallbackComponentNames_.insert(componentName);
           auto flavor = std::make_shared<std::string>(componentName);
           providers_.add({
@@ -1418,58 +1439,80 @@ class HeadlessReactFabricHost final
         statePipe,
         std::weak_ptr<react::EventLogger>{});
     ownerBox->owner = eventDispatcher_;
-    registry_ = providers_.createComponentDescriptorRegistry({
+    const react::ComponentDescriptorParameters descriptorParams{
         .eventDispatcher = eventDispatcher_,
         .contextContainer = contextContainer_,
-        .flavor = nullptr});
-    providers_.add(
-        react::concreteComponentDescriptorProvider<
-            react::RootComponentDescriptor>());
-    providers_.add(
-        react::concreteComponentDescriptorProvider<
-            react::ViewComponentDescriptor>());
-    providers_.add(
-        react::concreteComponentDescriptorProvider<
-            react::LayoutConformanceComponentDescriptor>());
-    providers_.add(
-        react::concreteComponentDescriptorProvider<
-            react::RawTextComponentDescriptor>());
-    providers_.add(
-        react::concreteComponentDescriptorProvider<
-            react::TextComponentDescriptor>());
-    providers_.add(
-        react::concreteComponentDescriptorProvider<
-            react::ParagraphComponentDescriptor>());
-    providers_.add(
-        react::concreteComponentDescriptorProvider<
-            react::ScrollViewComponentDescriptor>());
-    providers_.add(
-        react::concreteComponentDescriptorProvider<
-            react::ImageComponentDescriptor>());
-    react::registerHeadlessOfficialComponents(
-        providers_, officialComponentFlavors_);
-    if (platform == "ios") {
-      providers_.add(
-          react::concreteComponentDescriptorProvider<
-              react::HeadlessIOSTextInputComponentDescriptor>());
+        .flavor = nullptr};
+    std::vector<react::ComponentDescriptorProvider> stagedProviders;
+    if (!frameworkProviders.empty()) {
+      stagedProviders = std::move(frameworkProviders);
     } else {
-      providers_.add(
+      stagedProviders.push_back(
           react::concreteComponentDescriptorProvider<
-              react::HeadlessAndroidTextInputComponentDescriptor>());
+              react::RootComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::ViewComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::LayoutConformanceComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::RawTextComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::TextComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::ParagraphComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::ScrollViewComponentDescriptor>());
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::ImageComponentDescriptor>());
+      react::collectHeadlessOfficialComponentProviders(
+          stagedProviders, officialComponentFlavors_);
+      if (platform == "ios") {
+        stagedProviders.push_back(
+            react::concreteComponentDescriptorProvider<
+                react::HeadlessIOSTextInputComponentDescriptor>());
+      } else {
+        stagedProviders.push_back(
+            react::concreteComponentDescriptorProvider<
+                react::HeadlessAndroidTextInputComponentDescriptor>());
+      }
+      stagedProviders.push_back(
+          react::concreteComponentDescriptorProvider<
+              react::HeadlessSampleViewComponentDescriptor>());
     }
-    providers_.add(
-        react::concreteComponentDescriptorProvider<
-            react::HeadlessSampleViewComponentDescriptor>());
     for (const auto& component : addonComponents) {
+      if (component.kind !=
+          ReactNativeSimulator::AddonComponentKind::DescriptorOnlyMock) {
+        continue;
+      }
       auto flavor = std::make_shared<std::string>(component.name);
       addonComponentFlavors_.push_back(flavor);
       addonMockComponentNames_.push_back(component.name);
-      providers_.add({
+      stagedProviders.push_back({
           reinterpret_cast<react::ComponentHandle>(flavor->c_str()),
           flavor->c_str(),
           flavor,
           &react::concreteComponentDescriptorConstructor<
               react::UnimplementedViewComponentDescriptor>});
+    }
+    stagedProviders.insert(
+        stagedProviders.end(), addonProviders.begin(), addonProviders.end());
+    preflighting_ = true;
+    std::unordered_set<react::ComponentHandle> seenHandles;
+    std::unordered_set<std::string> seenNames;
+    for (const auto& provider : stagedProviders) {
+      preflightProvider(provider, descriptorParams, seenHandles, seenNames);
+    }
+    preflighting_ = false;
+    registry_ = providers_.createComponentDescriptorRegistry(descriptorParams);
+    for (const auto& provider : stagedProviders) {
+      providers_.add(provider);
     }
     uiManager_->setComponentDescriptorRegistry(registry_);
     uiManager_->setDelegate(this);
@@ -1499,16 +1542,76 @@ class HeadlessReactFabricHost final
   }
 
   ~HeadlessReactFabricHost() override {
+    // stopSurface must run while ReactInstance is still alive. closeGeneration
+    // does that before reset(); this destructor only shuts the host down.
+    shutdown();
+  }
+
+  void stopSurfaceOnce() {
+    if (!surfaceRunning_ || !uiManager_) {
+      return;
+    }
+    callbacksEnabled_ = false;
+    // UIManager::stopSurface always posts AppRegistryBinding::stopSurface.
+    // Workload-only bundles never install RN$stopSurface; provide a no-op so
+    // the JS callback does not throw through the error handler during teardown.
+    if (runtimeExecutor_) {
+      runtimeExecutor_([](facebook::jsi::Runtime& runtime) {
+        auto existing = runtime.global().getProperty(runtime, "RN$stopSurface");
+        if (existing.isObject() &&
+            existing.getObject(runtime).isFunction(runtime)) {
+          return;
+        }
+        runtime.global().setProperty(
+            runtime,
+            "RN$stopSurface",
+            facebook::jsi::Function::createFromHostFunction(
+                runtime,
+                facebook::jsi::PropNameID::forAscii(runtime, "RN$stopSurface"),
+                1,
+                [](facebook::jsi::Runtime&,
+                   const facebook::jsi::Value&,
+                   const facebook::jsi::Value*,
+                   size_t) { return facebook::jsi::Value::undefined(); }));
+      });
+    }
+    uiManager_->stopSurface(kReactSurfaceId);
+    surfaceRunning_ = false;
+  }
+
+  void shutdown() {
+    if (shutdown_) {
+      return;
+    }
+    shutdown_.store(true, std::memory_order_release);
+    callbacksEnabled_ = false;
+    addonCallbacksEnabled_ = false;
     layoutAnimationRunning_ = false;
+    runtimeExecutor_ = {};
+    onUpdate_ = {};
+    addonBindings_ = {};
+    if (uiManager_) {
+      uiManager_->setAnimationDelegate(nullptr);
+      uiManager_->setDelegate(nullptr);
+    }
+    if (eventLoop_) {
+      eventLoop_->drainUntilIdle();
+    }
     for (auto& entry : mountedViews_) {
       unbindMountedImage(entry.second);
     }
+    mountedViews_.clear();
     if (gHeadlessUIManager.lock() == uiManager_) {
       gHeadlessUIManager.reset();
     }
-    uiManager_->setAnimationDelegate(nullptr);
-    uiManager_->setDelegate(nullptr);
-    uiManager_->stopSurface(kReactSurfaceId);
+    animationDriver_.reset();
+    eventDispatcher_.reset();
+    uiManager_.reset();
+    registry_.reset();
+  }
+
+  void setCallbacksEnabled(bool enabled) {
+    callbacksEnabled_ = enabled;
   }
 
   void onAnimationStarted() override {
@@ -1551,6 +1654,8 @@ class HeadlessReactFabricHost final
     result.customComponentValue = customComponentValue_;
     result.customComponentLabel = customComponentLabel_;
     result.customCommands = customCommands_;
+    result.staleCommands = staleCommands_;
+    result.unknownCommands = unknownCommands_;
     result.fallbackComponentNames.assign(
         fallbackComponentNames_.begin(), fallbackComponentNames_.end());
     std::sort(
@@ -1581,9 +1686,62 @@ class HeadlessReactFabricHost final
     return result;
   }
 
+  bool onRuntimeThread() const {
+    if (std::this_thread::get_id() == runtimeThread_) {
+      return true;
+    }
+    return eventLoop_ && eventLoop_->onOwnerThread();
+  }
+
+  void hopToRuntimeThread(std::function<void()> work) {
+    auto run = [weak = weak_from_this(), work = std::move(work)]() {
+      const auto self = weak.lock();
+      if (!self || self->shutdown_.load(std::memory_order_acquire)) {
+        return;
+      }
+      try {
+        work();
+      } catch (...) {
+        self->recordAddonFatal("Fabric callback threw");
+      }
+    };
+    if (onRuntimeThread()) {
+      run();
+      return;
+    }
+    if (shutdown_.load(std::memory_order_acquire)) {
+      return;
+    }
+    if (!eventLoop_) {
+      recordAddonFatal("Fabric callback arrived on a non-runtime thread");
+      return;
+    }
+    // Queue onto the event loop only. ReactInstance::getUnbufferedRuntimeExecutor
+    // captures a raw RuntimeScheduler* and must not be invoked after
+    // instance.reset() during closeGeneration.
+    eventLoop_->runOnQueue(std::move(run));
+  }
+
   void uiManagerDidFinishTransaction(
       std::shared_ptr<const react::MountingCoordinator> coordinator,
-      bool) override {
+      bool mountSynchronously) override {
+    if (shutdown_ || !callbacksEnabled_) {
+      return;
+    }
+    hopToRuntimeThread(
+        [weak = weak_from_this(), coordinator, mountSynchronously]() {
+          if (auto self = weak.lock()) {
+            self->applyFinishedTransaction(coordinator, mountSynchronously);
+          }
+        });
+  }
+
+  void applyFinishedTransaction(
+      std::shared_ptr<const react::MountingCoordinator> coordinator,
+      bool mountSynchronously) {
+    if (shutdown_ || !callbacksEnabled_) {
+      return;
+    }
     if (animationDriver_ && !mountingOverrideInstalled_) {
       coordinator->setMountingOverrideDelegate(animationDriver_);
       mountingOverrideInstalled_ = true;
@@ -1621,6 +1779,7 @@ class HeadlessReactFabricHost final
         telemetry.getDiffEndTime(),
         transactions_});
     mountingRevision_ = transaction->getNumber();
+    const auto beforeMounts = captureAddonMountSnapshot();
     std::vector<float> transactionWidths;
     for (const auto& mutation : transaction->getMutations()) {
       applyMountingMutation(mutation);
@@ -1684,10 +1843,16 @@ class HeadlessReactFabricHost final
         sawUpdatedYogaWidths_ ||
         (transactionHasWidth(120) && transactionHasWidth(180));
     validateMountedViewTree();
+    refreshCommittedShadowNodes(
+        coordinator && coordinator->getBaseRevision().rootShadowNode
+            ? std::static_pointer_cast<const react::ShadowNode>(
+                  coordinator->getBaseRevision().rootShadowNode)
+            : nullptr);
     snapshotMountedViewTree();
     if (onUpdate_) {
       onUpdate_(result());
     }
+    notifyAddonMounts(beforeMounts);
     if (animationDriver_ && animationDriver_->shouldAnimateFrame()) {
       scheduleLayoutAnimationTick();
     }
@@ -1698,85 +1863,61 @@ class HeadlessReactFabricHost final
       const std::shared_ptr<const react::ShadowNode>& shadowNode,
       const std::string& commandName,
       const folly::dynamic& args) override {
-    if (shadowNode->getComponentName() != nullptr &&
-        std::string(shadowNode->getComponentName()) ==
-            react::HeadlessSampleViewComponentName &&
-        commandName == "setNativeValue" && args.isArray() && !args.empty() &&
-        args[0].isNumber()) {
-      ++customCommands_;
-      const auto value = args[0].asInt();
-      shadowNode->getEventEmitter()->dispatchEvent(
-          "headlessChange", folly::dynamic::object("value", value));
+    if (shutdown_ || !callbacksEnabled_) {
       return;
     }
-    if (commandName == "setNativeValue" && args.isArray() && !args.empty() &&
-        (args[0].isBool() || args[0].isNumber())) {
-      const auto tag = shadowNode->getTag();
-      const auto found = mountedViews_.find(tag);
-      if (found != mountedViews_.end() && found->second.node.androidSwitch) {
-        found->second.node.androidSwitchOn = args[0].isBool()
-            ? args[0].asBool()
-            : args[0].asDouble() != 0;
-        snapshotMountedViewTree();
-        if (onUpdate_) {
-          onUpdate_(result());
-        }
-      }
+    hopToRuntimeThread(
+        [weak = weak_from_this(), shadowNode, commandName, args]() {
+          if (auto self = weak.lock()) {
+            self->dispatchCommandOnRuntimeThread(
+                shadowNode, commandName, args);
+          }
+        });
+  }
+
+  void dispatchCommandOnRuntimeThread(
+      const std::shared_ptr<const react::ShadowNode>& shadowNode,
+      const std::string& commandName,
+      const folly::dynamic& args) {
+    if (shutdown_ || !callbacksEnabled_) {
       return;
     }
     const auto tag = shadowNode->getTag();
-    const auto found = mountedViews_.find(tag);
-    if (found != mountedViews_.end() && found->second.node.swipeRefresh &&
-        commandName == "setNativeRefreshing" && args.isArray() &&
-        !args.empty() && (args[0].isBool() || args[0].isNumber())) {
-      found->second.node.swipeRefreshing = args[0].isBool()
-          ? args[0].asBool()
-          : args[0].asDouble() != 0;
-      snapshotMountedViewTree();
-      if (onUpdate_) {
-        onUpdate_(result());
-      }
+    const std::string componentName = shadowNode->getComponentName() == nullptr
+        ? std::string{}
+        : shadowNode->getComponentName();
+    auto* record = resolveCurrentMountedNode(
+        tag, componentName, shadowNode->getFamilyShared());
+    if (record == nullptr) {
+      ++staleCommands_;
       return;
     }
-    if (found != mountedViews_.end() && found->second.node.drawerLayout &&
-        (commandName == "openDrawer" || commandName == "closeDrawer")) {
-      const bool open = commandName == "openDrawer";
-      found->second.node.drawerOffset = open ? 1.0f : 0.0f;
-      if (found->second.eventEmitter) {
-        found->second.eventEmitter->dispatchEvent(
-            open ? "topDrawerOpen" : "topDrawerClose",
-            folly::dynamic::object());
+    std::string resolvedCommand = commandName;
+    if (auto alias = resolveCommandAlias(record->canonicalName, commandName)) {
+      resolvedCommand = std::move(*alias);
+    }
+    if (addonCallbacksEnabled_) {
+      if (auto* handler = findAddonCommand(
+              record->owner, record->canonicalName, resolvedCommand)) {
+        ReactNativeSimulator::AddonCommandHandler handlerCopy;
+        try {
+          handlerCopy = *handler;
+        } catch (...) {
+          recordAddonFatal("addon command handler threw");
+          return;
+        }
+        try {
+          handlerCopy(makePublicMountedNode(*record), resolvedCommand, args);
+        } catch (...) {
+          recordAddonFatal("addon command handler threw");
+        }
+        return;
       }
-      snapshotMountedViewTree();
-      if (onUpdate_) {
-        onUpdate_(result());
-      }
+    }
+    if (dispatchFrameworkCommand(*record, resolvedCommand, args, shadowNode)) {
       return;
     }
-    if (found == mountedViews_.end() || !found->second.node.textInput) {
-      return;
-    }
-    if (commandName == "focus") {
-      focusTextInput(tag);
-      snapshotMountedViewTree();
-    } else if (commandName == "blur") {
-      if (focusedTextInputTag_ == tag) {
-        focusTextInput(-1);
-        snapshotMountedViewTree();
-      }
-    } else if (commandName == "setTextAndSelection" && args.isArray() &&
-               args.size() >= 4 && args[1].isString() &&
-               args[2].isNumber() && args[3].isNumber()) {
-      auto& node = found->second.node;
-      node.text = args[1].asString();
-      const auto length = utf16Length(node.text);
-      node.selectionStart = std::min<std::size_t>(args[2].asInt(), length);
-      node.selectionEnd = std::min<std::size_t>(args[3].asInt(), length);
-      snapshotMountedViewTree();
-    }
-    if (onUpdate_) {
-      onUpdate_(result());
-    }
+    ++unknownCommands_;
   }
   void uiManagerDidSendAccessibilityEvent(
       const std::shared_ptr<const react::ShadowNode>&,
@@ -3095,31 +3236,426 @@ class HeadlessReactFabricHost final
     }
   }
 
-  void emitSafeAreaInsetsIfNeeded(const react::ShadowView& view) {
-    if (view.componentName == nullptr ||
-        std::string(view.componentName) !=
-            react::HeadlessRNCSafeAreaProviderName ||
-        !view.eventEmitter) {
+  void preflightProvider(
+      const react::ComponentDescriptorProvider& provider,
+      const react::ComponentDescriptorParameters& params,
+      std::unordered_set<react::ComponentHandle>& seenHandles,
+      std::unordered_set<std::string>& seenNames) {
+    if (provider.name == nullptr || provider.name[0] == '\0' ||
+        provider.constructor == nullptr || provider.handle == 0) {
+      throw std::runtime_error(
+          "Fabric preflight rejected a provider with a null name, constructor, or handle");
+    }
+    const std::string name = provider.name;
+    if (!seenNames.insert(name).second) {
+      throw std::runtime_error("Fabric preflight duplicate component name " + name);
+    }
+    react::ComponentDescriptorParameters instanceParams = params;
+    instanceParams.flavor = provider.flavor;
+    react::ComponentDescriptor::Unique descriptor;
+    try {
+      descriptor = provider.constructor(instanceParams);
+    } catch (...) {
+      throw std::runtime_error("Fabric preflight constructor threw for " + name);
+    }
+    if (!descriptor) {
+      throw std::runtime_error("Fabric preflight produced a null descriptor for " + name);
+    }
+    const char* constructedName = descriptor->getComponentName();
+    if (constructedName == nullptr || std::string(constructedName) != name) {
+      throw std::runtime_error(
+          "Fabric preflight name mismatch for " + name + " (constructed " +
+          (constructedName != nullptr ? constructedName : "null") + ")");
+    }
+    const auto constructedHandle = descriptor->getComponentHandle();
+    if (constructedHandle == 0) {
+      throw std::runtime_error(
+          "Fabric preflight produced a zero handle for " + name);
+    }
+    // RN's ComponentDescriptorRegistry keys by the constructed descriptor, not
+    // provider.handle. Concrete Handle() values are addresses of internal-linkage
+    // component-name arrays, so provider.handle from one TU can differ from the
+    // constructed vtable's Handle() in another. The ledger therefore records the
+    // constructed handle. Flavor-backed UnimplementedView providers own both
+    // strings, so their claimed and constructed handles must match.
+    if (provider.flavor != nullptr && constructedHandle != provider.handle) {
+      throw std::runtime_error(
+          "Fabric preflight handle mismatch for " + name);
+    }
+    if (!seenHandles.insert(constructedHandle).second) {
+      throw std::runtime_error(
+          "Fabric preflight duplicate constructed handle for " + name);
+    }
+  }
+
+  void recordAddonFatal(std::string message) {
+    addonCallbacksEnabled_ = false;
+    if (!addonBindings_.reportFatal) {
       return;
     }
-    // Notch/status and nav chrome live outside the Fabric window. Emitting the
-    // host chrome sizes here would double-pad safe-area consumers.
-    const auto& frame = view.layoutMetrics.frame;
-    view.eventEmitter->dispatchEvent(
-        "topInsetsChange",
-        folly::dynamic::object
-            ("insets",
-             folly::dynamic::object
-                 ("top", 0)
-                 ("right", 0)
-                 ("bottom", 0)
-                 ("left", 0))
-            ("frame",
-             folly::dynamic::object
-                 ("x", frame.origin.x)
-                 ("y", frame.origin.y)
-                 ("width", frame.size.width)
-                 ("height", frame.size.height)));
+    addonBindings_.reportFatal(
+        std::make_exception_ptr(std::runtime_error(std::move(message))));
+  }
+
+  struct AddonMountSnapshot {
+    react::Tag tag{0};
+    std::string componentName;
+    react::LayoutMetrics layout{};
+    std::shared_ptr<const react::ShadowNode> shadowNode;
+    react::ShadowNodeFamily::Shared family;
+    std::string owner;
+    std::vector<int> children;
+    bool inTree{false};
+  };
+
+  std::unordered_map<react::Tag, AddonMountSnapshot> captureAddonMountSnapshot() const {
+    std::unordered_map<react::Tag, AddonMountSnapshot> snapshot;
+    for (const auto& [tag, record] : mountedViews_) {
+      AddonMountSnapshot item;
+      item.tag = tag;
+      item.componentName = record.canonicalName.empty()
+          ? record.node.componentName
+          : record.canonicalName;
+      item.layout = record.layoutMetrics;
+      item.shadowNode = record.shadowNode;
+      item.family = record.family;
+      item.owner = record.owner;
+      item.children = record.children;
+      item.inTree = tag == kReactSurfaceId || record.node.parentTag.has_value();
+      snapshot.emplace(tag, std::move(item));
+    }
+    return snapshot;
+  }
+
+  void refreshCommittedShadowNodes(
+      const std::shared_ptr<const react::ShadowNode>& root) {
+    if (addonBindings_.mountHandlers.empty() &&
+        addonBindings_.commandHandlers.empty()) {
+      return;
+    }
+    if (!root) {
+      return;
+    }
+    std::function<void(const std::shared_ptr<const react::ShadowNode>&)> walk =
+        [&](const std::shared_ptr<const react::ShadowNode>& node) {
+          if (!node) {
+            return;
+          }
+          auto found = mountedViews_.find(node->getTag());
+          if (found != mountedViews_.end()) {
+            found->second.shadowNode = node;
+            found->second.family = node->getFamilyShared();
+            found->second.canonicalName = node->getComponentName() == nullptr
+                ? found->second.node.componentName
+                : node->getComponentName();
+            if (found->second.owner.empty()) {
+              const auto owner = addonBindings_.componentOwners.find(
+                  found->second.canonicalName);
+              if (owner != addonBindings_.componentOwners.end()) {
+                found->second.owner = owner->second;
+              }
+            }
+          }
+          for (const auto& child : node->getChildren()) {
+            walk(child);
+          }
+        };
+    walk(root);
+  }
+
+  ReactNativeSimulator::AddonMountedNode makePublicMountedNode(
+      const MountedViewRecord& record) const {
+    ReactNativeSimulator::AddonMountedNode node;
+    node.generation = addonBindings_.generation;
+    node.surfaceId = kReactSurfaceId;
+    node.tag = record.node.tag;
+    node.componentName = record.canonicalName.empty()
+        ? record.node.componentName
+        : record.canonicalName;
+    node.shadowNode = record.shadowNode;
+    node.layoutMetrics = record.layoutMetrics;
+    return node;
+  }
+
+  void invokeMountHandler(
+      ReactNativeSimulator::AddonMountKind kind,
+      const MountedViewRecord& record) {
+    if (!addonCallbacksEnabled_) {
+      return;
+    }
+    const auto name = record.canonicalName.empty()
+        ? record.node.componentName
+        : record.canonicalName;
+    const auto handler = addonBindings_.mountHandlers.find(name);
+    if (handler == addonBindings_.mountHandlers.end()) {
+      return;
+    }
+    try {
+      handler->second(kind, makePublicMountedNode(record));
+    } catch (...) {
+      recordAddonFatal("addon mount handler threw");
+    }
+  }
+
+  void notifyAddonMounts(
+      const std::unordered_map<react::Tag, AddonMountSnapshot>& before) {
+    if (!callbacksEnabled_ || shutdown_) {
+      return;
+    }
+    const auto after = captureAddonMountSnapshot();
+    std::vector<react::Tag> unmounted;
+    std::vector<react::Tag> mounted;
+    std::vector<react::Tag> updated;
+    for (const auto& [tag, item] : before) {
+      if (!item.inTree || tag == kReactSurfaceId) {
+        continue;
+      }
+      const auto found = after.find(tag);
+      if (found == after.end() || !found->second.inTree) {
+        unmounted.push_back(tag);
+      } else {
+        const auto& previous = item;
+        const auto& next = found->second;
+        const bool shadowChanged =
+            previous.shadowNode.get() != next.shadowNode.get();
+        const bool layoutChanged =
+            previous.layout.frame.origin.x != next.layout.frame.origin.x ||
+            previous.layout.frame.origin.y != next.layout.frame.origin.y ||
+            previous.layout.frame.size.width != next.layout.frame.size.width ||
+            previous.layout.frame.size.height != next.layout.frame.size.height;
+        if (shadowChanged || layoutChanged) {
+          updated.push_back(tag);
+        }
+      }
+    }
+    for (const auto& [tag, item] : after) {
+      if (!item.inTree || tag == kReactSurfaceId) {
+        continue;
+      }
+      const auto found = before.find(tag);
+      if (found == before.end() || !found->second.inTree) {
+        mounted.push_back(tag);
+      }
+    }
+    const auto walkUnmountedPostOrder = [&](auto& tags, auto&& visit) {
+      std::unordered_set<react::Tag> remaining(tags.begin(), tags.end());
+      std::function<void(react::Tag)> walk = [&](react::Tag tag) {
+        const auto found = before.find(tag);
+        if (found != before.end()) {
+          for (const auto child : found->second.children) {
+            walk(child);
+          }
+        }
+        if (remaining.erase(tag)) {
+          visit(tag);
+        }
+      };
+      if (before.contains(kReactSurfaceId)) {
+        walk(kReactSurfaceId);
+      }
+      for (const auto tag : tags) {
+        if (remaining.count(tag)) {
+          walk(tag);
+        }
+      }
+    };
+    std::vector<std::pair<
+        ReactNativeSimulator::AddonMountKind,
+        MountedViewRecord>>
+        pending;
+    walkUnmountedPostOrder(unmounted, [&](react::Tag tag) {
+      const auto found = before.find(tag);
+      if (found == before.end()) {
+        return;
+      }
+      MountedViewRecord record;
+      record.node.tag = tag;
+      record.node.componentName = found->second.componentName;
+      record.canonicalName = found->second.componentName;
+      record.shadowNode = found->second.shadowNode;
+      record.family = found->second.family;
+      record.owner = found->second.owner;
+      record.layoutMetrics = found->second.layout;
+      record.node.x = found->second.layout.frame.origin.x;
+      record.node.y = found->second.layout.frame.origin.y;
+      record.node.width = found->second.layout.frame.size.width;
+      record.node.height = found->second.layout.frame.size.height;
+      pending.emplace_back(
+          ReactNativeSimulator::AddonMountKind::Unmounted, std::move(record));
+    });
+    std::function<void(react::Tag)> walkPre = [&](react::Tag tag) {
+      if (tag != kReactSurfaceId &&
+          std::find(mounted.begin(), mounted.end(), tag) != mounted.end()) {
+        const auto found = mountedViews_.find(tag);
+        if (found != mountedViews_.end()) {
+          pending.emplace_back(
+              ReactNativeSimulator::AddonMountKind::Mounted, found->second);
+        }
+      }
+      const auto found = mountedViews_.find(tag);
+      if (found != mountedViews_.end()) {
+        for (const auto child : found->second.children) {
+          walkPre(child);
+        }
+      }
+    };
+    walkPre(kReactSurfaceId);
+    for (const auto tag : updated) {
+      const auto found = mountedViews_.find(tag);
+      if (found != mountedViews_.end()) {
+        pending.emplace_back(
+            ReactNativeSimulator::AddonMountKind::Updated, found->second);
+      }
+    }
+    for (const auto& [kind, record] : pending) {
+      invokeMountHandler(kind, record);
+    }
+  }
+
+  MountedViewRecord* resolveCurrentMountedNode(
+      react::Tag tag,
+      const std::string& componentName,
+      const react::ShadowNodeFamily::Shared& family) {
+    auto found = mountedViews_.find(tag);
+    if (found == mountedViews_.end()) {
+      return nullptr;
+    }
+    const auto canonical = found->second.canonicalName.empty()
+        ? found->second.node.componentName
+        : found->second.canonicalName;
+    if (!componentName.empty() && canonical != componentName) {
+      return nullptr;
+    }
+    if (found->second.family && family &&
+        found->second.family.get() != family.get()) {
+      return nullptr;
+    }
+    return &found->second;
+  }
+
+  bool dispatchFrameworkCommand(
+      MountedViewRecord& record,
+      const std::string& commandName,
+      const folly::dynamic& args,
+      const std::shared_ptr<const react::ShadowNode>& shadowNode) {
+    if (record.node.componentName == react::HeadlessSampleViewComponentName &&
+        commandName == "setNativeValue" && args.isArray() && !args.empty() &&
+        args[0].isNumber()) {
+      ++customCommands_;
+      shadowNode->getEventEmitter()->dispatchEvent(
+          "headlessChange", folly::dynamic::object("value", args[0].asInt()));
+      return true;
+    }
+    if (commandName == "setNativeValue" && args.isArray() && !args.empty() &&
+        (args[0].isBool() || args[0].isNumber()) &&
+        record.node.androidSwitch) {
+      record.node.androidSwitchOn = args[0].isBool()
+          ? args[0].asBool()
+          : args[0].asDouble() != 0;
+      snapshotMountedViewTree();
+      if (onUpdate_) {
+        onUpdate_(result());
+      }
+      return true;
+    }
+    if (record.node.swipeRefresh && commandName == "setNativeRefreshing" &&
+        args.isArray() && !args.empty() &&
+        (args[0].isBool() || args[0].isNumber())) {
+      record.node.swipeRefreshing = args[0].isBool()
+          ? args[0].asBool()
+          : args[0].asDouble() != 0;
+      snapshotMountedViewTree();
+      if (onUpdate_) {
+        onUpdate_(result());
+      }
+      return true;
+    }
+    if (record.node.drawerLayout &&
+        (commandName == "openDrawer" || commandName == "closeDrawer")) {
+      const bool open = commandName == "openDrawer";
+      record.node.drawerOffset = open ? 1.0f : 0.0f;
+      if (record.eventEmitter) {
+        record.eventEmitter->dispatchEvent(
+            open ? "topDrawerOpen" : "topDrawerClose",
+            folly::dynamic::object());
+      }
+      snapshotMountedViewTree();
+      if (onUpdate_) {
+        onUpdate_(result());
+      }
+      return true;
+    }
+    if (!record.node.textInput) {
+      return false;
+    }
+    if (commandName == "focus") {
+      focusTextInput(record.node.tag);
+      snapshotMountedViewTree();
+    } else if (commandName == "blur") {
+      if (focusedTextInputTag_ == record.node.tag) {
+        focusTextInput(-1);
+        snapshotMountedViewTree();
+      }
+    } else if (commandName == "setTextAndSelection" && args.isArray() &&
+               args.size() >= 4 && args[1].isString() && args[2].isNumber() &&
+               args[3].isNumber()) {
+      record.node.text = args[1].asString();
+      const auto length = utf16Length(record.node.text);
+      record.node.selectionStart = std::min<std::size_t>(args[2].asInt(), length);
+      record.node.selectionEnd = std::min<std::size_t>(args[3].asInt(), length);
+      snapshotMountedViewTree();
+    } else {
+      return false;
+    }
+    if (onUpdate_) {
+      onUpdate_(result());
+    }
+    return true;
+  }
+
+  ReactNativeSimulator::AddonCommandHandler* findAddonCommand(
+      const std::string& owner,
+      const std::string& componentName,
+      const std::string& commandName) {
+    const auto expectedOwner = addonBindings_.componentOwners.find(componentName);
+    if (expectedOwner == addonBindings_.componentOwners.end()) {
+      return nullptr;
+    }
+    if (!owner.empty() && expectedOwner->second != owner) {
+      return nullptr;
+    }
+    auto component = addonBindings_.commandHandlers.find(componentName);
+    if (component == addonBindings_.commandHandlers.end()) {
+      return nullptr;
+    }
+    auto command = component->second.find(commandName);
+    if (command == component->second.end()) {
+      const auto aliases = addonBindings_.commandAliases.find(componentName);
+      if (aliases != addonBindings_.commandAliases.end()) {
+        const auto alias = aliases->second.find(commandName);
+        if (alias != aliases->second.end()) {
+          command = component->second.find(alias->second);
+        }
+      }
+    }
+    if (command == component->second.end()) {
+      return nullptr;
+    }
+    return &command->second;
+  }
+
+  std::optional<std::string> resolveCommandAlias(
+      const std::string& componentName,
+      const std::string& commandName) const {
+    const auto aliases = addonBindings_.commandAliases.find(componentName);
+    if (aliases == addonBindings_.commandAliases.end()) {
+      return std::nullopt;
+    }
+    const auto alias = aliases->second.find(commandName);
+    if (alias == aliases->second.end()) {
+      return std::nullopt;
+    }
+    return alias->second;
   }
 
   void applyMountingMutation(const react::ShadowViewMutation& mutation) {
@@ -3138,6 +3674,7 @@ class HeadlessReactFabricHost final
             record.node = std::move(updated);
             record.eventEmitter = mutation.newChildShadowView.eventEmitter;
             record.state = mutation.newChildShadowView.state;
+            record.layoutMetrics = mutation.newChildShadowView.layoutMetrics;
             break;
           }
           reportMountingError(
@@ -3148,6 +3685,7 @@ class HeadlessReactFabricHost final
         record.node = mountedNodeFromShadowView(mutation.newChildShadowView);
         record.eventEmitter = mutation.newChildShadowView.eventEmitter;
         record.state = mutation.newChildShadowView.state;
+        record.layoutMetrics = mutation.newChildShadowView.layoutMetrics;
         bindMountedImage(record, mutation.newChildShadowView);
         mountedViews_.emplace(tag, std::move(record));
         if (mutation.newChildShadowView.componentName != nullptr &&
@@ -3157,7 +3695,6 @@ class HeadlessReactFabricHost final
           mutation.newChildShadowView.eventEmitter->dispatchEvent(
               "topShow", folly::dynamic::object());
         }
-        emitSafeAreaInsetsIfNeeded(mutation.newChildShadowView);
         break;
       }
       case react::ShadowViewMutation::Insert: {
@@ -3260,7 +3797,7 @@ class HeadlessReactFabricHost final
         found->second.node = std::move(updated);
         found->second.eventEmitter = mutation.newChildShadowView.eventEmitter;
         found->second.state = mutation.newChildShadowView.state;
-        emitSafeAreaInsetsIfNeeded(mutation.newChildShadowView);
+        found->second.layoutMetrics = mutation.newChildShadowView.layoutMetrics;
         if (imageStateChanged || !found->second.imageObserver) {
           bindMountedImage(found->second, mutation.newChildShadowView);
         }
@@ -3568,6 +4105,15 @@ class HeadlessReactFabricHost final
   std::unordered_map<react::Tag, folly::dynamic> animatedDirectProps_;
   std::vector<OnSurfaceStartCallback> callbacks_;
   HeadlessReactFabricUpdate onUpdate_;
+  AddonFabricHostBindings addonBindings_{};
+  std::thread::id runtimeThread_{};
+  bool preflighting_{false};
+  bool callbacksEnabled_{true};
+  bool addonCallbacksEnabled_{true};
+  bool surfaceRunning_{true};
+  std::atomic<bool> shutdown_{false};
+  std::size_t staleCommands_{0};
+  std::size_t unknownCommands_{0};
 };
 
 std::shared_ptr<HeadlessReactFabricHost> installHeadlessReactFabric(
@@ -3583,9 +4129,12 @@ std::shared_ptr<HeadlessReactFabricHost> installHeadlessReactFabric(
     const std::filesystem::path& fontDirectory,
     const std::filesystem::path& assetDirectory,
     const std::string& platform,
-    std::vector<ReactNativeSimulator::SimulatorAddonCapability>
+    std::vector<ReactNativeSimulator::AddonComponentDeclaration>
         addonComponents,
-    HeadlessReactFabricUpdate onUpdate) {
+    std::vector<react::ComponentDescriptorProvider> addonProviders,
+    std::vector<react::ComponentDescriptorProvider> frameworkProviders,
+    HeadlessReactFabricUpdate onUpdate,
+    AddonFabricHostBindings addonBindings) {
   return std::make_shared<HeadlessReactFabricHost>(
       runtime,
       std::move(runtimeExecutor),
@@ -3600,7 +4149,24 @@ std::shared_ptr<HeadlessReactFabricHost> installHeadlessReactFabric(
       assetDirectory,
       platform,
       std::move(addonComponents),
-      std::move(onUpdate));
+      std::move(addonProviders),
+      std::move(frameworkProviders),
+      std::move(onUpdate),
+      std::move(addonBindings));
+}
+
+void stopHeadlessReactFabricSurface(HeadlessReactFabricHost& host) {
+  host.stopSurfaceOnce();
+}
+
+void shutdownHeadlessReactFabric(HeadlessReactFabricHost& host) {
+  host.shutdown();
+}
+
+void setHeadlessReactFabricCallbacksEnabled(
+    HeadlessReactFabricHost& host,
+    bool enabled) {
+  host.setCallbacksEnabled(enabled);
 }
 
 std::shared_ptr<react::UIManager> getHeadlessReactFabricUIManager() {

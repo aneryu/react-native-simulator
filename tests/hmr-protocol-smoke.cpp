@@ -1,4 +1,5 @@
 #include <react-native-simulator/Engine.h>
+#include "EngineTestSupport.h"
 
 #include "TestEngineThread.h"
 
@@ -15,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -118,6 +120,10 @@ class StubMetro {
     thread_ = std::thread([this] { acceptLoop(); });
   }
 
+  ~StubMetro() {
+    stop();
+  }
+
   void stop() {
     stopping_ = true;
     boost::system::error_code ignored;
@@ -125,6 +131,16 @@ class StubMetro {
     context_.stop();
     if (thread_.joinable()) {
       thread_.join();
+    }
+    std::vector<std::thread> workers;
+    {
+      std::lock_guard lock(workersMutex_);
+      workers.swap(workers_);
+    }
+    for (auto& worker : workers) {
+      if (worker.joinable()) {
+        worker.join();
+      }
     }
   }
 
@@ -157,7 +173,9 @@ class StubMetro {
         if (stopping_) {
           break;
         }
-        std::thread(&StubMetro::handleSocket, this, std::move(socket)).detach();
+        std::thread worker(&StubMetro::handleSocket, this, std::move(socket));
+        std::lock_guard lock(workersMutex_);
+        workers_.push_back(std::move(worker));
       } catch (const std::exception&) {
         if (stopping_) {
           break;
@@ -239,6 +257,8 @@ class StubMetro {
   tcp::acceptor acceptor_;
   uint16_t port_{0};
   std::thread thread_;
+  std::vector<std::thread> workers_;
+  std::mutex workersMutex_;
   std::atomic<bool> stopping_{false};
   mutable std::mutex mutex_;
   std::string pendingHot_;
@@ -258,8 +278,9 @@ int main() {
   config.mode = ReactNativeSimulator::SimulatorMode::Interactive;
   config.timeoutMs = 15000;
   config.autoRunApplication = false;
-  ReactNativeSimulator::Engine engine(config);
-  engine.loadBundle(std::string(kBundle), url);
+  auto engine = ReactNativeSimulator::test::makeEngine(
+      std::move(config),
+      {ReactNativeSimulator::test::memoryBundle(std::string(kBundle), url)});
 
   std::string runError;
   TestEngineThread runner([&] {
@@ -347,8 +368,10 @@ int main() {
   failingConfig.mode = ReactNativeSimulator::SimulatorMode::Interactive;
   failingConfig.timeoutMs = 5000;
   failingConfig.autoRunApplication = false;
-  ReactNativeSimulator::Engine failingEngine(std::move(failingConfig));
-  failingEngine.loadBundle(std::string(kFailingHMRBundle), failingUrl);
+  auto failingEngine = ReactNativeSimulator::test::makeEngine(
+      std::move(failingConfig),
+      {ReactNativeSimulator::test::memoryBundle(
+          std::string(kFailingHMRBundle), failingUrl)});
   ReactNativeSimulator::EngineResult failingResult;
   TestEngineThread failingRunner(
       [&] { failingResult = failingEngine.run(); });

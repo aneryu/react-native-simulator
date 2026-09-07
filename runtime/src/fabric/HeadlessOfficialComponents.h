@@ -51,18 +51,12 @@ inline constexpr HeadlessOfficialComponentSpec kHeadlessOfficialComponents[] = {
     {"AndroidDrawerLayout", "skia-drawer-layout", false, 0, 0},
     {"AndroidSwipeRefreshLayout", "skia-refresh-control", false, 0, 0},
     {"PullToRefreshView", "layout-only-placeholder", false, 0, 0},
-    {"AndroidHorizontalScrollView", "headless-viewport-state", false, 0, 0},
     {"AndroidHorizontalScrollContentView", "real-fabric-yoga", false, 0, 0},
     {"SafeAreaView", "window-relative-insets", false, 0, 0},
-    // Temporary host adapter for the community safe-area contract. The addon
-    // ABI cannot yet register event-capable Fabric descriptors.
-    {"RNCSafeAreaProvider", "window-relative-insets", false, 0, 0},
-    {"RNCSafeAreaView", "window-relative-insets", false, 0, 0},
     {"InputAccessory", "layout-only-placeholder", false, 0, 0},
     {"VirtualView", "layout-only-placeholder", false, 0, 0},
     {"VirtualViewExperimental", "layout-only-placeholder", false, 0, 0},
     {"DebuggingOverlay", "layout-only-placeholder", false, 0, 0},
-    {"RCTImageView", "layout-only-placeholder", true, 0, 0},
 };
 
 extern const char HeadlessActivityIndicatorViewName[];
@@ -73,8 +67,6 @@ extern const char HeadlessModalHostViewName[];
 extern const char HeadlessAndroidSwipeRefreshLayoutName[];
 extern const char HeadlessAndroidDrawerLayoutName[];
 extern const char HeadlessSafeAreaViewName[];
-extern const char HeadlessRNCSafeAreaProviderName[];
-extern const char HeadlessRNCSafeAreaViewName[];
 
 template <const char* Name, int Width, int Height>
 class HeadlessMeasuredLeafShadowNode final
@@ -397,20 +389,9 @@ class HeadlessSafeAreaViewComponentDescriptor final
   using ConcreteComponentDescriptor::ConcreteComponentDescriptor;
 };
 
-using HeadlessRNCSafeAreaProviderShadowNode = ConcreteViewShadowNode<
-    HeadlessRNCSafeAreaProviderName,
-    ViewProps,
-    ViewEventEmitter>;
-using HeadlessRNCSafeAreaProviderComponentDescriptor =
-    ConcreteComponentDescriptor<HeadlessRNCSafeAreaProviderShadowNode>;
-
-using HeadlessRNCSafeAreaViewShadowNode = ConcreteViewShadowNode<
-    HeadlessRNCSafeAreaViewName,
-    ViewProps,
-    ViewEventEmitter>;
-using HeadlessRNCSafeAreaViewComponentDescriptor =
-    ConcreteComponentDescriptor<HeadlessRNCSafeAreaViewShadowNode>;
-
+void collectHeadlessOfficialComponentProviders(
+    std::vector<ComponentDescriptorProvider>& providers,
+    std::vector<std::shared_ptr<std::string>>& flavorStorage);
 void registerHeadlessOfficialComponents(
     ComponentDescriptorProviderRegistry& providers,
     std::vector<std::shared_ptr<std::string>>& flavorStorage);

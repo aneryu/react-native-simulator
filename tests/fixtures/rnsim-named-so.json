@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "reactNative": "0.87.0",
+  "platform": "android",
+  "bundle": "./runtime-smoke.js",
+  "addons": [
+    {
+      "name": "compat-rn73.so"
+    }
+  ]
+}

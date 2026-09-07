@@ -254,7 +254,7 @@ and unknown fields are rejected:
 
 ```json
 {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "reactNative": "0.87.0",
     "platform": "android",
     "appKey": "MyApp",

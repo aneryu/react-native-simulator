@@ -47,6 +47,7 @@ class SimulatorEventLoop final : public facebook::react::MessageQueueThread {
       const std::function<bool()>& predicate,
       std::chrono::milliseconds timeout);
   bool hasPendingWork() const;
+  bool onOwnerThread() const;
 
  private:
   struct Timer {

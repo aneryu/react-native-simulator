@@ -17,6 +17,7 @@ string(JSON status GET "${report}" project status)
 string(JSON preflight_passed GET "${report}" project preflightPassed)
 string(JSON ready_to_launch GET "${report}" project readyToLaunch)
 string(JSON compatible GET "${report}" project reactNative compatible)
+string(JSON family GET "${report}" project reactNative family)
 string(JSON declared GET "${report}" project reactNative declared)
 string(JSON platform GET "${report}" project platform)
 string(JSON profile GET "${report}" project profile)
@@ -30,6 +31,7 @@ string(JSON next_action GET "${report}" project nextAction)
 
 if(NOT detected OR NOT compatible OR NOT preflight_passed OR
    NOT declared STREQUAL "0.87.0" OR
+   NOT family STREQUAL "0.87.x" OR
    NOT platform STREQUAL "android" OR
    NOT profile STREQUAL "android-rn87" OR
    NOT app_key STREQUAL "DoctorFixture" OR

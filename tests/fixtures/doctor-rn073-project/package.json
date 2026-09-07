@@ -1,0 +1,7 @@
+{
+  "name": "rnsim-doctor-rn073-fixture",
+  "private": true,
+  "dependencies": {
+    "react-native": "0.73.10"
+  }
+}
